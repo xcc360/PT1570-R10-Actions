@@ -1,0 +1,452 @@
+# SPDX-License-Identifier: MIT
+# PonWRT / PT1570-R10 单机型 / 统一 FIT ABI 云编译
+#
+# 这套资产对应《PT1570-R10_H10-FIT统一ABI-云编译补齐方案.md》的方案③。
+# ABI：factory(8 MiB static) + fit + rootfs_data，产物 sysupgrade.itb。
+#
+# ⚠️ 2026-11-09 起按用户决定收窄为 **R10-only**：
+#    PT1570-H10 暂缓（设备未上线、无 factory、DTS 无可验证硬件事实）。
+#    H10 的 Device/DTS 资产保留在 board/ 下但标记为 DORMANT，不参与任何构建；
+#    apply-board.sh 需要显式 PT1570_ALLOW_H10=1 才会处理 h10，默认直接拒绝。
+#    恢复双机型的方法见方案文档「R10-only 范围与恢复 H10」一节。
+#
+# ⚠️ R10 DTS 状态：已按真机 FDT（2026-11-09 导出 447 个属性）完成静态移植，
+#    修正了 include 2.5G 板的错误，但**尚未在新固件上真机启动验证**，
+#    仍带 UNVERIFIED 标记。默认 dts_status=experimental，产物带 DO-NOT-FLASH
+#    警告且禁止发布 Release；只有真机验证 LAN/WiFi/PON/LED 全部正常、
+#    去掉 UNVERIFIED 并显式选 verified 才允许正式发布。
+#
+# Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3（Node 24）。
+# 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
+
+name: Build PonWRT PT1570 FIT
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认锁定已核实 commit，来自 pt1500-h10-fixes 分支）'
+        required: false
+        default: '20b4cf4490'
+        type: string
+      dts_status:
+        description: 'DTS 验证状态；experimental 只出验证产物，verified 才允许发布 Release'
+        required: false
+        default: 'experimental'
+        type: choice
+        options: [experimental, verified]
+      test_only:
+        description: '只生成并上传 .config / 校验报告，不编译'
+        required: false
+        default: false
+        type: boolean
+      create_release:
+        description: '发布到 GitHub Release（仅 dts_status=verified 时生效）'
+        required: false
+        default: false
+        type: boolean
+      publish_packages:
+        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）'
+        required: false
+        default: true
+        type: boolean
+      packages_repo_url:
+        description: '可选：自建 packages 静态源根 URL，随固件写入 customfeeds.list'
+        required: false
+        default: ''
+        type: string
+      apk_mirror_base:
+        description: '可选：外部 apk 镜像根 URL。注意本 target 架构是 aarch64_cortex-a55，多数国内镜像没有该目录，留空最安全'
+        required: false
+        default: ''
+        type: string
+      apk_repo_key_url:
+        description: '可选：外部 apk 源公钥 URL'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pt1570-fit-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  FORCE_UNSAFE_CONFIGURE: 1
+
+jobs:
+  build:
+    name: FIT / rtl9617c / PT1570-R10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      matrix:
+        # R10-only。H10 暂缓，禁止在此加入（见文件头与方案文档）。
+        board: [r10]
+
+    steps:
+      - name: Checkout build assets
+        uses: actions/checkout@v5
+
+      # 防呆：任何把第二个机型加回 matrix 的改动都会在这里失败。
+      # 只检查 matrix 的 board 行，不搜全文（文件头注释里本来就有 H10 说明）。
+      - name: Guard R10-only
+        env:
+          BOARD: ${{ matrix.board }}
+        run: |
+          [ "$BOARD" = "r10" ] || {
+            echo "ERROR: 当前范围是 R10-only，收到 board=$BOARD" >&2; exit 1; }
+          WF="$GITHUB_WORKSPACE/.github/workflows/build-pt1570-fit.yml"
+          LINE=$(grep -E '^[[:space:]]*board: \[' "$WF" | tr -d '[:space:]')
+          [ "$LINE" = "board:[r10]" ] || {
+            echo "ERROR: matrix board 行不是 [r10]：'$LINE'" >&2; exit 1; }
+          echo "R10_ONLY_GUARD_OK=True board=$BOARD matrix=$LINE"
+
+      - name: Resolve board parameters
+        env:
+          BOARD: ${{ matrix.board }}
+          DTS_STATUS: ${{ inputs.dts_status }}
+        run: |
+          case "$BOARD" in
+            r10)
+              echo "PROFILE=youhua_pt1570_r10"          >> "$GITHUB_ENV"
+              echo "BOARD_NAME=youhua,pt1570-r10"       >> "$GITHUB_ENV"
+              echo "DTS=rtl9617c-pt1570-r10"            >> "$GITHUB_ENV"
+              echo "MODEL=PT1570-R10"                   >> "$GITHUB_ENV"
+              ;;
+            *) echo "ERROR: R10-only 构建不接受 board=$BOARD（H10 暂缓）" >&2; exit 1 ;;
+          esac
+          echo "DTS_STATUS=${DTS_STATUS:-experimental}" >> "$GITHUB_ENV"
+          echo "board=$BOARD profile=youhua_pt1570_r10 dts=rtl9617c-pt1570-r10 status=${DTS_STATUS:-experimental}"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift
+          sudo apt-get clean
+          df -h /
+          sudo mkdir -p /mnt/build_wrt
+          sudo chown "$USER:$USER" /mnt/build_wrt
+          ln -s /mnt/build_wrt "$GITHUB_WORKSPACE/wrt"
+          df -h /mnt
+
+      - name: Install build dependencies
+        # 沿用已在 ubuntu-24.04 上跑通的 OpenWrt 依赖清单（与 HG5585F-CT 路线 B 相同）。
+        run: |
+          sudo apt-get update -yqq
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+
+      - name: Clone rtl9617c-openwrt source
+        run: |
+          set -e
+          REF="${{ inputs.source_ref || '20b4cf4490' }}"
+          cd /mnt/build_wrt
+          git init -q
+          git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
+          if ! git fetch -q --depth=1 origin "$REF"; then
+            echo "WARN: 按 commit 拉取失败，回退到 h10 分支" >&2
+            git fetch -q --depth=1 origin feature/pt1500-h10-openwrt-fixes
+          fi
+          git checkout -q FETCH_HEAD
+          echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
+          echo "--- target ---"
+          test -f target/linux/rtl9617c/image/Makefile
+          test -f target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi
+          test -f package/utils/fitblk/files/fit.sh
+          grep -n 'rootdisk' target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi | head -3
+          echo "source: $(git rev-parse HEAD)"
+
+      - name: Pin APK signing key (optional)
+        working-directory: wrt
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          if [ -n "$APK_SIGNING_KEY" ]; then
+            umask 077
+            printf '%s\n' "$APK_SIGNING_KEY" > private-key.pem
+            openssl ec -in private-key.pem -pubout -out public-key.pem
+            echo "APK build key pinned:"; sha256sum public-key.pem
+          else
+            echo "no APK_SIGNING_KEY: ephemeral key; firmware + packages of THIS run trust each other only"
+          fi
+
+      - name: Update and install feeds
+        working-directory: wrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # rpcd 会拒绝 world-writable 的 ucode handler；Windows/9p 同步过的 feed 必须收敛权限
+          chmod -R go-w feeds/luci feeds/packages 2>/dev/null || true
+          find feeds/luci -path '*/root/usr/share/rpcd/ucode/*' -type f -exec chmod 0755 {} + 2>/dev/null || true
+          find feeds/luci -path '*/root/usr/share/rpcd/acl.d/*.json' -type f -exec chmod 0644 {} + 2>/dev/null || true
+
+      - name: Apply board support (DTS + Device + sysupgrade whitelist)
+        env:
+          PT1570_BOARD: ${{ matrix.board }}
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+          DTS_STATUS: ${{ inputs.dts_status }}
+        run: bash "$GITHUB_WORKSPACE/scripts/apply-board.sh"
+
+      - name: Apply custom rootfs files
+        env:
+          PACKAGES_REPO_URL: ${{ inputs.packages_repo_url }}
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/wrt/files"
+          if [ -d "$GITHUB_WORKSPACE/files" ]; then
+            cp -a "$GITHUB_WORKSPACE/files/." "$GITHUB_WORKSPACE/wrt/files/"
+            chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
+            echo "custom rootfs files injected:"
+            find "$GITHUB_WORKSPACE/files" -type f -printf '  %P\n'
+          fi
+          if [ -n "$PACKAGES_REPO_URL" ]; then
+            URL="${PACKAGES_REPO_URL%/}"
+            mkdir -p "$GITHUB_WORKSPACE/wrt/files/etc/apk/repositories.d"
+            {
+              echo '# 本次固件同批编译的 packages 源（由 workflow 注入）'
+              echo "$URL/targets/rtl9617c/generic/packages/packages.adb"
+            } > "$GITHUB_WORKSPACE/wrt/files/etc/apk/repositories.d/customfeeds.list"
+            echo "custom packages repo: $URL/targets/rtl9617c/generic/packages/packages.adb"
+          fi
+
+      - name: Configure
+        working-directory: wrt
+        env:
+          PT1570_BOARD: ${{ matrix.board }}
+          ASSETS: ${{ github.workspace }}
+          APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
+          APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
+        run: |
+          set -e
+          make defconfig
+          cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config
+          bash "$GITHUB_WORKSPACE/customize.sh"
+
+          # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
+          sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
+          grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config || \
+            echo "CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y" >> .config
+
+          # defconfig 会静默丢掉未被 profile 点名的包，照 pt1500-build.sh 跑两次并断言
+          make defconfig
+          for sym in tyfza1-pon-control luci-ssl uhttpd fitblk; do
+            if ! grep -q "^CONFIG_PACKAGE_${sym}=y$" .config; then
+              sed -i "/^# CONFIG_PACKAGE_${sym} is not set$/d; /^CONFIG_PACKAGE_${sym}=/d" .config
+              echo "CONFIG_PACKAGE_${sym}=y" >> .config
+              echo "  re-asserted $sym"
+            fi
+          done
+          make defconfig
+
+          echo "===== hard assertions ====="
+          grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config \
+            || { echo "ERROR: profile $PROFILE 未启用" >&2; exit 1; }
+          for sym in tyfza1-pon-control luci-ssl uhttpd fitblk; do
+            grep -q "^CONFIG_PACKAGE_${sym}=y$" .config \
+              || { echo "ERROR: $sym 二次 defconfig 后仍被丢弃" >&2; exit 1; }
+            echo "  OK   $sym"
+          done
+          grep -q '^# CONFIG_PACKAGE_uboot-envtools is not set$' .config \
+            || { echo "ERROR: uboot-envtools 必须关闭" >&2; exit 1; }
+          echo "  OK   uboot-envtools disabled"
+          grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
+            || { echo "ERROR: image/Makefile 缺少 SUPPORTED_DEVICES" >&2; exit 1; }
+          grep -q "$BOARD_NAME" target/linux/rtl9617c/base-files/lib/upgrade/platform.sh \
+            || { echo "ERROR: platform.sh 白名单缺少 $BOARD_NAME" >&2; exit 1; }
+          test -f "target/linux/rtl9617c/dts/${DTS}.dts" \
+            || { echo "ERROR: DTS 缺失" >&2; exit 1; }
+          echo "  OK   DTS=$DTS board_name=$BOARD_NAME"
+
+          if [ "${DTS_STATUS:-experimental}" = "verified" ]; then
+            ! grep -q 'UNVERIFIED' "target/linux/rtl9617c/dts/${DTS}.dts" \
+              || { echo "ERROR: dts_status=verified 但 DTS 仍带 UNVERIFIED 标记" >&2; exit 1; }
+            echo "  OK   DTS marked verified"
+          else
+            echo "  WARN DTS=experimental，产物禁止刷机 / 禁止发布 Release"
+          fi
+
+          echo "===== key config ====="
+          grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET)=' .config || true
+          echo "  =m packages: $(grep -c '^CONFIG_PACKAGE_.*=m$' .config || true)"
+          echo "--- files/etc/apk/repositories.d/distfeeds.list ---"
+          cat files/etc/apk/repositories.d/distfeeds.list
+          cp .config "$GITHUB_WORKSPACE/Config-final.txt"
+
+      - name: Run static preflight
+        if: ${{ inputs.test_only }}
+        env:
+          PT1570_BOARD: ${{ matrix.board }}
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/scripts/preflight.sh"
+
+      - name: Upload config (test_only)
+        if: ${{ inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pt1570-${{ matrix.board }}-config-${{ github.run_number }}
+          path: Config-final.txt
+          retention-days: 14
+
+      - name: Download sources
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          make package/base-files/clean >/dev/null 2>&1 || true
+          make download -j"$(nproc)"
+
+      - name: Compile
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: make -j"$(nproc)" || make -j1 V=s
+
+      - name: Refresh package index
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          make package/index
+          find bin/targets/rtl9617c/generic/packages bin/packages \
+            -name packages.adb -printf '%p %s bytes\n' 2>/dev/null | sort || true
+
+      - name: Collect firmware + matching packages
+        if: ${{ !inputs.test_only }}
+        env:
+          PUBLISH_PACKAGES: ${{ inputs.publish_packages }}
+          DTS_STATUS: ${{ inputs.dts_status }}
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/artifact"
+          mkdir -p "$OUT"
+          cd "$GITHUB_WORKSPACE/wrt"
+          echo "===== bin/targets/rtl9617c/generic ====="
+          ls -lh bin/targets/rtl9617c/generic/ | head -40
+
+          find bin/targets/rtl9617c/generic -maxdepth 1 -type f \
+            -name "*${PROFILE}*" ! -name "*.json" \
+            -exec cp -v {} "$OUT/" \;
+
+          ls "$OUT/"*sysupgrade.itb >/dev/null 2>&1 || {
+            echo "ERROR: 没有产出 ${PROFILE} 的 sysupgrade.itb" >&2; exit 1; }
+
+          cp .config "$OUT/Config-final.txt"
+          echo "$SOURCE_HASH" > "$OUT/source-commit.txt"
+          {
+            echo "board=$MODEL ($BOARD_NAME)"
+            echo "profile=$PROFILE"
+            echo "dts=$DTS"
+            echo "dts_status=${DTS_STATUS:-experimental}"
+            echo "source_ref=$SOURCE_REF"
+            echo "source_commit=$SOURCE_HASH"
+            echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
+            echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs)"
+            echo "bootloader=lyq1996/rtl9617c-uboot@refactor 2026.07-g9abafc0572b2 (pt1500-h10-2p5g_defconfig)"
+            echo "bootloader_fit_abi=yes (firmware_volume=fit, overlay_volume=rootfs_data, factory=8MiB static)"
+            echo "bootcmd_default=bootmenu -> menu_0 rtk_boot / menu_1 rtk_recovery"
+          } > "$OUT/BUILD_INFO.txt"
+
+          if [ "${DTS_STATUS:-experimental}" != "verified" ]; then
+            {
+              echo "DO NOT FLASH THIS IMAGE."
+              echo "The R10 DTS was statically ported from the real device FDT"
+              echo "(4xGE LAN, 12 LEDs, 3 buttons verified), but the resulting"
+              echo "firmware has NEVER been booted on a PT1570-R10. Web Failsafe"
+              echo "network reachability on this 4xGE board is also untested."
+              echo "Use it only to validate the build pipeline. Complete the"
+              echo "hardware checklist in the migration guide, remove the"
+              echo "UNVERIFIED marker, then rerun with dts_status=verified."
+            } > "$OUT/DO-NOT-FLASH-EXPERIMENTAL.txt"
+          fi
+
+          case "$PUBLISH_PACKAGES" in
+            false) DO_PACKAGES=0 ;;
+            *)     DO_PACKAGES=1 ;;
+          esac
+          if [ "$DO_PACKAGES" = "1" ]; then
+            ROOT="$GITHUB_WORKSPACE/pkgroot"
+            rm -rf "$ROOT"
+            mkdir -p "$ROOT/targets/rtl9617c/generic/packages" "$ROOT/packages"
+            cp -a bin/targets/rtl9617c/generic/packages/. \
+                  "$ROOT/targets/rtl9617c/generic/packages/" 2>/dev/null || true
+            if [ -d bin/packages ]; then cp -a bin/packages/. "$ROOT/packages/"; fi
+
+            KMOD_N=$(find "$ROOT" -type f -name 'kmod-*.apk' | wc -l)
+            APK_N=$(find "$ROOT" -type f -name '*.apk' | wc -l)
+            IDX_N=$(find "$ROOT" -type f -name 'packages.adb' | wc -l)
+            echo "===== matching packages: kmod=$KMOD_N apk=$APK_N index=$IDX_N ====="
+            test "$KMOD_N" -gt 0 || { echo "ERROR: 没有 kmod-*.apk" >&2; exit 1; }
+            test "$APK_N"  -gt 0 || { echo "ERROR: 没有 .apk" >&2; exit 1; }
+            test "$IDX_N"  -gt 0 || { echo "ERROR: 没有 packages.adb" >&2; exit 1; }
+
+            if [ -f public-key.pem ]; then
+              cp public-key.pem "$ROOT/public-key.pem"
+            else
+              echo "WARN: public-key.pem 缺失，跨批次装包需自行导公钥" >&2
+            fi
+            {
+              echo "# 同批 packages（源码 $SOURCE_REF @ $SOURCE_HASH，架构 aarch64_cortex-a55）"
+              echo "# 解包到静态站点根 BASE 后按需写入 /etc/apk/repositories.d/customfeeds.list"
+              echo "BASE/targets/rtl9617c/generic/packages/packages.adb"
+              find "$ROOT/packages" -name packages.adb -printf '%P\n' 2>/dev/null \
+                | sort | sed 's|^|BASE/packages/|' || true
+            } > "$ROOT/apk-repos.txt"
+            {
+              echo "source_ref=$SOURCE_REF"
+              echo "source_commit=$SOURCE_HASH"
+              echo "target=rtl9617c/generic"
+              echo "profile=$PROFILE"
+              echo "arch_packages=aarch64_cortex-a55"
+              echo "linux=$(grep -m1 '^CONFIG_LINUX_VERSION=' .config || echo unknown)"
+              echo "kmods=$KMOD_N apks=$APK_N indexes=$IDX_N"
+            } > "$ROOT/BUILD_INFO.txt"
+
+            cd "$GITHUB_WORKSPACE"
+            tar --zstd -cf "artifact/packages-${{ matrix.board }}-${{ github.run_number }}.tar.zst" \
+                -C "$ROOT" .
+            ls -lh "artifact/packages-${{ matrix.board }}-${{ github.run_number }}.tar.zst"
+          fi
+
+          cd "$OUT"
+          find . -maxdepth 1 -type f ! -name sha256sums.txt -printf '%f\n' \
+            | sort | xargs sha256sum > sha256sums.txt
+          echo "===== artifact ====="
+          ls -lh
+
+      - name: Upload firmware
+        if: ${{ !inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pt1570-${{ matrix.board }}-fit-${{ github.run_number }}
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: ${{ !inputs.test_only && inputs.create_release && inputs.dts_status == 'verified' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: pt1570-${{ matrix.board }}-fit-${{ github.run_number }}
+          name: PonWRT PT1570-${{ matrix.board }} FIT (${{ github.run_number }})
+          files: artifact/*
+          body: |
+            源码 lyq1996/rtl9617c-openwrt `${{ env.SOURCE_REF }}` @ `${{ env.SOURCE_HASH }}`
+            机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`
+            ABI：factory(8 MiB static) + fit + rootfs_data，产物 sysupgrade.itb
+            配置见 Config-final.txt；校验见 sha256sums.txt
+            同批 packages 见 `packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
+            ⚠️ 刷机前必须已完成 U-Boot FIT ABI 确认、factory 导入与卷表重建，详见方案文档。
+            ⚠️ 本仓库当前为 R10-only 范围，产物仅适用于 PT1570-R10。

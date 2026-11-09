@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: GPL-2.0-only
+//
+// ⛔ DORMANT / 2026-11-09 起 H10 暂缓：本文件不参与任何构建。
+//    用户决定先只验证 PT1570-R10。workflow matrix 固定 [r10]，
+//    apply-board.sh 默认拒绝 h10（需 PT1570_ALLOW_H10=1）。
+//    恢复前必须完成 H10 真机采集（网口版本、FDT、factory、env）。
+//
+// UNVERIFIED — DO NOT FLASH. 这是「可编译骨架」，不是已验证的板级 DTS。
+//
+// PT1570-H10 目前只有 U-Boot 侧 DTS（qwe-qaq/rtl9617c-uboot@1570
+// arch/arm/dts/rtl9617c-pt1570-h10.dts），OpenWrt 侧没有对应板级文件。
+// 硬件事实（U-Boot 板级文档 doc/board/yhup/pt1570_h10.rst）：
+//   RTL9617C / 512 MiB DRAM / 256 MiB SPI-NAND
+//   四个 GE 口，各接一颗外置 RTL8211 PHY，MDIO 地址 1..4
+//   Reset 键 bank0 bit8，低有效
+//   LED：LED_EPHY0..3 = bank0 bit4/3/1/0（低有效），LED_PWR_G = bit11（高有效）
+//        另有 PON/LOS/PPP/FXS/USB/WPS 灯
+//
+// 为什么从 rtl9617c-tyfza1-2p5g.dts 派生而不是 pt1500-h10-2p5g.dts：
+//   rtl9617c-tyfza1.dtsi 的 &mdio 正好定义 phy0@1..phy3@4、ni0 的
+//   realtek,lan-phys = <&phy0 &phy1 &phy2 &phy3>，与 H10 的四个独立 GE PHY
+//   一致；而 pt1500-h10-2p5g.dts 描述的是 RTL8367SB switch + 2.5G 口，
+//   且注释明确「switch bring-up lands with its own driver」，直接复用会没网。
+//
+// FIT ABI 部分（chosen.rootdisk / ubi-volume-fit / factory nvmem-layout）
+// 由 rtl9617c-tyfza1.dtsi 提供，本文件只负责硬件差异。
+//
+// 待真机核对/移植：
+//   1. 删除 2.5G 专属的 &mdio phy4@7 与 &ni0 的 HSGMII 覆盖，改成四个 GE PHY。
+//   2. 删除/禁用 pcie0 / pcie1（H10 无 WiFi endpoint）；确认 USB VBUS GPIO
+//      （U-Boot 文档：与 PT1500 一致，bank4 pin13 / global 141）。
+//   3. 用 U-Boot DTS 的 GPIO 表覆盖 leds / gpio-keys / led-button 节点。
+//   4. 真机 `ip -br link` 确认 netdev 名称，再定 files/etc/uci-defaults 的 LAN。
+//   5. 确认 PON 类型（XPON/XGPON）与 bosa 校准偏移是否与 tyfza1 dtsi 相同。
+//
+// 完成核对并真机验证后删除 UNVERIFIED 标记，用 dts_status=verified 重编。
+//
+// 注意：不要在此文件写 /dts-v1/；被 include 的 .dts 已经带了该标记。
+
+#include "rtl9617c-tyfza1-2p5g.dts"
+
+/ {
+	model = "Youhua PT1570-H10 (RTL9617C, 4xGE, FIT ABI)";
+	compatible = "youhua,pt1570-h10", "realtek,rtl9617c";
+};
+
+// TODO(UNVERIFIED): 四个独立 RTL8211 PHY（MDIO 1..4），替换 2.5G 版映射。
+// 真机确认后取消注释并修正极性/中断：
+// &mdio {
+//	/delete-node/ ethernet-phy@7;
+//	external-phy-enable-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+// };
+// &ni0 {
+//	realtek,lan-phys = <&phy0 &phy1 &phy2 &phy3>;
+//	/delete-property/ phys;
+//	/delete-property/ phy-names;
+// };
+//
+// TODO(UNVERIFIED): 按 U-Boot 板级文档的 GPIO 表覆盖 leds / gpio-keys。

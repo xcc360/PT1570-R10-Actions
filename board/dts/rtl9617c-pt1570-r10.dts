@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: GPL-2.0-only
+//
+// UNVERIFIED — DO NOT FLASH. 已按真机 FDT 完成静态移植，但尚未在新固件上启动验证。
+//
+// FDT_VERIFIED (2026-11-09)：以下字段来自 PT1570-R10 真机 /proc/device-tree
+// 只读导出（pt1570-ci-research/r10-fdt-dump-20261109.txt，447 个属性），
+// 并与 dreamtekcat/PonWRT-TYFZA1@pt1570 的 port/overlay DTS 交叉核对。
+//
+// FIT ABI 部分完全由上游 rtl9617c-tyfza1.dtsi 提供，本文件不重复：
+//   chosen.rootdisk = <&ubi_rootdisk>
+//   ubi-volume-fit      { volname = "fit"; }
+//   ubi-volume-factory  { volname = "factory"; nvmem-layout { ... }; }
+//   分区 ubi_device <0x340000 0xf5c0000> —— 与真机 FDT 实测一致。
+//
+// ---- 已实证一致（由 include 的上游 4GE 定义提供，无需覆盖） ----
+//   * 4×GE：realtek,lan-phys 是 4 个 phandle，指向 mdio 的 phy@1..phy@4
+//     （reg 1/2/3/4，内部 GPHY）；真机 dmesg 也报 PHY 001ccac4、lan1..lan4。
+//   * 12 个 LED 的 GPIO 与极性逐项一致（L=低有效 / H=高有效）：
+//       internet 2L, los 10L, usb0 7H, pon 9L, power 11H, phone 12H,
+//       lan0 4L, lan1 3L, lan2 1L, lan3 0L, usb1 6L, wps 5H
+//   * flash 分区表 5 个分区与真机 /proc/mtd 一致。
+//   * chosen / stdout-path、PON、PCIe0/PCIe1、USB、BOSA 节点由 dtsi 提供。
+//
+// ---- 已实证不一致、本文件覆盖 ----
+//   * 按键：上游 dtsi 只有 lights-toggle(gpio 67)；真机有三键，见下方节点。
+//
+// ⛔ 不得改用 2.5G 板定义：它会引入一颗外置 2.5G PHY、把网口映射改成
+//    NI 端口 0/1/2/4，并换成另一套 LED GPIO。R10 是 4×GE，误用会直接
+//    导致 LAN 不通。这是 2026-11-09 真机核对后修正的实质缺陷。
+//
+// ---- 仍待验证（因此保留 UNVERIFIED） ----
+//   1. 本 DTS 编译出的固件尚未在 R10 上启动过；
+//   2. U-Boot Web Failsafe 网口在 R10（4×GE）上未实测；
+//   3. PON / PCIe0(10ec:c852) / PCIe1(10ec:0192) / LED / 按键需开机后复测；
+//   4. FIT ABI 的 bootargs 由 FIT/DTS 提供，旧 env 里的 loglevel=4 与
+//      启动提速设置不会自动继承，需要在新固件里重做。
+//
+// 完成上述真机启动验证、删除 UNVERIFIED 标记后，才允许以
+// dts_status=verified 编译并发布 Release。
+//
+// 注意：不要在此文件写 /dts-v1/；被 include 的 .dts 已经带了该标记。
+
+#include "rtl9617c-tyfza1-4ge.dts"
+
+/ {
+	model = "Youhua PT1570-R10 (RTL9617C, 4xGE, FIT ABI)";
+	compatible = "youhua,pt1570-r10", "tianyi,tyfza1-4ge", "realtek,rtl9617c";
+
+	// 覆盖上游 dtsi 的 led-button：修正 lights 引脚，补齐 reset / wifi。
+	// DTC 会合并同名节点，同名子节点按后写覆盖。
+	// 真机 FDT 实测（gpios 三元组 phandle / pin / flags）：
+	//   lights_toggle  pin=103 flags=1  linux,code=0x21e
+	//   reset          pin=8   flags=1  linux,code=0x198
+	//   rfkill         pin=99  flags=1  linux,code=0xf7
+	led-button {
+		lights-toggle {
+			gpios = <&gpio0 103 GPIO_ACTIVE_LOW>;
+		};
+
+		btn-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+
+		btn-wifi {
+			label = "rfkill";
+			linux,code = <KEY_RFKILL>;
+			gpios = <&gpio0 99 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+};

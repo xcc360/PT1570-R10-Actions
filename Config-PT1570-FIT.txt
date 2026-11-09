@@ -1,0 +1,41 @@
+# 追加到 .config 的通用配置。
+# 2026-11-09 起范围 R10-only；H10 暂缓，不要在此加入 H10 专属符号。
+# 机型相关的 CONFIG_TARGET_*_DEVICE_<profile>=y 由 customize.sh 按 PT1570_BOARD 写入。
+# 注意：本文件后面还会执行两次 make defconfig，凡是被 profile 依赖裁掉的包
+#       都会在 workflow 的 Configure 步骤里被重新断言（tyfza1-pon-control / luci-ssl / uhttpd / fitblk）。
+
+# ---- target ----
+CONFIG_TARGET_rtl9617c=y
+CONFIG_TARGET_rtl9617c_generic=y
+CONFIG_TARGET_BOARD="rtl9617c"
+CONFIG_TARGET_SUBTARGET="generic"
+CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a55"
+
+# ---- FIT ABI 必需 ----
+# fitblk 提供 /lib/upgrade/fit.sh；platform.sh 用 CI_KERNPART=fit + nand_do_upgrade
+CONFIG_PACKAGE_fitblk=y
+# 该 target 的 host fw_printenv 会挂，pt1500-build.sh 已验证必须关掉
+# CONFIG_PACKAGE_uboot-envtools is not set
+
+# ---- PON / 平台 ----
+CONFIG_PACKAGE_tyfza1-pon-control=y
+CONFIG_PACKAGE_luci-app-tyfza1-pon=y
+CONFIG_PACKAGE_ubi-utils=y
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_block-mount=y
+
+# ---- LuCI / 网络 ----
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_dnsmasq=y
+
+# ---- 时区 UTC+8 ----
+CONFIG_PACKAGE_zoneinfo-core=y
+CONFIG_PACKAGE_zoneinfo-asia=y
+
+# ---- 可选：额外软件包写在仓库根 Config-EXTRA.txt，customize.sh 会自动追加 ----

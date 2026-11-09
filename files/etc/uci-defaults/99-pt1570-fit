@@ -1,0 +1,80 @@
+#!/bin/sh
+# 首次开机 uci-defaults：出厂默认设置兜底 + FIT ABI 机型接线修正。
+# 2026-11-09 起当前范围为 R10-only；H10 分支保留但标记为 DORMANT。
+# 执行后系统自动删除本脚本。只改"仍是出厂默认值"的项，不覆盖用户自定义配置。
+# 把 FORCE 改成 1 可强制覆盖时区与主机名。
+#
+# 不写 PON SN / MAC / LOID / WiFi 校准：这些在 8 MiB factory 静态卷里，
+# 由 DTS 的 nvmem-layout 按固定偏移读取，属于设备数据，绝不进固件。
+
+FORCE=0
+TZ_NEW='<+08>-8'
+ZONE_NEW='Asia/Shanghai'
+
+case "$(board_name)" in
+  youhua,pt1570-r10) HOST_NEW='PT1570-R10' ;;
+  youhua,pt1570-h10) HOST_NEW='PT1570-H10' ;;
+  *) HOST_NEW='' ;;
+esac
+
+# ---- 时区 / 主机名 / NTP（沿用 HG5585F-CT 已验证的"不覆盖用户值"策略） ----
+cur_tz=$(uci -q get system.@system[0].timezone || true)
+cur_host=$(uci -q get system.@system[0].hostname || true)
+
+apply_tz=0
+case "$cur_tz" in
+  ''|GMT0|UTC|CST-8|'<+08>-8') apply_tz=1 ;;
+esac
+[ "$FORCE" = "1" ] && apply_tz=1
+if [ "$apply_tz" = "1" ]; then
+  uci -q set system.@system[0].timezone="$TZ_NEW"
+  uci -q set system.@system[0].zonename="$ZONE_NEW"
+fi
+
+if [ -n "$HOST_NEW" ]; then
+  case "$cur_host" in
+    ''|ponwrt|OpenWrt|ImmortalWrt) uci -q set system.@system[0].hostname="$HOST_NEW" ;;
+  esac
+  [ "$FORCE" = "1" ] && uci -q set system.@system[0].hostname="$HOST_NEW"
+fi
+
+if uci -q get system.ntp.server | grep -qE 'time\.apple\.com|time1\.google\.com|time\.cloudflare\.com|pool\.ntp\.org'; then
+  uci -q delete system.ntp.server
+  uci -q set system.ntp.enabled='1'
+  uci -q set system.ntp.enable_server='0'
+  for s in ntp.aliyun.com time1.cloud.tencent.com ntp.ntsc.ac.cn cn.pool.ntp.org; do
+    uci -q add_list system.ntp.server="$s"
+  done
+fi
+uci -q commit system
+
+# ---- FIT ABI：关闭 anon_mount ----
+# 上游 95-pt1500-storage 只对 pt1500 的 board_name 生效。FIT ABI 下只有
+# fit（固件）与 rootfs_data（overlay）归 OpenWrt 所有；block-mount 的
+# anon_mount 可能把残留的原厂 UBIFS 卷以 rw 挂上并重放日志，必须关掉。
+case "$(board_name)" in
+  youhua,pt1570-r10|youhua,pt1570-h10)
+    [ "$(uci -q get fstab.@global[0].anon_mount)" = 0 ] || {
+      uci -q set fstab.@global[0].anon_mount='0'
+      uci -q commit fstab
+    }
+    ;;
+esac
+
+# ---- LAN 接线（新机型在 02_network 里没有 case，会落到默认分支） ----
+# ✅ 2026-11-09 R10 真机 FDT 实证：`realtek,lan-phys = <&phy0 &phy1 &phy2 &phy3>`
+#    （4×GE 内部 GPHY，MDIO reg 1..4），netdev 为 lan1..lan4；PON 侧有
+#    pon0 / pon-omci / pon-oam0 / pon0.1101，WAN 走 pppoe-wan。
+#    默认分支的 lan1..lan4 + WAN=pon0 与实测一致，不需要额外补写。
+#    新固件真机启动后仍需用 `ip -br link` 复核一次（DTS 仍带 UNVERIFIED）。
+# H10 分支（DORMANT，暂缓）：设备未上线，无真机数据，不要启用。
+case "$(board_name)" in
+  youhua,pt1570-h10)
+    # TODO(H10-DORMANT): 真机采集后按实际 netdev 名称补 ucidef_set_interfaces_lan_wan。
+    ;;
+esac
+
+# 若通过 files/ 注入了自定义 nft 片段，开机后请执行一次 fw4 check
+#（本机历史上 /etc/nftables.d/udp2raw-ttl.nft 与 mangle_postrouting 冲突导致整体无 NAT）。
+
+exit 0
