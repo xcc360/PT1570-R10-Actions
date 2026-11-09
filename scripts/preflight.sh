@@ -16,7 +16,7 @@ need() { test -f "$1" && ok "exists ${1#./}" || bad "missing $1"; }
 echo "=== 1. 资产齐全（H10 为 DORMANT 留档，不参与构建） ==="
 for f in \
   build-pt1570-fit.yml .github/workflows/build-pt1570-fit.yml \
-  Config-PT1570-FIT.txt customize.sh \
+  Config-PT1570-FIT.txt Config-EXTRA.txt customize.sh \
   files/etc/uci-defaults/99-pt1570-fit \
   board/devices/pt1570-r10.mk.inc board/devices/pt1570-h10.mk.inc \
   board/dts/rtl9617c-pt1570-r10.dts board/dts/rtl9617c-pt1570-h10.dts \
@@ -144,6 +144,17 @@ done
 for pin in 8 99 103; do
   grep -q "gpio0 $pin GPIO_ACTIVE_LOW" "$DTS" && ok "按键 GPIO$pin 与真机一致" || bad "按键 GPIO$pin 缺失或不符"
 done
+
+echo "=== 9. 软件包基线（沿用 HG5585F-CT 6 包） ==="
+EXTRA=Config-EXTRA.txt
+for p in tailscale luci-app-tailscale-community luci-i18n-tailscale-community-zh-cn \
+         vlmcsd luci-app-vlmcsd luci-i18n-vlmcsd-zh-cn; do
+  grep -q "^CONFIG_PACKAGE_${p}=y$" "$EXTRA" && ok "基线含 $p" || bad "基线缺 $p"
+done
+grep -q 'immortalwrt/packages.git' "$WF" && ok "workflow 会补 vlmcsd 包源" || bad "缺 vlmcsd 包注入"
+grep -q 'immortalwrt/luci.git' "$WF" && ok "workflow 会补 luci-app-vlmcsd 包源" || bad "缺 luci-app-vlmcsd 包注入"
+grep -q 'user-requested packages' "$WF" && ok "Configure 有 6 包硬断言" || bad "Configure 缺 6 包硬断言"
+grep -q 'Config-EXTRA.txt' customize.sh && ok "customize.sh 会追加基线" || bad "customize.sh 未追加基线"
 
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
