@@ -156,6 +156,11 @@ grep -q 'immortalwrt/luci.git' "$WF" && ok "workflow 会补 luci-app-vlmcsd 包�
 grep -q 'user-requested packages' "$WF" && ok "Configure 有 6 包硬断言" || bad "Configure 缺 6 包硬断言"
 grep -q 'Config-EXTRA.txt' customize.sh && ok "customize.sh 会追加基线" || bad "customize.sh 未追加基线"
 
+echo "=== 10. 编译失败可诊断性 ==="
+grep -q 'build.log' "$WF" && ok "编译日志落盘" || bad "编译日志未落盘"
+grep -q '::error::' "$WF" && ok "失败错误写成 annotation" || bad "失败错误未写 annotation"
+grep -q 'Upload build log (always)' "$WF" && ok "失败也上传日志" || bad "缺 always 日志上传"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"
