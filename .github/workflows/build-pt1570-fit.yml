@@ -362,7 +362,39 @@ jobs:
       - name: Compile
         if: ${{ !inputs.test_only }}
         working-directory: wrt
-        run: make -j"$(nproc)" || make -j1 V=s
+        run: |
+          set -o pipefail
+          LOG="$GITHUB_WORKSPACE/build.log"
+          : > "$LOG"
+          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+            echo "PARALLEL_BUILD_OK=True"
+          else
+            echo "::warning::并行编译失败，改用 -j1 V=s 重试并显示详细日志"
+            if make -j1 V=s 2>&1 | tee -a "$LOG"; then
+              echo "SERIAL_BUILD_OK=True"
+            else
+              echo "::group::BUILD FAILED - last 120 lines"
+              tail -n 120 "$LOG"
+              echo "::endgroup::"
+              # 把关键错误行写成 annotation：匿名也能通过 check-runs annotations 读到，
+              # 不必依赖需要管理员权限的日志下载接口。每个 step 最多 10 条，取最后 8 条。
+              grep -E 'Error [0-9]|^make(\[[0-9]+\])?: \*\*\*|error:|No such file|not found|No space left|Killed|undefined reference|FATAL|FAIL' "$LOG" \
+                | tail -n 8 | tr -d '\r' | while IFS= read -r l; do
+                    echo "::error::${l//%/%25}"
+                  done
+              echo "BUILD_FAILED=True" >> "$GITHUB_ENV"
+              exit 1
+            fi
+          fi
+
+      - name: Upload build log (always)
+        if: ${{ always() && !inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pt1570-${{ matrix.board }}-build-log-${{ github.run_number }}
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Refresh package index
         if: ${{ !inputs.test_only }}
