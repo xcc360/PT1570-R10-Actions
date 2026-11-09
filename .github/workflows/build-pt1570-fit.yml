@@ -188,7 +188,35 @@ jobs:
         working-directory: wrt
         run: |
           ./scripts/feeds update -a
+
+          # ---- 补齐官方 feed 里缺失的 vlmcsd / luci-app-vlmcsd ----
+          # 本源码树 feeds.conf.default 用官方 git.openwrt.org：
+          #   packages/net/tailscale 与 luci/applications/luci-app-tailscale-community 都有，
+          #   但 vlmcsd 与 luci-app-vlmcsd 只存在于 immortalwrt 的 feeds。
+          # 只把这两个包目录注入已拉好的官方 feed，再统一 install -a；
+          # 不追加 src-git，避免 immortalwrt 的同名包覆盖官方版本。
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/immortalwrt/packages.git /tmp/iw-packages
+          git -C /tmp/iw-packages sparse-checkout set net/vlmcsd
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/immortalwrt/luci.git /tmp/iw-luci
+          git -C /tmp/iw-luci sparse-checkout set applications/luci-app-vlmcsd
+          test -f /tmp/iw-packages/net/vlmcsd/Makefile
+          test -f /tmp/iw-luci/applications/luci-app-vlmcsd/Makefile
+          test -f /tmp/iw-luci/applications/luci-app-vlmcsd/po/zh_Hans/vlmcsd.po
+          cp -a /tmp/iw-packages/net/vlmcsd feeds/packages/net/vlmcsd
+          cp -a /tmp/iw-luci/applications/luci-app-vlmcsd \
+                feeds/luci/applications/luci-app-vlmcsd
+          # 该 Makefile 写的是 include ../../luci.mk，放在 feeds/luci/applications/
+          # 下正好解析为 feeds/luci/luci.mk，不需要改写路径。
+          echo "injected extra feed packages: vlmcsd luci-app-vlmcsd"
+
           ./scripts/feeds install -a
+          for p in vlmcsd luci-app-vlmcsd; do
+            find package/feeds -maxdepth 2 -name "$p" | grep -q . \
+              || { echo "ERROR: feeds install 未识别 $p" >&2; exit 1; }
+            echo "  OK   feed package $p"
+          done
           # rpcd 会拒绝 world-writable 的 ucode handler；Windows/9p 同步过的 feed 必须收敛权限
           chmod -R go-w feeds/luci feeds/packages 2>/dev/null || true
           find feeds/luci -path '*/root/usr/share/rpcd/ucode/*' -type f -exec chmod 0755 {} + 2>/dev/null || true
@@ -252,6 +280,27 @@ jobs:
             fi
           done
           make defconfig
+
+          # 用户软件包基线（Config-EXTRA.txt，沿用 HG5585F-CT 那 6 个包）：
+          # customize.sh 已在前面追加，但两次 make defconfig 可能把未被 profile
+          # 点名的包降级/丢弃；这里统一重新断言一次再检查，缺失即失败。
+          echo "===== user-requested packages (HG5585F-CT baseline) ====="
+          USER_PKGS="tailscale luci-app-tailscale-community \
+                     luci-i18n-tailscale-community-zh-cn vlmcsd \
+                     luci-app-vlmcsd luci-i18n-vlmcsd-zh-cn"
+          for p in $USER_PKGS; do
+            if ! grep -q "^CONFIG_PACKAGE_${p}=y$" .config; then
+              sed -i "/^# CONFIG_PACKAGE_${p} is not set$/d; /^CONFIG_PACKAGE_${p}=/d" .config
+              echo "CONFIG_PACKAGE_${p}=y" >> .config
+              echo "  re-asserted $p"
+            fi
+          done
+          make defconfig
+          for p in $USER_PKGS; do
+            grep -q "^CONFIG_PACKAGE_${p}=y$" .config \
+              || { echo "ERROR: $p 未启用（feed 里找不到该包，或依赖不满足被降级）" >&2; exit 1; }
+            echo "  OK   $p"
+          done
 
           echo "===== hard assertions ====="
           grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config \
