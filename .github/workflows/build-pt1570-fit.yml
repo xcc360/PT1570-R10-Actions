@@ -187,36 +187,43 @@ jobs:
       - name: Update and install feeds
         working-directory: wrt
         run: |
+          LOG="$GITHUB_WORKSPACE/step-feeds.log"
+          : > "$LOG"
+          # 全量输出同时落盘；失败时 trap 打印尾部并把关键错误写成 annotation，
+          # 无需仓库管理员权限即可从 check-runs annotations 读到具体原因。
+          exec > >(tee -a "$LOG") 2>&1
+          trap '
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              sleep 1
+              echo "::group::FEEDS STEP FAILED (exit $rc) - last 80 lines"
+              tail -n 80 "$LOG"
+              echo "::endgroup::"
+              last_step=$(grep "^STEP:" "$LOG" | tail -n 1)
+              echo "::error::失败前最后进度: ${last_step:-未知}"
+              grep -E "fatal:|error:|Error [0-9]|ERROR|No such file|not found|Failed|failed|denied|timed out|refusing" "$LOG" \
+                | grep -v "::error::" | tail -n 6 | tr -d "\r" | while IFS= read -r l; do
+                    echo "::error::${l//%/%25}"
+                  done
+              echo "::error::Update and install feeds 失败 (exit $rc)，见上方日志与 build-log artifact"
+            fi
+          ' EXIT
+
+          echo "STEP: feeds update -a"
           ./scripts/feeds update -a
 
-          # ---- 补齐官方 feed 里缺失的 vlmcsd / luci-app-vlmcsd ----
-          # 本源码树 feeds.conf.default 用官方 git.openwrt.org：
-          #   packages/net/tailscale 与 luci/applications/luci-app-tailscale-community 都有，
-          #   但 vlmcsd 与 luci-app-vlmcsd 只存在于 immortalwrt 的 feeds。
-          # 只把这两个包目录注入已拉好的官方 feed，再统一 install -a；
-          # 不追加 src-git，避免 immortalwrt 的同名包覆盖官方版本。
-          git clone --depth=1 --filter=blob:none --sparse \
-            https://github.com/immortalwrt/packages.git /tmp/iw-packages
-          git -C /tmp/iw-packages sparse-checkout set net/vlmcsd
-          git clone --depth=1 --filter=blob:none --sparse \
-            https://github.com/immortalwrt/luci.git /tmp/iw-luci
-          git -C /tmp/iw-luci sparse-checkout set applications/luci-app-vlmcsd
-          test -f /tmp/iw-packages/net/vlmcsd/Makefile
-          test -f /tmp/iw-luci/applications/luci-app-vlmcsd/Makefile
-          test -f /tmp/iw-luci/applications/luci-app-vlmcsd/po/zh_Hans/vlmcsd.po
-          cp -a /tmp/iw-packages/net/vlmcsd feeds/packages/net/vlmcsd
-          cp -a /tmp/iw-luci/applications/luci-app-vlmcsd \
-                feeds/luci/applications/luci-app-vlmcsd
-          # 该 Makefile 写的是 include ../../luci.mk，放在 feeds/luci/applications/
-          # 下正好解析为 feeds/luci/luci.mk，不需要改写路径。
-          echo "injected extra feed packages: vlmcsd luci-app-vlmcsd"
+          # vlmcsd / luci-app-vlmcsd 已于 2026-11-10 从 R10 基线移除（用户确认非必需）。
+          # 原因：这两个包只在 immortalwrt feeds，而本源码树 feeds.conf.default 指向
+          # 官方 git.openwrt.org。此前用 sparse clone 把包目录注入官方 feed，但
+          # `feeds update -a` 生成的 feeds/*.index 在注入之前，`feeds install -a`
+          # 依据索引工作，导致 run #4 报 "feeds install 未识别 vlmcsd" 并失败。
+          # 现在彻底移除整段注入：少两次大仓库 clone，消除索引时序依赖。
+          # 若以后确实要加回：注入后必须先 ./scripts/feeds update -i -a 重建索引，
+          # 再 ./scripts/feeds install -a，并重新验证 Configure 的包硬断言。
 
+          echo "STEP: feeds install -a"
           ./scripts/feeds install -a
-          for p in vlmcsd luci-app-vlmcsd; do
-            find package/feeds -maxdepth 2 -name "$p" | grep -q . \
-              || { echo "ERROR: feeds install 未识别 $p" >&2; exit 1; }
-            echo "  OK   feed package $p"
-          done
+          echo "STEP: fix feed file permissions"
           # rpcd 会拒绝 world-writable 的 ucode handler；Windows/9p 同步过的 feed 必须收敛权限
           chmod -R go-w feeds/luci feeds/packages 2>/dev/null || true
           find feeds/luci -path '*/root/usr/share/rpcd/ucode/*' -type f -exec chmod 0755 {} + 2>/dev/null || true
@@ -281,13 +288,12 @@ jobs:
           done
           make defconfig
 
-          # 用户软件包基线（Config-EXTRA.txt，沿用 HG5585F-CT 那 6 个包）：
-          # customize.sh 已在前面追加，但两次 make defconfig 可能把未被 profile
-          # 点名的包降级/丢弃；这里统一重新断言一次再检查，缺失即失败。
-          echo "===== user-requested packages (HG5585F-CT baseline) ====="
+          # 用户软件包基线（Config-EXTRA.txt，tailscale 三件套；vlmcsd 已按用户
+          # 要求从 R10 移除）：customize.sh 已在前面追加，但两次 make defconfig
+          # 可能把未被 profile 点名的包降级/丢弃；这里统一重新断言一次再检查。
+          echo "===== user-requested packages (tailscale baseline) ====="
           USER_PKGS="tailscale luci-app-tailscale-community \
-                     luci-i18n-tailscale-community-zh-cn vlmcsd \
-                     luci-app-vlmcsd luci-i18n-vlmcsd-zh-cn"
+                     luci-i18n-tailscale-community-zh-cn"
           for p in $USER_PKGS; do
             if ! grep -q "^CONFIG_PACKAGE_${p}=y$" .config; then
               sed -i "/^# CONFIG_PACKAGE_${p} is not set$/d; /^CONFIG_PACKAGE_${p}=/d" .config
@@ -388,11 +394,13 @@ jobs:
           fi
 
       - name: Upload build log (always)
-        if: ${{ always() && !inputs.test_only }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
           name: pt1570-${{ matrix.board }}-build-log-${{ github.run_number }}
-          path: build.log
+          path: |
+            build.log
+            step-feeds.log
           if-no-files-found: warn
           retention-days: 30
 

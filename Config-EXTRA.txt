@@ -1,30 +1,25 @@
-# 用户软件包基线：沿用 HG5585F-CT 那 6 个包
+# 用户软件包基线（PT1570-R10）：tailscale 三件套
 # 由 customize.sh 第 5 步自动追加到 .config；workflow 的 Configure 步骤会在
-# 最终 make defconfig 之后硬断言这 6 个包全部 =y，缺失即失败，
-# 避免编出"看似成功但少了插件"的固件。
+# 最终 make defconfig 之后硬断言这 3 个包全部 =y，缺失即失败，
+# 避免编出「看似成功但少了插件」的固件。
 #
-# ⚠️ 与 HG5585F-CT 的关键差异（2026-11-09 核实）：
-#    HG5585F-CT 用 pbs05/ponwrt，feeds 是 immortalwrt/packages + immortalwrt/luci，
-#    6 个包全都现成。本仓库用 lyq1996/rtl9617c-openwrt，feeds.conf.default
-#    指向官方 git.openwrt.org：
-#      ✅ 官方已有：tailscale、luci-app-tailscale-community、其 zh-cn i18n
-#      ❌ 官方没有：vlmcsd、luci-app-vlmcsd、其 zh-cn i18n
-#    workflow 的 "Update and install feeds" 会从 immortalwrt 上游只取这两个
-#    包目录，注入已拉取的官方 feeds（不追加 src-git、不让同名包覆盖官方版本），
-#    再 feeds install -a 统一扫描。请勿删除该步骤，否则下面 3 个 =y 会被
-#    make defconfig 静默丢弃，并触发 Configure 的 6 包硬断言失败。
+# 2026-11-10 调整：原计划沿用 HG5585F-CT 的 6 个包，但 vlmcsd /
+# luci-app-vlmcsd / luci-i18n-vlmcsd-zh-cn 只存在于 immortalwrt feeds，
+# 本仓库源码树 lyq1996/rtl9617c-openwrt 用的是官方 git.openwrt.org feeds。
+# 曾尝试 sparse clone 注入官方 feed：feeds update -a 生成的 feeds/*.index
+# 在注入之前，而 feeds install -a 依据索引工作，结果 run #4 报
+# 「feeds install 未识别 vlmcsd」失败。用户确认 R10 上 vlmcsd 非必需，
+# 故移除这 3 个包及整段注入逻辑，消除外部 clone 与索引时序依赖。
+#
+# 官方 feed 中已确认存在：tailscale、luci-app-tailscale-community，
+# 且后者有 po/zh_Hans，可生成 zh-cn i18n 包。
 
 # ---- tailscale ----
 CONFIG_PACKAGE_tailscale=y
 CONFIG_PACKAGE_luci-app-tailscale-community=y
 CONFIG_PACKAGE_luci-i18n-tailscale-community-zh-cn=y
 
-# ---- vlmcsd (KMS) ----
-CONFIG_PACKAGE_vlmcsd=y
-CONFIG_PACKAGE_luci-app-vlmcsd=y
-CONFIG_PACKAGE_luci-i18n-vlmcsd-zh-cn=y
-
-# ---- 6 包正常工作所必需的配套 ----
+# ---- 配套 ----
 # tailscale Makefile: DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +kmod-tun
 CONFIG_PACKAGE_kmod-tun=y
 # 让 luci.mk 生成 zh-cn 的 luci-i18n-* 包。若该符号在本源码树不存在，
@@ -33,3 +28,7 @@ CONFIG_LUCI_LANG_zh_Hans=y
 
 # 可选：LuCI 基础界面中文化（HG5585F-CT 有启用，本仓库默认不启用）
 # CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+#
+# 若以后要恢复 vlmcsd（KMS）：需同时加回 3 行 CONFIG_PACKAGE_*，
+# 并在 workflow 注入包目录后执行 ./scripts/feeds update -i -a 重建索引，
+# 再 ./scripts/feeds install -a，最后把 3 个包补进 Configure 的 USER_PKGS。

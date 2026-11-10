@@ -145,21 +145,26 @@ for pin in 8 99 103; do
   grep -q "gpio0 $pin GPIO_ACTIVE_LOW" "$DTS" && ok "按键 GPIO$pin 与真机一致" || bad "按键 GPIO$pin 缺失或不符"
 done
 
-echo "=== 9. 软件包基线（沿用 HG5585F-CT 6 包） ==="
+echo "=== 9. 软件包基线（tailscale 三件套，vlmcsd 已移除） ==="
 EXTRA=Config-EXTRA.txt
-for p in tailscale luci-app-tailscale-community luci-i18n-tailscale-community-zh-cn \
-         vlmcsd luci-app-vlmcsd luci-i18n-vlmcsd-zh-cn; do
+for p in tailscale luci-app-tailscale-community luci-i18n-tailscale-community-zh-cn; do
   grep -q "^CONFIG_PACKAGE_${p}=y$" "$EXTRA" && ok "基线含 $p" || bad "基线缺 $p"
 done
-grep -q 'immortalwrt/packages.git' "$WF" && ok "workflow 会补 vlmcsd 包源" || bad "缺 vlmcsd 包注入"
-grep -q 'immortalwrt/luci.git' "$WF" && ok "workflow 会补 luci-app-vlmcsd 包源" || bad "缺 luci-app-vlmcsd 包注入"
-grep -q 'user-requested packages' "$WF" && ok "Configure 有 6 包硬断言" || bad "Configure 缺 6 包硬断言"
+grep -q '^CONFIG_PACKAGE_kmod-tun=y$' "$EXTRA" && ok "tailscale 依赖 kmod-tun 已启用" || bad "缺 kmod-tun"
+! grep -q 'CONFIG_PACKAGE_vlmcsd' "$EXTRA" && ok "基线已移除 vlmcsd" || bad "基线仍含 vlmcsd"
+! grep -q 'immortalwrt/packages.git' "$WF" && ok "workflow 无 vlmcsd 包注入" || bad "workflow 仍含 vlmcsd 注入"
+! grep -q 'iw-luci' "$WF" && ok "workflow 无 luci-app-vlmcsd 注入" || bad "workflow 仍含 luci 注入"
+grep -q 'user-requested packages (tailscale baseline)' "$WF" && ok "Configure 有 3 包硬断言" || bad "Configure 缺 3 包硬断言"
 grep -q 'Config-EXTRA.txt' customize.sh && ok "customize.sh 会追加基线" || bad "customize.sh 未追加基线"
 
-echo "=== 10. 编译失败可诊断性 ==="
+echo "=== 10. 失败可诊断性（Compile + feeds） ==="
 grep -q 'build.log' "$WF" && ok "编译日志落盘" || bad "编译日志未落盘"
-grep -q '::error::' "$WF" && ok "失败错误写成 annotation" || bad "失败错误未写 annotation"
+grep -q 'step-feeds.log' "$WF" && ok "feeds 步骤日志落盘" || bad "feeds 步骤日志未落盘"
+grep -q '失败前最后进度' "$WF" && ok "feeds 失败点进度上报" || bad "缺 feeds 失败点进度上报"
+grep -q 'STEP: feeds install -a' "$WF" && ok "feeds 子步骤有进度标记" || bad "缺 feeds 子步骤进度标记"
+[ "$(grep -c '::error::' "$WF")" -ge 4 ] && ok "失败错误写成 annotation" || bad "失败错误未写 annotation"
 grep -q 'Upload build log (always)' "$WF" && ok "失败也上传日志" || bad "缺 always 日志上传"
+grep -q 'if: \${{ always() }}' "$WF" && ok "test_only 失败也上传日志" || bad "test_only 失败时日志不会上传"
 
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
