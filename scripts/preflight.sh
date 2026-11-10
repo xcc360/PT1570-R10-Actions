@@ -197,6 +197,16 @@ grep -q "default: '20b4cf4490ca55cc406d07e391691efa8cd8a087'" "$WF" \
   && ok "源码 ref 用完整 SHA（避免短 SHA fetch 失败后回退分支）" \
   || bad "源码 ref 仍是短 SHA"
 
+echo "=== 12. Rust 交叉编译 std（tyfza1-pon-control 硬依赖） ==="
+# run #9 教训：Rust 包用 host cargo 交叉编译 --target aarch64-unknown-linux-musl，
+# host rustup 必须预装该目标 std，否则 1 小时后才在 cargo 阶段报 E0463。
+grep -q 'rustup target add aarch64-unknown-linux-musl' "$WF" \
+  && ok "会补 aarch64 musl Rust std" || bad "缺 rustup target add"
+grep -q 'command -v rustup' "$WF" \
+  && ok "rustup 存在性检查" || bad "缺 rustup 存在性检查"
+grep -q 'runner 缺 rustup' "$WF" \
+  && ok "rustup 缺失时有明确报错" || bad "rustup 缺失报错不明"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"
