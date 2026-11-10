@@ -22,7 +22,7 @@ for f in \
   files/etc/uci-defaults/99-pt1570-fit \
   board/devices/pt1570-r10.mk.inc board/devices/pt1570-h10.mk.inc \
   board/dts/rtl9617c-pt1570-r10.dts board/dts/rtl9617c-pt1570-h10.dts \
-  scripts/apply-board.sh scripts/preflight.sh \
+  scripts/apply-board.sh scripts/preflight.sh scripts/patch-upstream.sh \
   migration/device-preflight.sh migration/MIGRATION-CHECKLIST.md ; do
   need "$f"
 done
@@ -71,7 +71,7 @@ fi
 
 echo "=== 4. shell 语法 ==="
 for f in customize.sh files/etc/uci-defaults/99-pt1570-fit \
-         scripts/apply-board.sh scripts/preflight.sh \
+         scripts/apply-board.sh scripts/preflight.sh scripts/patch-upstream.sh \
          migration/device-preflight.sh; do
   if bash -n "$f" 2>/dev/null; then ok "bash -n $f"; else bad "bash -n $f"; fi
 done
@@ -232,6 +232,60 @@ grep -q '检测到污染包' "$WF" \
   && ok "Configure 有污染包反向断言" || bad "缺污染包反向断言"
 grep -q '被显式 n 压住' "$WF" \
   && ok "Configure 有设备包正向断言" || bad "缺设备包正向断言"
+
+echo "=== 14. WiFi 固件随镜像打包 + factory 提取修补（真机验证结论） ==="
+# 真机 initramfs 验证：上游没有任何包安装 rtl8852c/rtl8192xb 的 AP 固件，
+# 驱动 request_firmware 直接 -2，WiFi 完全起不来。只能靠 files/ overlay 打包。
+FW="$ASSETS/files/lib/firmware/realtek/tyfza1"
+if [ -d "$FW" ]; then
+  ok "存在 $FW"
+else
+  bad "缺少 WiFi 固件目录 files/lib/firmware/realtek/tyfza1"
+fi
+for spec in \
+  rtl8852c-u1-ap.bin:406448 rtl8852c-u2-ap.bin:369160 \
+  rtl8192xb-u1-ap.bin:387680 rtl8192xb-u2-ap.bin:387752 \
+  array_mp_8852c_nctl_reg.bin:14256 array_mp_8852c_nctl_reg_a.bin:14152 \
+  array_mp_8192xb_nctl_reg.bin:11368 ; do
+  name=${spec%%:*}; size=${spec##*:}
+  if [ -f "$FW/$name" ]; then
+    actual=$(stat -c %s "$FW/$name")
+    [ "$actual" = "$size" ] && ok "$name ($size B)" || bad "$name 大小 $actual != $size"
+  else
+    bad "缺少 WiFi 固件 $name"
+  fi
+done
+n=$(find "$FW" -maxdepth 1 -type f -name '*.bin' 2>/dev/null | wc -l)
+[ "$n" = 7 ] && ok "WiFi 固件 7/7" || bad "WiFi 固件数量 $n != 7"
+
+# tyfza1-factory 的 factory_blob 把临时文件 mv 到 "$2"（长度）而不是 "$3"（目标路径），
+# 导致 /lib/firmware 下校准文件全是悬空链接。修补必须落在镜像里的脚本上。
+grep -q 'mv "\$tmp" "\$3"' scripts/patch-upstream.sh \
+  && ok "patch-upstream.sh 修 factory_blob 目标参数" \
+  || bad "patch-upstream.sh 未修 factory_blob"
+grep -q 'files/lib/firmware/realtek/tyfza1' scripts/patch-upstream.sh \
+  && ok "patch-upstream.sh 校验 WiFi 固件" || bad "patch-upstream.sh 不校验固件"
+
+PATCH_LINE=$(grep -n 'name: Patch upstream packages (factory extraction)' "$WF" | head -1 | cut -d: -f1)
+FILES_LINE=$(grep -n 'name: Apply custom rootfs files' "$WF" | head -1 | cut -d: -f1)
+VERIFY_LINE=$(grep -n 'name: Verify image payload' "$WF" | head -1 | cut -d: -f1)
+COMPILE_LINE=$(grep -n 'name: Compile$' "$WF" | head -1 | cut -d: -f1)
+if [ -n "${PATCH_LINE:-}" ] && [ -n "${FILES_LINE:-}" ] \
+   && [ "$FILES_LINE" -lt "$PATCH_LINE" ]; then
+  ok "步骤顺序 注入 files($FILES_LINE) < 打补丁($PATCH_LINE)"
+else
+  bad "缺 Patch upstream packages 步骤，或顺序不在 files 注入之后"
+fi
+if [ -n "${VERIFY_LINE:-}" ] && [ -n "${COMPILE_LINE:-}" ] \
+   && [ "$COMPILE_LINE" -lt "$VERIFY_LINE" ]; then
+  ok "编译后校验镜像内容（行 $VERIFY_LINE）"
+else
+  bad "缺 Verify image payload 步骤，或不在 Compile 之后"
+fi
+grep -q 'WIFI_FIRMWARE_OK=True' "$WF" \
+  && ok "镜像固件校验有正向标记" || bad "缺 WIFI_FIRMWARE_OK 断言"
+grep -q 'FACTORY_PATCH_OK=True' "$WF" \
+  && ok "镜像补丁校验有正向标记" || bad "缺 FACTORY_PATCH_OK 断言"
 
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then

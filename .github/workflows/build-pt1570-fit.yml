@@ -307,6 +307,12 @@ jobs:
             echo "custom packages repo: $URL/targets/rtl9617c/generic/packages/packages.adb"
           fi
 
+      - name: Patch upstream packages (factory extraction)
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/scripts/patch-upstream.sh"
+
       - name: Configure
         working-directory: wrt
         env:
@@ -472,6 +478,47 @@ jobs:
               exit 1
             fi
           fi
+
+      - name: Verify image payload (wifi firmware + patched factory)
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        env:
+          ASSETS: ${{ github.workspace }}
+        run: |
+          set -e
+          ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
+          [ -n "$ROOT" ] || { echo "::error::找不到 rootfs 目录 build_dir/target-*/root-rtl9617c*"; exit 1; }
+          echo "rootfs dir: $ROOT"
+
+          # 上游没有任何包安装 WiFi AP 固件，必须由 files/ overlay 带进镜像
+          missing=0
+          for f in "$ASSETS"/files/lib/firmware/realtek/tyfza1/*.bin; do
+            base=${f##*/}
+            tgt="$ROOT/lib/firmware/realtek/tyfza1/$base"
+            if [ ! -f "$tgt" ]; then
+              echo "::error::镜像缺少 WiFi 固件 $base"; missing=1; continue
+            fi
+            if ! cmp -s "$f" "$tgt"; then
+              echo "::error::镜像内 $base 与资产不一致"; missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+          n=$(ls -1 "$ROOT"/lib/firmware/realtek/tyfza1/*.bin 2>/dev/null | wc -l)
+          [ "$n" = 7 ] || { echo "::error::镜像内 WiFi 固件数量 $n != 7"; exit 1; }
+          echo "WIFI_FIRMWARE_OK=True files=$n"
+
+          # 校验打包的是修补后的 factory 提取脚本，且校准软链接存在（目标在 /tmp，属于正常）
+          grep -q 'mv "\$tmp" "\$3"' "$ROOT/etc/init.d/tyfza1-factory" \
+            || { echo "::error::镜像里的 tyfza1-factory 未应用 factory_blob 修补"; exit 1; }
+          echo "FACTORY_PATCH_OK=True"
+          for l in \
+            lib/firmware/realtek/tyfza1/rtl8852ce/flash-calibration.bin \
+            lib/firmware/realtek/tyfza1/rtl8192xbe/flash-calibration.bin \
+            lib/firmware/realtek/rtl9617c/bosa-calibration.bin \
+            lib/firmware/realtek/rtl9617c/a2h.bin; do
+            [ -L "$ROOT/$l" ] || echo "::warning::缺少校准软链接 $l"
+          done
+          echo "IMAGE_PAYLOAD_OK=True"
 
       - name: Upload build log (always)
         if: ${{ always() }}
