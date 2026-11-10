@@ -25,9 +25,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认锁定已核实 commit，来自 pt1500-h10-fixes 分支）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认锁定已核实 commit 的完整 SHA，来自 pt1500-h10-fixes 分支）'
         required: false
-        default: '20b4cf4490'
+        default: '20b4cf4490ca55cc406d07e391691efa8cd8a087'
         type: string
       dts_status:
         description: 'DTS 验证状态；experimental 只出验证产物，verified 才允许发布 Release'
@@ -136,15 +136,18 @@ jobs:
 
       - name: Install build dependencies
         # 沿用已在 ubuntu-24.04 上跑通的 OpenWrt 依赖清单（与 HG5585F-CT 路线 B 相同）。
+        # 额外显式装 LLVM 18 三件套：target/linux/rtl9617c/pe/Makefile 硬编码
+        # clang-18 / ld.lld-18 / llvm-objcopy-18 来编译 MIPS32 裸机 PE 程序，
+        # 不能只依赖通用的 clang / lld / llvm 元包（见下一步 PE 构建）。
         run: |
           sudo apt-get update -yqq
           sudo apt-get install -y --no-install-recommends \
             asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            bzip2 ccache clang clang-18 cmake cpio curl device-tree-compiler flex gawk \
             gettext git g++-multilib gcc-multilib gperf help2man intltool \
             libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
             libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
-            libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
+            libtool libyaml-dev lld lld-18 llvm llvm-18 ninja-build p7zip-full patch pkgconf \
             python3 python3-docutils python3-pip python3-ply python3-pyelftools \
             qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
             uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
@@ -152,7 +155,7 @@ jobs:
       - name: Clone rtl9617c-openwrt source
         run: |
           set -e
-          REF="${{ inputs.source_ref || '20b4cf4490' }}"
+          REF="${{ inputs.source_ref || '20b4cf4490ca55cc406d07e391691efa8cd8a087' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -169,6 +172,39 @@ jobs:
           test -f package/utils/fitblk/files/fit.sh
           grep -n 'rootdisk' target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi | head -3
           echo "source: $(git rev-parse HEAD)"
+
+      - name: Build PE firmware (pe-tx-code.h)
+        working-directory: wrt
+        run: |
+          set -eo pipefail
+          # run #7 (2026-11-10) Compile 失败根因：
+          #   drivers/net/wireless/realtek/rtl_ax_ap/Makefile:10:
+          #   *** pe-tx-code.h is missing; run "make -C target/linux/rtl9617c/pe". Stop.
+          # 该头文件被上游 .gitignore 排除，由 target/linux/rtl9617c/pe/Makefile
+          # 用 clang-18 / ld.lld-18 / llvm-objcopy-18 现场编译 MIPS32 裸机 PE
+          # 程序后生成，OpenWrt 构建系统不会自动调用。必须在任何 make 之前生成，
+          # 这样内核首次展开 files-6.18 时就能带上它（否则 target/linux/compile 必挂）。
+          echo "=== PE toolchain ==="
+          for t in clang-18 ld.lld-18 llvm-objcopy-18 python3; do
+            if ! command -v "$t" >/dev/null 2>&1; then
+              echo "::error::PE 构建缺少工具 $t，请检查 Install build dependencies" >&2
+              exit 1
+            fi
+            printf '  OK   %-20s %s\n' "$t" "$(command -v "$t")"
+          done
+
+          if ! make -C target/linux/rtl9617c/pe 2>&1 | tee /tmp/pe-build.log; then
+            echo "::group::PE BUILD FAILED - last 60 lines"
+            tail -n 60 /tmp/pe-build.log
+            echo "::endgroup::"
+            echo "::error::make -C target/linux/rtl9617c/pe 失败，pe-tx-code.h 未生成"
+            exit 1
+          fi
+          HDR=target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap/pe-tx-code.h
+          test -s "$HDR" || { echo "::error::pe-tx-code.h 未生成或为空"; exit 1; }
+          grep -q 'static const u32 pe_tx_program\[\]' "$HDR" \
+            || { echo "::error::pe-tx-code.h 内容不符（缺 pe_tx_program 数组）"; exit 1; }
+          echo "PE_HEADER_OK=True bytes=$(wc -c < "$HDR") words=$(grep -c '0x[0-9a-fA-F]' "$HDR")"
 
       - name: Pin APK signing key (optional)
         working-directory: wrt

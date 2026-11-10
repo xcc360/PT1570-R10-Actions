@@ -170,6 +170,33 @@ grep -q 'STEP: feeds install -a' "$WF" && ok "feeds 子步骤有进度标记" ||
 grep -q 'Upload build log (always)' "$WF" && ok "失败也上传日志" || bad "缺 always 日志上传"
 grep -q 'if: \${{ always() }}' "$WF" && ok "test_only 失败也上传日志" || bad "test_only 失败时日志不会上传"
 
+echo "=== 11. PE 固件前置构建（rtl_ax_ap 驱动硬依赖） ==="
+# run #7 教训：pe-tx-code.h 被上游 .gitignore 排除，OpenWrt 不会自动生成；
+# 缺少它会在 target/linux/compile 阶段直接失败，且耗时 40 分钟后才暴露。
+for t in 'clang-18' 'lld-18' 'llvm-18'; do
+  grep -q "$t" "$WF" && ok "依赖清单含 $t" || bad "依赖清单缺 $t"
+done
+grep -q 'name: Build PE firmware (pe-tx-code.h)' "$WF" \
+  && ok "有 PE 构建步骤" || bad "缺 PE 构建步骤"
+grep -q 'make -C target/linux/rtl9617c/pe' "$WF" \
+  && ok "会调用上游 pe/Makefile" || bad "未调用 pe/Makefile"
+grep -q 'pe-tx-code.h 未生成或为空' "$WF" \
+  && ok "头文件存在性硬断言" || bad "缺头文件硬断言"
+grep -q 'pe_tx_program' "$WF" \
+  && ok "头文件内容硬断言" || bad "缺头文件内容硬断言"
+CLONE_LINE=$(grep -n 'name: Clone rtl9617c-openwrt source' "$WF" | head -1 | cut -d: -f1)
+PE_LINE=$(grep -n 'name: Build PE firmware (pe-tx-code.h)' "$WF" | head -1 | cut -d: -f1)
+CFG_LINE=$(grep -n 'name: Configure$' "$WF" | head -1 | cut -d: -f1)
+if [ -n "${CLONE_LINE:-}" ] && [ -n "${PE_LINE:-}" ] && [ -n "${CFG_LINE:-}" ] \
+   && [ "$CLONE_LINE" -lt "$PE_LINE" ] && [ "$PE_LINE" -lt "$CFG_LINE" ]; then
+  ok "步骤顺序 Clone($CLONE_LINE) < PE($PE_LINE) < Configure($CFG_LINE)"
+else
+  bad "PE 步骤顺序错误（必须在 Clone 之后、Configure 之前）"
+fi
+grep -q "default: '20b4cf4490ca55cc406d07e391691efa8cd8a087'" "$WF" \
+  && ok "源码 ref 用完整 SHA（避免短 SHA fetch 失败后回退分支）" \
+  || bad "源码 ref 仍是短 SHA"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"
