@@ -1,11 +1,15 @@
 # 实验诊断配置：只在 workflow_dispatch 的 wifi_diag=true 时追加到 .config。
 # 正式产物不要带 —— /dev/mem 对 userland 全开，等于把整个物理地址空间交出去。
 #
-# 用途：WiFi 的两个 radio 在 probe 阶段都返回 -ETIMEDOUT（rtl_ax_ap：
-#   AP startup: powered=1 prepared=1 firmware=0 memory=0 ...），
-# 需要直接读 WiFi MAC（BAR2 0xa0400000）与 SoC 复位/时钟控制（0xf4320000）
-# 的寄存器，确认到底卡在 HCI/HAXI idle 还是 WCPU 启动。
-CONFIG_DEVMEM=y
-# CONFIG_STRICT_DEVMEM is not set
-# busybox devmem applet（不可用时仍可用 dd if=/dev/mem bs=4 skip=<off/4> count=1 | od -An -tx4 读）
+# ⚠️ 内核符号（CONFIG_DEVMEM）不能写在这里：run #13 实测写进顶层 .config 会被
+#    make defconfig 静默丢弃（该符号不在顶层 Kconfig 树里），随即被 Configure 的
+#    断言拦下。CONFIG_DEVMEM 由 scripts/patch-wifi-diag.sh 写进
+#    target/linux/rtl9617c/config-6.18（target 的内核配置文件）。
+#
+# 用途：WiFi 两个 radio 在 probe 阶段偶发 -ETIMEDOUT（rtl_ax_ap:
+#   AP startup: powered=1 prepared=1 firmware=0 memory=0 ...），需要直接读
+#   WiFi MAC（BAR2 0xa0400000）与 SoC 复位/时钟控制（0xf4320000）的寄存器确认卡点。
+#
+# busybox devmem applet（若该符号在本 feed 里不叫这个名字，可用
+#   dd if=/dev/mem bs=4 skip=$((0x101c/4)) count=1 | od -An -tx4  代替）
 CONFIG_BUSYBOX_CONFIG_DEVMEM=y

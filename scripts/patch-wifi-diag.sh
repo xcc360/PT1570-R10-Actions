@@ -21,8 +21,21 @@ PCI="$DRV/pci.c"
 
 [ -f "$PCI" ] || { echo "ERROR: 找不到驱动源码 $PCI" >&2; exit 1; }
 
+# ---- /dev/mem 必须写进 target 的**内核** config 文件 ----
+# run #13 证明把 CONFIG_DEVMEM 写进顶层 .config 会被 make defconfig 静默丢掉
+# （该符号不在顶层 Kconfig 树里），Configure 断言随即失败。
+KCFG="$WRT/target/linux/rtl9617c/config-6.18"
+[ -f "$KCFG" ] || { echo "ERROR: 找不到内核配置 $KCFG" >&2; exit 1; }
+if ! grep -q '^CONFIG_DEVMEM=y$' "$KCFG"; then
+  sed -i '/^CONFIG_DEVMEM=/d; /^# CONFIG_DEVMEM is not set$/d' "$KCFG"
+  printf 'CONFIG_DEVMEM=y\n' >> "$KCFG"
+  echo "kernel config: + CONFIG_DEVMEM=y ($KCFG)"
+fi
+grep -q '^CONFIG_DEVMEM=y$' "$KCFG" \
+  || { echo "ERROR: CONFIG_DEVMEM 未写入内核配置" >&2; exit 1; }
+
 if grep -q 'rtl_ax_diag_dump' "$PCI"; then
-  echo "WIFI_DIAG_SKIP=True (already patched)"
+  echo "WIFI_DIAG_SKIP=True (driver already patched)"
   echo "WIFI_DIAG_OK=True"
   exit 0
 fi
@@ -126,4 +139,5 @@ PY
 
 grep -q 'rtl_ax_diag_dump(radio, "ring_prepare-fail")' "$PCI" \
   || { echo "ERROR: 打点未落盘" >&2; exit 1; }
+
 echo "WIFI_DIAG_OK=True"

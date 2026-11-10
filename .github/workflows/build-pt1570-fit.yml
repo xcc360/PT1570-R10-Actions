@@ -405,16 +405,18 @@ jobs:
             || { echo "ERROR: uboot-envtools 必须关闭" >&2; exit 1; }
           echo "  OK   uboot-envtools disabled"
 
-          # 诊断产物 vs 正式产物：/dev/mem 只能出现在 wifi_diag=true 的镜像里
+          # 诊断产物 vs 正式产物：/dev/mem 只能出现在 wifi_diag=true 的镜像里。
+          # CONFIG_DEVMEM 属于内核选项，必须落在 target 的 config-6.18 上
+          # （写顶层 .config 会被 make defconfig 静默丢弃，run #13 已踩过）。
           if [ "${WIFI_DIAG:-false}" = "true" ]; then
-            grep -q '^CONFIG_DEVMEM=y$' .config \
-              || { echo "ERROR: wifi_diag=true 但 CONFIG_DEVMEM 未启用" >&2; exit 1; }
+            grep -q '^CONFIG_DEVMEM=y$' target/linux/rtl9617c/config-6.18 \
+              || { echo "ERROR: wifi_diag=true 但内核 config-6.18 没打开 CONFIG_DEVMEM" >&2; exit 1; }
             grep -q 'rtl_ax_diag_dump' \
               target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap/pci.c \
               || { echo "ERROR: wifi_diag=true 但驱动打点未注入" >&2; exit 1; }
-            echo "  OK   wifi diag (CONFIG_DEVMEM + diag dump)"
+            echo "  OK   wifi diag (kernel DEVMEM + diag dump)"
           else
-            ! grep -q '^CONFIG_DEVMEM=y$' .config \
+            ! grep -q '^CONFIG_DEVMEM=y$' target/linux/rtl9617c/config-6.18 \
               || { echo "ERROR: 正式产物不允许 CONFIG_DEVMEM" >&2; exit 1; }
             echo "  OK   CONFIG_DEVMEM off"
           fi

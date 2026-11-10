@@ -327,8 +327,14 @@ else
   bad "缺少 scripts/patch-wifi-diag.sh"
 fi
 if [ -f Config-DIAG.txt ]; then
-  grep -q '^CONFIG_DEVMEM=y$' Config-DIAG.txt \
-    && ok "Config-DIAG 打开 CONFIG_DEVMEM" || bad "Config-DIAG 缺 CONFIG_DEVMEM=y"
+  # CONFIG_DEVMEM 属内核符号，必须由 patch-wifi-diag.sh 写进 target 的 config-6.18；
+  # 写顶层 .config 会被 make defconfig 丢掉（run #13 已踩过）。
+  ! grep -q '^CONFIG_DEVMEM=y$' Config-DIAG.txt \
+    && ok "Config-DIAG 不再放内核符号（会 defconfig 丢弃）" \
+    || bad "Config-DIAG 又写回 CONFIG_DEVMEM 了，它会被 defconfig 丢掉"
+  grep -q 'target/linux/rtl9617c/config-6.18' scripts/patch-wifi-diag.sh \
+    && ok "诊断脚本把 DEVMEM 写进内核 config-6.18" \
+    || bad "诊断脚本没有写内核 config-6.18（/dev/mem 不会生效）"
   grep -q '^CONFIG_BUSYBOX_CONFIG_DEVMEM=y$' Config-DIAG.txt \
     && ok "Config-DIAG 打开 busybox devmem" || bad "Config-DIAG 缺 busybox devmem"
 else
