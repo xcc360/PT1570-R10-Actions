@@ -351,6 +351,54 @@ grep -q '正式产物不允许 CONFIG_DEVMEM' "$WF" \
 grep -q 'WAN_DEFAULT_OK=True' "$WF" \
   && ok "镜像校验断言默认 WAN=pon0" || bad "镜像校验缺 WAN_DEFAULT_OK"
 
+echo "=== 16. FIT rootfs 自洽启动（run #12 刷 NAND 起不来的根因） ==="
+# 事实链（2026-11-10 实证）：
+#   * 上游 dtsi 的 /chosen/bootargs 没有 root=，靠 bootloader 注入；
+#   * qwe-qaq/rtl9617c-uboot@4c13f1b7 里 fitblk / rootdisk 代码搜索命中 0，
+#     rtk_boot 只做 `ubi part; ubi read; bootm`，env 也没有 bootargs；
+#   * 内核 fitblk 驱动（generic/pending-6.18/510-*）init 里
+#     `if (!of_get_property(of_chosen, "u-boot,version", NULL)) return 0;`
+#     —— U-Boot 不写这个属性，驱动静默不注册，/dev/fitblk0 不存在；
+#   * UIMAGE_FIT_BLK 在 generic/config-6.18 里默认 *关闭*。
+# 所以固件必须自己带 root=，并且由 DTS 补 u-boot,version。
+R10_DTS=board/dts/rtl9617c-pt1570-r10.dts
+if [ -f "$R10_DTS" ]; then
+  grep -q 'root=/dev/fitblk0' "$R10_DTS" \
+    && ok "DTS 自带 root=/dev/fitblk0" || bad "DTS 没有 root=/dev/fitblk0（bootloader 不会注入，内核挂根必失败）"
+  grep -q 'rootwait' "$R10_DTS" \
+    && ok "DTS 带 rootwait" || bad "DTS 缺 rootwait"
+  grep -q 'u-boot,version' "$R10_DTS" \
+    && ok "DTS 补了 u-boot,version（fitblk 驱动门闩）" || bad "DTS 缺 u-boot,version，fitblk 驱动会静默退出"
+else
+  bad "缺少 $R10_DTS"
+fi
+
+if [ -f scripts/verify-fit-boot.py ]; then
+  ok "存在 scripts/verify-fit-boot.py"
+  python -c "compile(open('scripts/verify-fit-boot.py').read(),'verify-fit-boot.py','exec')" 2>/dev/null \
+    && ok "校验脚本语法通过" || bad "scripts/verify-fit-boot.py 语法错误"
+  grep -q 'root=/dev/fitblk' scripts/verify-fit-boot.py \
+    && ok "校验脚本检查 root=/dev/fitblk*" || bad "校验脚本没检查 root="
+  grep -q 'u-boot,version' scripts/verify-fit-boot.py \
+    && ok "校验脚本检查 u-boot,version" || bad "校验脚本没检查 u-boot,version"
+else
+  bad "缺少 scripts/verify-fit-boot.py（无法在 CI 拦住不可启动的镜像）"
+fi
+
+# 配置文件侧的开关：UIMAGE_FIT_BLK 在 target，MTD_ROOTFS_ROOT_DEV 在 generic
+grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' Config-PT1570-FIT.txt 2>/dev/null \
+  && ok "Config-PT1570-FIT 里也有 UIMAGE_FIT_BLK=y" \
+  || echo "  --   UIMAGE_FIT_BLK 由 target/linux/rtl9617c/config-6.18 提供（不写顶层 config 属正常）"
+grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' "${WRT:-/nonexistent}/target/linux/rtl9617c/config-6.18" 2>/dev/null \
+  && ok "target config-6.18 打开 CONFIG_UIMAGE_FIT_BLK" \
+  || echo "  --   源码树未就位，跳过 UIMAGE_FIT_BLK 检查（CI 的 Configure 步骤会断言）"
+
+# workflow 里必须真的调用校验脚本，否则本地脚本形同虚设
+grep -q 'verify-fit-boot.py' "$WF" \
+  && ok "workflow 调用 verify-fit-boot.py" || bad "workflow 没有调用 verify-fit-boot.py"
+grep -q 'KERNEL_FIT_ROOTFS_OK' "$WF" \
+  && ok "workflow 断言编译后内核配置" || bad "workflow 没有断言内核 UIMAGE_FIT_BLK"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"

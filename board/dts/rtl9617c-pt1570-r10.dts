@@ -46,6 +46,35 @@
 	model = "Youhua PT1570-R10 (RTL9617C, 4xGE, FIT ABI)";
 	compatible = "youhua,pt1570-r10", "tianyi,tyfza1-4ge", "realtek,rtl9617c";
 
+	/*
+	 * FIT rootfs 自洽启动（2026-11-10 修，run #12 刷入 NAND 起不来的根因）
+	 *
+	 * 上游 dtsi 的 bootargs 只有 console/loglevel，没有 root=。它依赖
+	 * bootloader 把 /chosen/rootdisk 翻译成 "root=/dev/fitblk0" 注入 ——
+	 * 而 qwe-qaq/rtl9617c-uboot@4c13f1b7 里根本没有 rootdisk/fitblk 代码
+	 * （代码搜索 fitblk / rootdisk 命中 0），rtk_boot 也只是
+	 * `ubi part; ubi read; bootm`，env 里连 bootargs 都没有。
+	 * 结果内核拿不到 root=，挂根失败。
+	 *
+	 * 这里直接把 root= 写进 DTS，让固件自洽，不依赖 bootloader：
+	 *   root=/dev/fitblk0  —— generic/pending-6.18/510-block-add-uImage.FIT-
+	 *                         subimage-block-driver.patch 会把 FIT 里
+	 *                         type="filesystem" 且属于 config.loadables 的
+	 *                         rootfs 子镜像映射成 /dev/fitblk0；
+	 *   rootwait           —— 511-init-bypass-device-lookup-for-dev-fit-rootfs
+	 *                         让 init 对 /dev/fit* 走 Root_Generic 并等待；
+	 *   rootfstype=squashfs—— 免探测。
+	 *
+	 * u-boot,version 是 fitblk 驱动的"门闩"：驱动 init 里
+	 *   ubootver = of_get_property(of_chosen, "u-boot,version", NULL);
+	 *   if (!ubootver) return 0;          // 静默不注册
+	 * qwe-qaq 的 U-Boot 不写这个属性，所以这里补一个。属性值不参与判断。
+	 */
+	chosen {
+		u-boot,version = "2025.01";
+		bootargs = "earlycon console=ttyS0,115200n8 loglevel=7 clk_ignore_unused maxcpus=4 root=/dev/fitblk0 rootwait rootfstype=squashfs";
+	};
+
 	// 覆盖上游 dtsi 的 led-button：修正 lights 引脚，补齐 reset / wifi。
 	// DTC 会合并同名节点，同名子节点按后写覆盖。
 	// 真机 FDT 实测（gpios 三元组 phandle / pin / flags）：

@@ -405,6 +405,19 @@ jobs:
             || { echo "ERROR: uboot-envtools 必须关闭" >&2; exit 1; }
           echo "  OK   uboot-envtools disabled"
 
+          # FIT rootfs 能不能挂上，取决于两个内核符号：
+          #   UIMAGE_FIT_BLK      —— 把 FIT 里 type=filesystem 的 rootfs 映射成 /dev/fitblk0
+          #   MTD_ROOTFS_ROOT_DEV —— 让 ubi 为名为 rootfs/fit 的卷自动建 ubiblock
+          # 二者都是内核符号，不能写进顶层 .config（会被 make defconfig 丢弃，
+          # run #13 已踩过这个坑）。UIMAGE_FIT_BLK 在 generic config 里默认关闭，
+          # 由 target 的 config-6.18 打开；MTD_ROOTFS_ROOT_DEV 由 generic 提供。
+          grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' target/linux/rtl9617c/config-6.18 \
+            || { echo "ERROR: target config-6.18 缺少 CONFIG_UIMAGE_FIT_BLK=y" >&2; exit 1; }
+          echo "  OK   CONFIG_UIMAGE_FIT_BLK (target config)"
+          grep -q '^CONFIG_MTD_ROOTFS_ROOT_DEV=y$' target/linux/generic/config-6.18 \
+            || { echo "ERROR: generic config-6.18 缺少 CONFIG_MTD_ROOTFS_ROOT_DEV=y" >&2; exit 1; }
+          echo "  OK   CONFIG_MTD_ROOTFS_ROOT_DEV (generic config)"
+
           # 诊断产物 vs 正式产物：/dev/mem 只能出现在 wifi_diag=true 的镜像里。
           # CONFIG_DEVMEM 属于内核选项，必须落在 target 的 config-6.18 上
           # （写顶层 .config 会被 make defconfig 静默丢弃，run #13 已踩过）。
@@ -567,6 +580,27 @@ jobs:
             lib/firmware/realtek/rtl9617c/a2h.bin; do
             [ -L "$ROOT/$l" ] || echo "::warning::缺少校准软链接 $l"
           done
+
+          # ---- FIT rootfs 自洽性 ----
+          # 内核最终配置（kconfig 合并后）里必须有 UIMAGE_FIT_BLK，否则
+          # 即使 DTB 写了 root=/dev/fitblk0 也不会有这个设备。
+          KCFG=$(ls -d build_dir/target-*/linux-rtl9617c/linux-*/.config 2>/dev/null | head -1)
+          if [ -n "$KCFG" ]; then
+            for sym in CONFIG_UIMAGE_FIT_BLK CONFIG_MTD_ROOTFS_ROOT_DEV CONFIG_SQUASHFS; do
+              grep -q "^${sym}=y$" "$KCFG" \
+                || { echo "::error::内核 $KCFG 里 ${sym} 不是 y，FIT rootfs 挂不上"; exit 1; }
+            done
+            echo "KERNEL_FIT_ROOTFS_OK=True ($KCFG)"
+          else
+            echo "::warning::找不到内核编译后的 .config，跳过 KERNEL_FIT_ROOTFS_OK"
+          fi
+
+          # 直接解析产出的 sysupgrade.itb：bootloader 不会注入 root=，
+          # 固件必须自己带 root=/dev/fitblk0 + rootwait + u-boot,version。
+          ITB=$(ls bin/targets/rtl9617c/generic/*sysupgrade.itb 2>/dev/null | head -1)
+          [ -n "$ITB" ] || { echo "::error::找不到 sysupgrade.itb"; exit 1; }
+          python3 "$ASSETS/scripts/verify-fit-boot.py" "$ITB"
+
           echo "IMAGE_PAYLOAD_OK=True"
 
       - name: Upload build log (always)
