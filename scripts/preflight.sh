@@ -14,8 +14,10 @@ bad()  { echo "  FAIL $*" >&2; FAIL=1; }
 need() { test -f "$1" && ok "exists ${1#./}" || bad "missing $1"; }
 
 echo "=== 1. 资产齐全（H10 为 DORMANT 留档，不参与构建） ==="
+# CI 只读 .github/workflows/ 下的权威文件；根目录同名副本只是本地备份，
+# 仓库里可以不存在（2026-11-10 run #5 因脚本强依赖该副本而 exit 2）。
 for f in \
-  build-pt1570-fit.yml .github/workflows/build-pt1570-fit.yml \
+  .github/workflows/build-pt1570-fit.yml \
   Config-PT1570-FIT.txt Config-EXTRA.txt customize.sh \
   files/etc/uci-defaults/99-pt1570-fit \
   board/devices/pt1570-r10.mk.inc board/devices/pt1570-h10.mk.inc \
@@ -25,8 +27,10 @@ for f in \
   need "$f"
 done
 
-echo "=== 2. 两份 workflow 一致 ==="
-if cmp -s build-pt1570-fit.yml .github/workflows/build-pt1570-fit.yml; then
+echo "=== 2. workflow 副本一致性（根目录副本可选） ==="
+if [ ! -f build-pt1570-fit.yml ]; then
+  ok "仅 CI 权威文件（仓库无根目录副本）"
+elif cmp -s build-pt1570-fit.yml .github/workflows/build-pt1570-fit.yml; then
   ok "COPIES_IDENTICAL"
 else
   bad "两份 workflow 不一致（改动后要同步）"
@@ -36,7 +40,7 @@ echo "=== 3. YAML 严格解析 ==="
 if python3 -c 'import yaml' 2>/dev/null; then
   if python3 - <<'PY'
 import yaml, pathlib, sys
-p = pathlib.Path('build-pt1570-fit.yml')
+p = pathlib.Path('.github/workflows/build-pt1570-fit.yml')
 d = yaml.safe_load(p.read_text(encoding='utf-8'))
 on = d.get(True) or d.get('on')
 inputs = on['workflow_dispatch']['inputs']
@@ -97,7 +101,7 @@ grep -q 'aarch64_cortex-a55' customize.sh && ok "customize.sh 架构一致" || b
 grep -q 'CONFIG_PACKAGE_fitblk=y' Config-PT1570-FIT.txt && ok "fitblk 已启用" || bad "fitblk 未启用"
 
 echo "=== 6. 防止误刷 / 防混刷 ==="
-WF=build-pt1570-fit.yml
+WF=.github/workflows/build-pt1570-fit.yml
 grep -q "DO-NOT-FLASH-EXPERIMENTAL.txt" "$WF" && ok "实验产物带警告文件" || bad "缺实验警告"
 grep -q "inputs.dts_status == 'verified'" "$WF" && ok "Release 仅允许 verified" || bad "Release 未限制 dts_status"
 grep -q "UNVERIFIED" "$WF" && ok "workflow 会拒绝 verified 但带标记的 DTS" || bad "缺 verified 校验"
