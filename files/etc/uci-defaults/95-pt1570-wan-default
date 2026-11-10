@@ -1,0 +1,59 @@
+#!/bin/sh
+# PT1570-R10：出厂默认 WAN 直接绑定 pon0（不打 VLAN 标签）。
+#
+# 上游 target/linux/rtl9617c/base-files/etc/uci-defaults/90-tyfza1-pon-wan
+# 照抄原厂 PT1500 的 EPON 布局：wan.device=pon0.<pon.wan_vlan>（默认 3961），
+# 并新建同名 8021q 设备、VLAN MAC 取 ONU 基址 +3。PT1570-R10 的默认要求是
+# WAN = pon0，所以本脚本把这一步回退掉。
+#
+# 边界（重要）：
+#   * 只在 wan.device 仍是上游默认值（空 / pon0 / pon0.<wan_vlan>）时动手，
+#     用户或别的脚本写过的设备名一律不碰；
+#   * 只删「name == 原 wan.device 且 type == 8021q 且 ifname == pon0」的设备，
+#     即上游刚建出来的那一个，不误伤自定义 VLAN；
+#   * proto / mtu / ipv6 / username 等保持上游默认（pppoe + 1492），只改设备；
+#   * pon.pon.wan_vlan 保留原值：它只被 90-tyfza1-pon-wan 用来建 VLAN 设备，
+#     LuCI 的 PON 页面并不读它（已验证 internet.js 无 wan_vlan 引用）。
+#
+# 执行顺序：uci-defaults 按文件名排序，90（上游）-> 95（本脚本）-> 99（本机兜底）。
+# 脚本跑完由 rc 删除，不会重复生效；sysupgrade 保留配置时也不会再跑。
+
+[ "$(board_name)" = "youhua,pt1570-r10" ] || exit 0
+
+wan_dev=$(uci -q get network.wan.device)
+[ -n "$wan_dev" ] || wan_dev=$(uci -q get network.wan.ifname)
+wan_vlan=$(uci -q get pon.pon.wan_vlan)
+[ -n "$wan_vlan" ] || wan_vlan=3961
+
+case "$wan_dev" in
+  ''|pon0|"pon0.$wan_vlan") ;;
+  *) exit 0 ;;
+esac
+
+changed=0
+if [ "$wan_dev" != "pon0" ]; then
+  uci -q set network.wan.device='pon0'
+  uci -q delete network.wan.ifname
+  changed=1
+fi
+
+if [ -n "$wan_dev" ] && [ "$wan_dev" != "pon0" ]; then
+  index=0
+  while uci -q get "network.@device[$index]" >/dev/null; do
+    if [ "$(uci -q get "network.@device[$index].name")" = "$wan_dev" ] &&
+       [ "$(uci -q get "network.@device[$index].type")" = "8021q" ] &&
+       [ "$(uci -q get "network.@device[$index].ifname")" = "pon0" ]; then
+      # 删掉一个后后面的元素会前移，同一个下标要重新检查
+      uci -q delete "network.@device[$index]" && changed=1
+      continue
+    fi
+    index=$((index + 1))
+  done
+fi
+
+if [ "$changed" = "1" ]; then
+  uci -q commit network
+  logger -t pt1570-wan "default WAN device -> pon0 (was '$wan_dev')"
+fi
+
+exit 0

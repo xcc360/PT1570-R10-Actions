@@ -287,6 +287,64 @@ grep -q 'WIFI_FIRMWARE_OK=True' "$WF" \
 grep -q 'FACTORY_PATCH_OK=True' "$WF" \
   && ok "镜像补丁校验有正向标记" || bad "缺 FACTORY_PATCH_OK 断言"
 
+echo "=== 15. 默认 WAN=pon0 与 WiFi 诊断开关（2026-11-10 真机反馈） ==="
+# 上游 90-tyfza1-pon-wan 照抄原厂 PT1500 布局，把 wan.device 绑到
+# pon0.<pon.wan_vlan>（默认 3961）。R10 默认要求 WAN=pon0，用 uci-defaults
+# 在 90 之后回退；脚本必须保留"只改默认值"的边界，否则会覆盖用户配置。
+WAN_UC=files/etc/uci-defaults/95-pt1570-wan-default
+if [ -f "$WAN_UC" ]; then
+  ok "存在 $WAN_UC"
+  grep -q "network.wan.device='pon0'" "$WAN_UC" \
+    && ok "脚本把 wan.device 写回 pon0" || bad "脚本没有写 network.wan.device='pon0'"
+  grep -q 'pon0\.\$wan_vlan' "$WAN_UC" \
+    && ok "脚本识别上游默认 pon0.<wan_vlan>" || bad "脚本没有匹配上游默认设备的 case 分支"
+  grep -q 'case "\$wan_dev" in' "$WAN_UC" \
+    && ok "先判 wan.device 再动手" || bad "缺少 wan.device 判定"
+  grep -q '"8021q"' "$WAN_UC" \
+    && ok "只删 8021q 设备" || bad "缺少 8021q 设备判定（可能误删自定义设备）"
+  grep -q 'board_name' "$WAN_UC" \
+    && ok "按 board_name 限定 R10" || bad "缺少 board_name 限定"
+  # 命名必须在 90-tyfza1-pon-wan 之后、99-pt1570-fit 之前/同段，保证看到上游默认值
+  case "$(basename "$WAN_UC")" in
+    9[5-9]-*) ok "uci-defaults 排序在 90 之后" ;;
+    *) bad "脚本名不在 95..99，无法保证在 90-tyfza1-pon-wan 之后执行" ;;
+  esac
+else
+  bad "缺少 $WAN_UC（默认 WAN 会退回 pon0.3961）"
+fi
+
+# WiFi 诊断：开关式资产，默认开着出调试镜像；关掉时不得残留 DEVMEM
+if [ -f scripts/patch-wifi-diag.sh ]; then
+  ok "存在 scripts/patch-wifi-diag.sh"
+  grep -q 'rtl_ax_diag_dump' scripts/patch-wifi-diag.sh \
+    && ok "诊断脚本注入 rtl_ax_diag_dump" || bad "诊断脚本没有打点函数"
+  [ "$(grep -c 'rtl_ax_diag_dump(radio' scripts/patch-wifi-diag.sh)" -ge 4 ] \
+    && ok "打点覆盖 enter/ring/wcpu/download 四段" || bad "打点数不足，定位不到 ring_prepare 之外的卡点"
+  # 幂等：已打点时直接跳过
+  grep -q 'WIFI_DIAG_SKIP=True' scripts/patch-wifi-diag.sh \
+    && ok "诊断脚本幂等" || bad "诊断脚本缺少幂等保护"
+else
+  bad "缺少 scripts/patch-wifi-diag.sh"
+fi
+if [ -f Config-DIAG.txt ]; then
+  grep -q '^CONFIG_DEVMEM=y$' Config-DIAG.txt \
+    && ok "Config-DIAG 打开 CONFIG_DEVMEM" || bad "Config-DIAG 缺 CONFIG_DEVMEM=y"
+  grep -q '^CONFIG_BUSYBOX_CONFIG_DEVMEM=y$' Config-DIAG.txt \
+    && ok "Config-DIAG 打开 busybox devmem" || bad "Config-DIAG 缺 busybox devmem"
+else
+  bad "缺少 Config-DIAG.txt"
+fi
+grep -q 'name: Patch WiFi driver diagnostics' "$WF" \
+  && ok "workflow 有 WiFi 诊断步骤" || bad "workflow 缺少 Patch WiFi driver diagnostics"
+grep -q 'if: \${{ inputs.wifi_diag }}' "$WF" \
+  && ok "诊断步骤受 wifi_diag 开关控制" || bad "诊断步骤没有 wifi_diag 开关"
+grep -q 'WIFI_DIAG: \${{ inputs.wifi_diag }}' "$WF" \
+  && ok "Configure 收到 WIFI_DIAG" || bad "Configure 没有 WIFI_DIAG env"
+grep -q '正式产物不允许 CONFIG_DEVMEM' "$WF" \
+  && ok "关掉开关时断言不得带 DEVMEM" || bad "缺少 DEVMEM 的反向断言"
+grep -q 'WAN_DEFAULT_OK=True' "$WF" \
+  && ok "镜像校验断言默认 WAN=pon0" || bad "镜像校验缺 WAN_DEFAULT_OK"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"

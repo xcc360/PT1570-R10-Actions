@@ -65,6 +65,11 @@ on:
         required: false
         default: ''
         type: string
+      wifi_diag:
+        description: 'WiFi 诊断模式：给 rtl_ax_ap 驱动注入只读寄存器打点，并打开 CONFIG_DEVMEM + busybox devmem。定位完请关掉'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -313,6 +318,13 @@ jobs:
           WRT: ${{ github.workspace }}/wrt
         run: bash "$GITHUB_WORKSPACE/scripts/patch-upstream.sh"
 
+      - name: Patch WiFi driver diagnostics
+        if: ${{ inputs.wifi_diag }}
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/scripts/patch-wifi-diag.sh"
+
       - name: Configure
         working-directory: wrt
         env:
@@ -320,6 +332,7 @@ jobs:
           ASSETS: ${{ github.workspace }}
           APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
           APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
+          WIFI_DIAG: ${{ inputs.wifi_diag }}
         run: |
           set -e
           # ⚠️ 顺序敏感（run #10 根因，2026-11-10）：
@@ -335,6 +348,12 @@ jobs:
           #   正确顺序：先写最小配置（target + 机型 + 包断言），再 defconfig。
           rm -f .config
           cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config
+          # 诊断产物（wifi_diag=true）：CONFIG_DEVMEM + busybox devmem。
+          # WiFi 定位完把 wifi_diag 关掉，正式产物不带 /dev/mem。
+          if [ "${WIFI_DIAG:-false}" = "true" ]; then
+            cat "$GITHUB_WORKSPACE/Config-DIAG.txt" >> .config
+            echo "  diag: CONFIG_DEVMEM + busybox devmem"
+          fi
           bash "$GITHUB_WORKSPACE/customize.sh"
 
           # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
@@ -385,6 +404,27 @@ jobs:
           grep -q '^# CONFIG_PACKAGE_uboot-envtools is not set$' .config \
             || { echo "ERROR: uboot-envtools 必须关闭" >&2; exit 1; }
           echo "  OK   uboot-envtools disabled"
+
+          # 诊断产物 vs 正式产物：/dev/mem 只能出现在 wifi_diag=true 的镜像里
+          if [ "${WIFI_DIAG:-false}" = "true" ]; then
+            grep -q '^CONFIG_DEVMEM=y$' .config \
+              || { echo "ERROR: wifi_diag=true 但 CONFIG_DEVMEM 未启用" >&2; exit 1; }
+            grep -q 'rtl_ax_diag_dump' \
+              target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap/pci.c \
+              || { echo "ERROR: wifi_diag=true 但驱动打点未注入" >&2; exit 1; }
+            echo "  OK   wifi diag (CONFIG_DEVMEM + diag dump)"
+          else
+            ! grep -q '^CONFIG_DEVMEM=y$' .config \
+              || { echo "ERROR: 正式产物不允许 CONFIG_DEVMEM" >&2; exit 1; }
+            echo "  OK   CONFIG_DEVMEM off"
+          fi
+
+          # 默认 WAN = pon0（上游 90-tyfza1-pon-wan 会绑到 pon0.<wan_vlan>）
+          test -x files/etc/uci-defaults/95-pt1570-wan-default \
+            || { echo "ERROR: 缺少默认 WAN(pon0) 的 uci-defaults 脚本或其可执行位丢失" >&2; exit 1; }
+          grep -q "network.wan.device='pon0'" files/etc/uci-defaults/95-pt1570-wan-default \
+            || { echo "ERROR: 95-pt1570-wan-default 未把 wan.device 写回 pon0" >&2; exit 1; }
+          echo "  OK   default WAN -> pon0"
           grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
             || { echo "ERROR: image/Makefile 缺少 SUPPORTED_DEVICES" >&2; exit 1; }
           grep -q "$BOARD_NAME" target/linux/rtl9617c/base-files/lib/upgrade/platform.sh \
@@ -511,6 +551,13 @@ jobs:
           grep -q 'mv "\$tmp" "\$3"' "$ROOT/etc/init.d/tyfza1-factory" \
             || { echo "::error::镜像里的 tyfza1-factory 未应用 factory_blob 修补"; exit 1; }
           echo "FACTORY_PATCH_OK=True"
+
+          # 默认 WAN=pon0：uci-defaults 必须进镜像并带可执行位
+          [ -f "$ROOT/etc/uci-defaults/95-pt1570-wan-default" ] \
+            || { echo "::error::镜像缺少 95-pt1570-wan-default（默认 WAN 仍是 pon0.3961）"; exit 1; }
+          [ -x "$ROOT/etc/uci-defaults/95-pt1570-wan-default" ] \
+            || { echo "::error::95-pt1570-wan-default 丢了可执行位，rc 不会执行它"; exit 1; }
+          echo "WAN_DEFAULT_OK=True"
           for l in \
             lib/firmware/realtek/tyfza1/rtl8852ce/flash-calibration.bin \
             lib/firmware/realtek/tyfza1/rtl8192xbe/flash-calibration.bin \
