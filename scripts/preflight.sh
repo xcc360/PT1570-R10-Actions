@@ -207,6 +207,32 @@ grep -q 'command -v rustup' "$WF" \
 grep -q 'runner 缺 rustup' "$WF" \
   && ok "rustup 缺失时有明确报错" || bad "rustup 缺失报错不明"
 
+echo "=== 13. Configure 顺序（run #10 根因：空 config defconfig 会污染 .config） ==="
+# 上游 target-metadata.pl 硬编码 default TARGET_mediatek：空 .config 上的
+# make defconfig 会先选中 mediatek/filogic/openwrt_one，把它的包集（含官方
+# kmod-mac80211/kmod-cfg80211，与 kmod-rtl-ax-ap 自带 .ko 冲突）写成显式值，
+# 并把设备包写成显式 n。必须先写配置再 defconfig。
+FIST_DEFCONFIG=$(grep -n 'rm -f .config' "$WF" | head -1 | cut -d: -f1)
+CFGLINE=$(grep -n 'name: Configure$' "$WF" | head -1 | cut -d: -f1)
+if [ -n "${FIST_DEFCONFIG:-}" ] && [ -n "${CFGLINE:-}" ] \
+   && [ "$FIST_DEFCONFIG" -gt "$CFGLINE" ]; then
+  ok "Configure 先初始化 .config（rm -f .config 在第 $FIST_DEFCONFIG 行）"
+else
+  bad "Configure 步骤缺少 rm -f .config 初始化（会在空配置上跑 defconfig）"
+fi
+# make defconfig 的第一次出现必须晚于 cat Config-PT1570-FIT.txt
+FIRST_DEF=$(grep -nE '^[[:space:]]*make defconfig[[:space:]]*$' "$WF" | head -1 | cut -d: -f1)
+FIRST_CAT=$(grep -n 'cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config' "$WF" | head -1 | cut -d: -f1)
+if [ -n "${FIRST_DEF:-}" ] && [ -n "${FIRST_CAT:-}" ] && [ "$FIRST_CAT" -lt "$FIRST_DEF" ]; then
+  ok "首次 make defconfig（行 $FIRST_DEF）晚于写入基础配置（行 $FIRST_CAT）"
+else
+  bad "首次 make defconfig 跑在基础配置写入之前（run #10 污染根因）"
+fi
+grep -q '检测到污染包' "$WF" \
+  && ok "Configure 有污染包反向断言" || bad "缺污染包反向断言"
+grep -q '被显式 n 压住' "$WF" \
+  && ok "Configure 有设备包正向断言" || bad "缺设备包正向断言"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"

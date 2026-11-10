@@ -316,14 +316,26 @@ jobs:
           APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
         run: |
           set -e
-          make defconfig
+          # ⚠️ 顺序敏感（run #10 根因，2026-11-10）：
+          #   绝不能在空 .config 上先跑 make defconfig。上游 target-metadata.pl
+          #   把 Target System choice 硬编码为 default TARGET_mediatek，空配置
+          #   defconfig 会选中 mediatek/filogic 的默认机型 openwrt_one，把它的
+          #   包集合（kmod-mt7915e → 官方 kmod-mac80211/kmod-cfg80211、
+          #   wpad-basic-mbedtls、mt7981-wo-firmware、eip197-mini-firmware、
+          #   kmod-rtc-pcf8563 等）以及其它所有包的 "# not set" 写成显式用户
+          #   选择。切到 rtl9617c 后这些值原样保留：残留的 kmod-mac80211 与
+          #   kmod-rtl-ax-ap 自带的 cfg80211.ko/mac80211.ko 安装时互相覆盖
+          #   （package/install Error 1），而设备包默认值也救不回显式 n 的包。
+          #   正确顺序：先写最小配置（target + 机型 + 包断言），再 defconfig。
+          rm -f .config
           cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config
           bash "$GITHUB_WORKSPACE/customize.sh"
 
           # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
           sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
-          grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config || \
-            echo "CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y" >> .config
+
+          make defconfig
+          cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config
 
           # defconfig 会静默丢掉未被 profile 点名的包，照 pt1500-build.sh 跑两次并断言
           make defconfig
@@ -374,6 +386,26 @@ jobs:
           test -f "target/linux/rtl9617c/dts/${DTS}.dts" \
             || { echo "ERROR: DTS 缺失" >&2; exit 1; }
           echo "  OK   DTS=$DTS board_name=$BOARD_NAME"
+
+          echo "===== R10 config sanity（run #10 修复的防回归断言）====="
+          # 空配置 defconfig 会把 mediatek/filogic/openwrt_one 的包集写成显式
+          # =y（污染源），并把设备包写成显式 n（压死 DEVICE_PACKAGES 默认值）。
+          # 这里正反双向断言，任何一条失败都说明 Configure 的顺序被改坏了。
+          for bad in kmod-mac80211 kmod-cfg80211 kmod-mt7915e kmod-mt76-core \
+                     wpad-basic-mbedtls mt7981-wo-firmware eip197-mini-firmware \
+                     airoha-en8811h-firmware kmod-phy-airoha-en8811h kmod-rtc-pcf8563; do
+            if grep -qE "^CONFIG_PACKAGE_${bad}=(y|m)$" .config; then
+              echo "ERROR: 检测到污染包 ${bad}（默认 target 的包残留），检查 Configure 步骤的 .config 初始化顺序" >&2
+              exit 1
+            fi
+          done
+          echo "  OK   无 mediatek/openwrt_one 残留包"
+          for good in kmod-fs-ext4 kmod-fs-vfat kmod-nls-utf8 kmod-usb-storage \
+                      kmod-usb-storage-uas wpad-mbedtls; do
+            grep -q "^CONFIG_PACKAGE_${good}=y$" .config \
+              || { echo "ERROR: 设备包 ${good} 未启用（被显式 n 压住）" >&2; exit 1; }
+            echo "  OK   ${good}"
+          done
 
           if [ "${DTS_STATUS:-experimental}" = "verified" ]; then
             ! grep -q 'UNVERIFIED' "target/linux/rtl9617c/dts/${DTS}.dts" \
