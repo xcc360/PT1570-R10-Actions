@@ -445,6 +445,10 @@ jobs:
             || { echo "ERROR: 默认上网 VLAN 未设为 1101" >&2; exit 1; }
           grep -q "pon.pon.offload='1'" "$WAN_DEF" \
             || { echo "ERROR: 默认未打开 PON FE(offload=1)，单播上行会全丢" >&2; exit 1; }
+          # uci 值里不能夹单引号：外层双引号时 '8021q' 会变成字面量（带引号），
+          # netifd 认不出设备类型，VLAN 子设备建不出来 → 又是收不到 PADO。
+          ! grep -q "type='8021q'" "$WAN_DEF" \
+            || { echo "ERROR: uci 值里出现了字面单引号（如 type='8021q'）" >&2; exit 1; }
           echo "  OK   default WAN -> pon0.1101 (pppoe) + PON FE on"
           grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
             || { echo "ERROR: image/Makefile 缺少 SUPPORTED_DEVICES" >&2; exit 1; }

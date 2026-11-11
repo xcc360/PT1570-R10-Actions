@@ -45,18 +45,20 @@ while uci -q get "network.@device[$index]" >/dev/null; do
   if [ "$(uci -q get "network.@device[$index].name")" = "$vlan_dev" ]; then
     found=1
     uci -q get "network.@device[$index].mtu" >/dev/null || {
-      uci -q set "network.@device[$index].mtu='1500'"; changed=1; }
+      uci -q set "network.@device[$index].mtu=1500"; changed=1; }
     break
   fi
   index=$((index + 1))
 done
 if [ "$found" = "0" ]; then
   uci -q add network device >/dev/null
-  uci -q set "network.@device[$index].type='8021q'"
-  uci -q set "network.@device[$index].ifname='pon0'"
+  # ⚠️ 这里不能给 uci 值加单引号：外层是双引号，内部的单引号会被 uci 当成值的一部分，
+  #    netifd 拿到的就是带引号的 8021q，VLAN 设备建不出来。
+  uci -q set "network.@device[$index].type=8021q"
+  uci -q set "network.@device[$index].ifname=pon0"
   uci -q set "network.@device[$index].vid=$wan_vlan"
   uci -q set "network.@device[$index].name=$vlan_dev"
-  uci -q set "network.@device[$index].mtu='1500'"
+  uci -q set "network.@device[$index].mtu=1500"
   changed=1
 fi
 
