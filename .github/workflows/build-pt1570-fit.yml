@@ -434,12 +434,18 @@ jobs:
             echo "  OK   CONFIG_DEVMEM off"
           fi
 
-          # 默认 WAN = pon0（上游 90-tyfza1-pon-wan 会绑到 pon0.<wan_vlan>）
-          test -x files/etc/uci-defaults/95-pt1570-wan-default \
-            || { echo "ERROR: 缺少默认 WAN(pon0) 的 uci-defaults 脚本或其可执行位丢失" >&2; exit 1; }
-          grep -q "network.wan.device='pon0'" files/etc/uci-defaults/95-pt1570-wan-default \
-            || { echo "ERROR: 95-pt1570-wan-default 未把 wan.device 写回 pon0" >&2; exit 1; }
-          echo "  OK   default WAN -> pon0"
+          # 默认 WAN = pon0.<wan_vlan>（8021q 子设备）+ PPPoE，且 PON FE 必须默认打开
+          #   2026-11-11 真机实证：untagged pon0 收不到 PADO；FE 关闭时单播上行被静默丢弃。
+          WAN_DEF=files/etc/uci-defaults/95-pt1570-wan-default
+          test -x "$WAN_DEF" \
+            || { echo "ERROR: 缺少默认 WAN 的 uci-defaults 脚本或其可执行位丢失" >&2; exit 1; }
+          grep -q 'network.wan.device="\$vlan_dev"' "$WAN_DEF" \
+            || { echo "ERROR: 95-pt1570-wan-default 未把 wan.device 绑到 VLAN 子设备" >&2; exit 1; }
+          grep -q 'wan_vlan=1101' "$WAN_DEF" \
+            || { echo "ERROR: 默认上网 VLAN 未设为 1101" >&2; exit 1; }
+          grep -q "pon.pon.offload='1'" "$WAN_DEF" \
+            || { echo "ERROR: 默认未打开 PON FE(offload=1)，单播上行会全丢" >&2; exit 1; }
+          echo "  OK   default WAN -> pon0.1101 (pppoe) + PON FE on"
           grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
             || { echo "ERROR: image/Makefile 缺少 SUPPORTED_DEVICES" >&2; exit 1; }
           grep -q "$BOARD_NAME" target/linux/rtl9617c/base-files/lib/upgrade/platform.sh \
@@ -585,6 +591,8 @@ jobs:
           # 内核最终配置（kconfig 合并后）里必须有 UIMAGE_FIT_BLK，否则
           # 即使 DTB 写了 root=/dev/fitblk0 也不会有这个设备。
           KCFG=$(ls -d build_dir/target-*/linux-rtl9617c/linux-*/.config 2>/dev/null | head -1)
+          [ -n "$KCFG" ] || KCFG=$(find build_dir -maxdepth 6 -path '*linux-rtl9617c*' \
+              -name auto.conf 2>/dev/null | head -1)
           if [ -n "$KCFG" ]; then
             for sym in CONFIG_UIMAGE_FIT_BLK CONFIG_MTD_ROOTFS_ROOT_DEV CONFIG_SQUASHFS; do
               grep -q "^${sym}=y$" "$KCFG" \
