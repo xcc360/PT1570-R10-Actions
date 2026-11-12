@@ -108,8 +108,8 @@ extra=$(find "$FW_DIR" -maxdepth 1 -type f -name '*.bin' | wc -l)
 # ---------- 3. fitblk：解除 4MiB FIT 上限（刷入态起不来的根因） ----------
 #
 # target/linux/generic/pending-6.18/510-block-add-uImage.FIT-subimage-block-driver.patch
-# 里写着：
-#   #define FIT_MAX_PAGES 1024
+# 里写着（注意 FIT_MAX_PAGES 与数值之间是两个 TAB，不是空格）：
+#   #define FIT_MAX_PAGES		1024
 #   if (size > PAGE_SIZE * FIT_MAX_PAGES) ret = -EOPNOTSUPP;
 #   fit = kmalloc(size, GFP_KERNEL);
 # 4 KiB 页时上限只有 4 MiB，而本机型 sysupgrade 的 FIT 是 20.7 MB、initramfs 是
@@ -121,35 +121,79 @@ extra=$(find "$FW_DIR" -maxdepth 1 -type f -name '*.bin' | wc -l)
 #
 # 修法：上限提到 16384 页（64 MiB），并把整块 kmalloc 改成 kvmalloc —— 20 MB
 # 的 kmalloc 会因伙伴系统 MAX_ORDER 直接 -ENOMEM，vmalloc 走 vmap 区才拿得到。
+# run20 教训：匹配必须对空白容错（\s+），按单空格精确匹配直接 0 命中 fail。
 FITBLK_PATCH="$WRT/target/linux/generic/pending-6.18/510-block-add-uImage.FIT-subimage-block-driver.patch"
 [ -f "$FITBLK_PATCH" ] || fail "找不到 $FITBLK_PATCH（上游 pending 目录结构变了？）"
 
 python3 - "$FITBLK_PATCH" <<'PY'
-import pathlib, sys
+import pathlib, re, sys
 p = pathlib.Path(sys.argv[1])
 text = p.read_text(encoding='utf-8')
 subs = [
-    ('#define FIT_MAX_PAGES 1024', '#define FIT_MAX_PAGES 16384'),
-    ('fit = kmalloc(size, GFP_KERNEL);', 'fit = kvmalloc(size, GFP_KERNEL);'),
-    ('kfree(fit);', 'kvfree(fit);'),
+    # 上游原文是 "#define FIT_MAX_PAGES\t\t1024"（两个 TAB），用 \s+ 容错匹配
+    (r'#define\s+FIT_MAX_PAGES\s+1024\b', '#define FIT_MAX_PAGES\t\t16384'),
+    (r'fit = kmalloc\(size, GFP_KERNEL\);', 'fit = kvmalloc(size, GFP_KERNEL);'),
+    (r'\bkfree\(fit\);', 'kvfree(fit);'),
 ]
 for old, new in subs:
-    if text.count(old) != 1:
+    hits = re.findall(old, text)
+    if len(hits) != 1:
         raise SystemExit('ERROR: fitblk 补丁里 %r 出现 %d 次（期望 1 次，上游改动？）'
-                         % (old, text.count(old)))
-    text = text.replace(old, new, 1)
+                         % (old, len(hits)))
+    text = re.sub(old, new, text, count=1)
+# kvmalloc 声明在 <linux/slab.h>、kvfree 在 <linux/vmalloc.h>；上游新增的
+# fitblk.c 没有显式包含它们（原来靠 kmalloc 的传递包含），显式补上避免隐性依赖。
+# 注意：插入的是"新建文件"hunk 里的 + 行，必须同步把 hunk 头 @@ -0,0 +1,N @@
+# 的 N 加 2，否则行数计数失配，git apply / quilt 会拒绝整个补丁。
+if '<linux/slab.h>' not in text:
+    anchor = '+#include <linux/refcount.h>\n'
+    if text.count(anchor) != 1:
+        raise SystemExit('ERROR: fitblk 补丁里 %r 出现 %d 次，无法插入 slab.h'
+                         % (anchor, text.count(anchor)))
+    text = text.replace(anchor,
+        anchor + '+#include <linux/slab.h>\n+#include <linux/vmalloc.h>\n', 1)
+    ins = text.find('+#include <linux/slab.h>\n')
+    hstart = text.rfind('\n@@', 0, ins) + 1
+    hend = text.find('\n', hstart)
+    hline = text[hstart:hend]
+    m = re.match(r'@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@$', hline)
+    if not m:
+        raise SystemExit('ERROR: 无法解析插入点所在 hunk 头：%r' % hline)
+    add, newc = m.group(2).split(',')
+    hline2 = hline.replace(' +%s,%s @@' % (add, newc),
+                           ' +%s,%d @@' % (add, int(newc) + 2), 1)
+    text = text[:hstart] + hline2 + text[hend:]
+    # 校验：从 hunk 头之后起，第 N 行（N=新计数）之前必须都是 +/空格/-/ 续行，
+    # 第 N+1 行必须是下一个 diff 头（diff --git / --- / +++ / @@）或文件尾。
+    lines = text.split('\n')
+    hidx = text[:hstart].count('\n')          # hunk 头所在行号
+    n = int(newc) + 2
+    for ln in lines[hidx + 1 : hidx + 1 + n]:
+        if ln and ln[0] not in '+-\\ ':
+            raise SystemExit('ERROR: hunk 正文混入非补丁行：%r' % ln[:60])
+    if len(lines) > hidx + 1 + n:
+        after = lines[hidx + 1 + n]
+        if after and not after.startswith(('diff ', '--- ', '+++ ', '@@ ')):
+            raise SystemExit('ERROR: hunk 行数与声明不符，第 %d 行是 %r'
+                             % (hidx + 2 + n, after[:60]))
 p.write_text(text, encoding='utf-8', newline='\n')
-print('patched fitblk: FIT_MAX_PAGES 1024 -> 16384, kmalloc -> kvmalloc')
+print('patched fitblk: FIT_MAX_PAGES 1024 -> 16384, kmalloc -> kvmalloc, +slab/vmalloc.h')
 PY
 
-grep -q '#define FIT_MAX_PAGES 16384' "$FITBLK_PATCH" \
+grep -qE '#define[[:space:]]+FIT_MAX_PAGES[[:space:]]+16384' "$FITBLK_PATCH" \
   || fail 'fitblk 补丁未被修改（FIT_MAX_PAGES）'
 grep -q 'fit = kvmalloc(size, GFP_KERNEL);' "$FITBLK_PATCH" \
   || fail 'fitblk 补丁未被修改（kvmalloc）'
 grep -q 'kvfree(fit);' "$FITBLK_PATCH" \
   || fail 'fitblk 补丁未被修改（kvfree）'
+grep -q '#include <linux/slab.h>' "$FITBLK_PATCH" \
+  || fail 'fitblk 补丁缺少 slab.h（kvmalloc 声明）'
+grep -q '#include <linux/vmalloc.h>' "$FITBLK_PATCH" \
+  || fail 'fitblk 补丁缺少 vmalloc.h（kvfree 声明）'
 ! grep -q 'fit = kmalloc(size, GFP_KERNEL);' "$FITBLK_PATCH" \
   || fail 'fitblk 补丁仍残留 kmalloc(size)'
+! grep -qE '#define[[:space:]]+FIT_MAX_PAGES[[:space:]]+1024' "$FITBLK_PATCH" \
+  || fail 'fitblk 补丁仍残留 1024 上限'
 echo "FITBLK_LIMIT_OK=True (16384 pages = 64 MiB, kvmalloc)"
 
 echo "patch-upstream OK: factory_blob 已修，WiFi 固件 7/7 校验通过，fitblk 上限已放开"
