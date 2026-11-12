@@ -325,6 +325,20 @@ jobs:
           WRT: ${{ github.workspace }}/wrt
         run: bash "$GITHUB_WORKSPACE/scripts/patch-wifi-diag.sh"
 
+      # 上游（20b4cf4）的 PE 引擎是 PT1570 实测坏掉并已 revert 的 IRAM/物理 CP3
+      # 方案，两张 WiFi 卡 probe 都卡在等 PEWD -> -ETIMEDOUT -> 无 WiFi。
+      # 这里把 rtl_ax_ap 驱动整套换成已验证可用的 PT1570 版本（含配套
+      # pe-tx-code.h），覆盖掉上面 PE 步骤现场编译出的坏版头文件。
+      # 必须在 Build PE firmware 之后、Configure 之前。
+      # 诊断模式（wifi_diag=true）保留上游驱动 + 原有寄存器打点，便于对照；
+      # 此时不覆盖 pci.c，否则 step 20 的 "diag 打点已注入" 断言会失败。
+      - name: Overlay known-good PT1570 WiFi driver (PE IRAM revert)
+        if: ${{ inputs.wifi_diag != true }}
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/scripts/overlay-wifi-driver.sh"
+
       - name: Configure
         working-directory: wrt
         env:
