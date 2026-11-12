@@ -1,0 +1,133 @@
+name: Build PT1570-R10 U-Boot
+
+# The U-Boot source tree (upstream qwe-qaq/rtl9617c-uboot@1570 plus the
+# pt1570-r10 board assets) lives on the "uboot-r10" branch of this repo.
+# This workflow stays on the default branch so workflow_dispatch can find it,
+# and checks out that branch explicitly.
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Board definition (tools/release/boards/<name>.json)"
+        required: false
+        default: "pt1570-r10"
+        type: string
+      publish:
+        description: "Attach images to a Release"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: uboot-r10-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: pt1570-r10 boot image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BOARD: pt1570-r10
+    steps:
+      - name: Checkout U-Boot source (uboot-r10 branch)
+        uses: actions/checkout@v5
+        with:
+          ref: uboot-r10
+          fetch-depth: 1
+
+      - name: Verify R10 board assets
+        run: |
+          set -eu
+          test -f "configs/${BOARD}_defconfig"
+          test -f "arch/arm/dts/rtl9617c-${BOARD}.dts"
+          test -f "board/yhup/pt1570_r10/desc.c"
+          test -f "tools/release/boards/${BOARD}.json"
+          test -f "tools/release/stocks/${BOARD}/stock-mtd0.bin"
+          sha256sum "tools/release/stocks/${BOARD}/stock-mtd0.bin"
+          grep -q '"stock_sha256": "5ee1e8f8853bd4ba8b06ac6410e421cf3bcaa0b68e994f3de853b7f86d4c01b1"' \
+            "tools/release/boards/${BOARD}.json"
+          echo "BOARD_ASSETS_OK=True"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bc bison build-essential ccache device-tree-compiler flex \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            gzip libncurses-dev libssl-dev \
+            openssl pkg-config python3 python3-cryptography python3-jsonschema \
+            python3-pyelftools python3-setuptools python3-yaml swig \
+            u-boot-tools uuid-dev xz-utils
+
+      - name: Cross toolchain sanity check
+        run: |
+          set -eu
+          aarch64-linux-gnu-gcc --version | head -1
+          printf '#include <stddef.h>\n#include <stdint.h>\nsize_t x;\n' \
+            | aarch64-linux-gnu-gcc -ffreestanding -mgeneral-regs-only \
+                -mstrict-align -x c - -c -o /dev/null
+          echo "CROSS_OK=True"
+
+      - name: Build BL33 + signed FIP
+        run: |
+          set -eu
+          chmod +x build.sh tools/release/build_bl33.sh
+          ./build.sh "$BOARD" bl33
+          ./build.sh "$BOARD" pack
+          ./build.sh "$BOARD" verify
+          echo "UBOOT_BUILD_OK=True"
+
+      - name: Extra offline checks (R10 stock pinning)
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import pathlib, sys
+          sys.path.insert(0, "tools/release")
+          import pack_boot as pb
+          cfg = pb.load_board(pathlib.Path("tools/release/boards"), "pt1570-r10")
+          board = pb.Board(cfg)
+          stock = pathlib.Path("tools/release/stocks/pt1570-r10/stock-mtd0.bin").read_bytes()
+          image = pathlib.Path("output/pt1570-r10/pt1570-r10.boot.bin").read_bytes()
+          si, im = pb.Image(board, stock), pb.Image(board, image)
+          for role in ("tb_fw", "soc_fw"):
+              assert im.payload(board, role) == si.payload(board, role), role + " changed"
+              print("PINNED", role, len(im.payload(board, role)))
+          assert len(image) == len(stock) == board.boot_size
+          assert image[:board.fip_offsets[0]] == stock[:board.fip_offsets[0]]
+          print("R10_STOCK_PINNED=True")
+          print("image sha256", pb.sha256(image))
+          PY
+
+      - name: Collect artifacts
+        run: |
+          set -eu
+          mkdir -p dist
+          cp "output/$BOARD/$BOARD.boot.bin" \
+             "output/$BOARD/$BOARD.fip.bin" \
+             "output/$BOARD/$BOARD.manifest.json" \
+             "output/$BOARD/build.log" dist/
+          ( cd dist && sha256sum ./* > sha256sums.txt )
+          cat dist/sha256sums.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: pt1570-r10-uboot-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish Release
+        if: ${{ github.event.inputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          tag="uboot-r10-$(git rev-parse --short=12 HEAD)"
+          gh release create "$tag" --title "$tag" --generate-notes --target "$GITHUB_SHA" || true
+          gh release upload "$tag" dist/*.bin dist/*.json dist/*.txt --clobber || true
