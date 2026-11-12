@@ -75,6 +75,11 @@
 		bootargs = "earlycon console=ttyS0,115200n8 loglevel=7 clk_ignore_unused maxcpus=4 root=/dev/fitblk0 rootwait rootfstype=squashfs";
 	};
 
+	/*
+	 * ubi_device 分区的 read-only 在本文件末尾的 &qspi 覆盖块里删除，
+	 * 原因见那里的注释（UBI 只读会直接导致刷入态启动失败）。
+	 */
+
 	// 覆盖上游 dtsi 的 led-button：修正 lights 引脚，补齐 reset / wifi。
 	// DTC 会合并同名节点，同名子节点按后写覆盖。
 	// 真机 FDT 实测（gpios 三元组 phandle / pin / flags）：
@@ -98,6 +103,28 @@
 			linux,code = <KEY_RFKILL>;
 			gpios = <&gpio0 99 GPIO_ACTIVE_LOW>;
 			debounce-interval = <60>;
+		};
+	};
+};
+
+/*
+ * ubi_device 分区必须可写（2026-11-12 真机定位）
+ *
+ * 上游 rtl9617c-tyfza1.dtsi 给 5 个分区都写了 read-only，并用
+ * 110-spinand-readonly.patch 在 spinand_probe 里把带 read-only 的 MTD
+ * 的 MTD_WRITEABLE 清掉。于是内核把 mtd4 判成写保护，UBI 以只读方式 attach：
+ *   ubi0: MTD device 4 is write-protected, attach in read-only mode
+ *   ubimkvol -> error 30 (Read-only file system)
+ * 结果 rootfs_data（刷机后整卷 0xFF）永远无法格式化成 ubifs，mount_root
+ * 建不出 overlay，刷入态启动必然失败。这里只放开 ubi_device；
+ * boot / env / env2 / static_conf 保持只读。
+ */
+&qspi {
+	flash@0 {
+		partitions {
+			partition@340000 {
+				/delete-property/ read-only;
+			};
 		};
 	};
 };

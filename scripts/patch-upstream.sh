@@ -4,7 +4,7 @@
 # 用法：
 #   ASSETS=<资产目录> WRT=<源码树> bash scripts/patch-upstream.sh
 #
-# 修两件事：
+# 修三件事：
 #   1. package/tyfza1-pon-control/files/tyfza1-factory 的 factory_blob() 参数错位：
 #      函数签名是 factory_blob <offset> <size> <dest>，但结尾写的是
 #        mv "$tmp" "$2"
@@ -14,6 +14,8 @@
 #      修法：mkdir -p 目标目录 + mv "$tmp" "$3"。
 #   2. 校验 rootfs overlay 里的 WiFi AP 固件齐全（上游没有任何包安装它们，
 #      只能由 files/lib/firmware/realtek/tyfza1/ 提供）。
+#   3. 放开 generic/510 fitblk 的 4 MiB FIT 上限（改 16384 页 + kvmalloc），
+#      否则 /dev/fitblk0 建不出来，刷入态启动直接灯全灭。
 
 set -euo pipefail
 
@@ -103,4 +105,51 @@ EOF
 extra=$(find "$FW_DIR" -maxdepth 1 -type f -name '*.bin' | wc -l)
 [ "$extra" = 7 ] || fail "WiFi 固件目录里有 $extra 个 .bin，期望 7 个（多余文件需确认用途）"
 
-echo "patch-upstream OK: factory_blob 已修，WiFi 固件 7/7 校验通过"
+# ---------- 3. fitblk：解除 4MiB FIT 上限（刷入态起不来的根因） ----------
+#
+# target/linux/generic/pending-6.18/510-block-add-uImage.FIT-subimage-block-driver.patch
+# 里写着：
+#   #define FIT_MAX_PAGES 1024
+#   if (size > PAGE_SIZE * FIT_MAX_PAGES) ret = -EOPNOTSUPP;
+#   fit = kmalloc(size, GFP_KERNEL);
+# 4 KiB 页时上限只有 4 MiB，而本机型 sysupgrade 的 FIT 是 20.7 MB、initramfs 是
+# 23.6 MB，于是 probe 直接返回 -95：
+#   fitblk fitblk: probe with driver fitblk failed with error -95
+# /dev/fitblk0 永远不出现 → 内核按 root=/dev/fitblk0 挂根失败 → 灯全灭。
+# initramfs 不需要 root 设备，所以内存启动一直正常：这正是"内存能起、刷入起不来"
+# 的唯一原因。
+#
+# 修法：上限提到 16384 页（64 MiB），并把整块 kmalloc 改成 kvmalloc —— 20 MB
+# 的 kmalloc 会因伙伴系统 MAX_ORDER 直接 -ENOMEM，vmalloc 走 vmap 区才拿得到。
+FITBLK_PATCH="$WRT/target/linux/generic/pending-6.18/510-block-add-uImage.FIT-subimage-block-driver.patch"
+[ -f "$FITBLK_PATCH" ] || fail "找不到 $FITBLK_PATCH（上游 pending 目录结构变了？）"
+
+python3 - "$FITBLK_PATCH" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text(encoding='utf-8')
+subs = [
+    ('#define FIT_MAX_PAGES 1024', '#define FIT_MAX_PAGES 16384'),
+    ('fit = kmalloc(size, GFP_KERNEL);', 'fit = kvmalloc(size, GFP_KERNEL);'),
+    ('kfree(fit);', 'kvfree(fit);'),
+]
+for old, new in subs:
+    if text.count(old) != 1:
+        raise SystemExit('ERROR: fitblk 补丁里 %r 出现 %d 次（期望 1 次，上游改动？）'
+                         % (old, text.count(old)))
+    text = text.replace(old, new, 1)
+p.write_text(text, encoding='utf-8', newline='\n')
+print('patched fitblk: FIT_MAX_PAGES 1024 -> 16384, kmalloc -> kvmalloc')
+PY
+
+grep -q '#define FIT_MAX_PAGES 16384' "$FITBLK_PATCH" \
+  || fail 'fitblk 补丁未被修改（FIT_MAX_PAGES）'
+grep -q 'fit = kvmalloc(size, GFP_KERNEL);' "$FITBLK_PATCH" \
+  || fail 'fitblk 补丁未被修改（kvmalloc）'
+grep -q 'kvfree(fit);' "$FITBLK_PATCH" \
+  || fail 'fitblk 补丁未被修改（kvfree）'
+! grep -q 'fit = kmalloc(size, GFP_KERNEL);' "$FITBLK_PATCH" \
+  || fail 'fitblk 补丁仍残留 kmalloc(size)'
+echo "FITBLK_LIMIT_OK=True (16384 pages = 64 MiB, kvmalloc)"
+
+echo "patch-upstream OK: factory_blob 已修，WiFi 固件 7/7 校验通过，fitblk 上限已放开"
