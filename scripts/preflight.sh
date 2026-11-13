@@ -581,6 +581,37 @@ grep -q 'RPCD_ARGON_OK=True' "$WF" \
 grep -q 'wrt/files/usr/libexec/rpcd/' "$WF" \
   && ok "workflow 给 rpcd 插件补可执行位" || bad "workflow 没给 rpcd 插件补可执行位"
 
+echo "=== 19. sysupgrade 不保留配置 + br-lan MAC 固定（2026-11-14 真机） ==="
+# 现象：系统内更新勾不勾「保留配置」配置都在，只有 U-Boot 刷入才清空。
+# A. zz-pt1570-sysupgrade.sh 覆盖 nand_do_restore_config（按 UPGRADE_BACKUP
+#    限制恢复）+ platform_do_upgrade（先卸载 /overlay，让 ubirmvol 成功）。
+# B. 02_network 只写 network.lan.macaddr，bridge 不应用；br-lan 从 lan0
+#    继承随机 MAC，Windows 按网关 MAC 认网络 → 每次重启都是新网络。
+ZZ=files/lib/upgrade/zz-pt1570-sysupgrade.sh
+if [ -f "$ZZ" ]; then
+  ok "存在 $ZZ"
+  case "$ZZ" in */zz-*) ok "zz- 前缀保证 include /lib/upgrade 最后 source" ;; *) bad "文件名不是 zz- 前缀（会被 tar.sh 等覆盖）" ;; esac
+  grep -q 'UPGRADE_BACKUP' "$ZZ" \
+    && ok "配置恢复受 UPGRADE_BACKUP 限制" || bad "未按 UPGRADE_BACKUP 限制配置恢复"
+  grep -q 'umount -l /overlay' "$ZZ" \
+    && ok "升级前卸载 overlay（ubirmvol 才能成功）" || bad "未卸载 overlay"
+  grep -q 'CI_KERNPART=fit' "$ZZ" \
+    && ok "升级目标卷 = fit（统一 UBI）" || bad "升级目标卷不是 fit"
+else
+  bad "缺少 $ZZ（sysupgrade -n 无法清空配置）"
+fi
+U99=files/etc/uci-defaults/99-pt1570-fit
+grep -q 'network.@device\[0\].macaddr' "$U99" \
+  && ok "99-pt1570-fit 给 br-lan 显式写 macaddr" || bad "未固定 br-lan MAC"
+grep -q '/tmp/tyfza1-factory/lan_mac' "$U99" \
+  && ok "MAC 取自 factory lan_mac" || bad "MAC 未取自 factory"
+grep -q '已有自定义值则不覆盖' "$U99" \
+  && ok "不覆盖用户自定义 MAC" || bad "会覆盖用户自定义 MAC（仅注释检查）"
+grep -q 'SYSUPGRADE_KEEP_OK=True' "$WF" \
+  && ok "镜像校验有 SYSUPGRADE_KEEP_OK 断言" || bad "缺 SYSUPGRADE_KEEP_OK 断言"
+grep -q 'LAN_MAC_OK=True' "$WF" \
+  && ok "镜像校验有 LAN_MAC_OK 断言" || bad "缺 LAN_MAC_OK 断言"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"

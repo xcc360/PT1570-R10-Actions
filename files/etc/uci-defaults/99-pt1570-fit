@@ -97,6 +97,31 @@ case "$(board_name)" in
       fi
       idx=$((idx+1))
     done
+
+    # ---- 固定 br-lan MAC（Windows 每次重启都提示「新网络」） ----
+    # 2026-11-14 真机：/tmp/tyfza1-factory/lan_mac = 10:47:e7:4d:67:3c，
+    # 02_network 默认分支用 ucidef_set_interface_macaddr 把它写进了
+    # network.lan.macaddr，但 netifd 不把 interface 级 macaddr 应用到
+    # bridge device：/sys/class/net/br-lan/addr_assign_type=3（从端口继承），
+    # 实际 MAC 继承自第一个桥成员 lan0，而 lan0 是内核随机生成的
+    # locally-administered 地址（e2:...），每次启动都变。
+    # Windows 网络识别按默认网关 MAC 生成网络 GUID，于是每次重启都算新网络。
+    # 显式给 @device[0]（br-lan）写 macaddr，netifd 建桥时直接设死；
+    # 已有自定义值则不覆盖。
+    if [ "$(uci -q get network.@device[0].name 2>/dev/null)" = "br-lan" ] \
+       && [ -z "$(uci -q get network.@device[0].macaddr 2>/dev/null)" ]; then
+      lan_mac=
+      if [ -r /tmp/tyfza1-factory/lan_mac ]; then
+        read -r lan_mac < /tmp/tyfza1-factory/lan_mac
+      fi
+      [ -n "$lan_mac" ] || lan_mac="$(uci -q get network.lan.macaddr 2>/dev/null || true)"
+      case "$lan_mac" in
+        ??:??:??:??:??:??)
+          uci -q set network.@device[0].macaddr="$lan_mac"
+          uci -q commit network
+          ;;
+      esac
+    fi
     ;;
   youhua,pt1570-h10)
     # TODO(H10-DORMANT): 真机采集后按实际 netdev 名称补 ucidef_set_interfaces_lan_wan。
