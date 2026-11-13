@@ -62,13 +62,42 @@ case "$(board_name)" in
 esac
 
 # ---- LAN 接线（新机型在 02_network 里没有 case，会落到默认分支） ----
-# ✅ 2026-11-09 R10 真机 FDT 实证：`realtek,lan-phys = <&phy0 &phy1 &phy2 &phy3>`
-#    （4×GE 内部 GPHY，MDIO reg 1..4），netdev 为 lan1..lan4；PON 侧有
-#    pon0 / pon-omci / pon-oam0 / pon0.1101，WAN 走 pppoe-wan。
-#    默认分支的 lan1..lan4 + WAN=pon0 与实测一致，不需要额外补写。
-#    新固件真机启动后仍需用 `ip -br link` 复核一次（DTS 仍带 UNVERIFIED）。
+# ⚠️ 2026-11-13 修正：此前注释"默认分支 lan1..lan4 与实测一致"是错的。
+#    run24 真机 dmesg 4.33s 实证：rtl9617c-xram 原生 NI/DMA 驱动注册的
+#    netdev 是 lan0 / lan2 / lan3 / lan4（"LAN port 0..3"），并打印
+#    "LAN port 4 has no realtek,lan-phys; not registered"——系统里根本
+#    没有 lan1。02_network 默认分支写死 lan1..lan4，导致 netdev lan0
+#    （真实物理 RJ45，带独立 PHY）游离在 br-lan 之外：admin DOWN、
+#    无 master、拿不到 DHCP、面板灯不亮。用户现象"网口不通 + 灯不亮"
+#    即此。WAN 走 PON（pon0.1101），4 个 RJ45 全是 LAN，与默认分支的
+#    WAN=pon0 一致，只有 LAN 口名单需要兜底修正。
 # H10 分支（DORMANT，暂缓）：设备未上线，无真机数据，不要启用。
 case "$(board_name)" in
+  youhua,pt1570-r10)
+    # br-lan ports：只在仍是默认接线 lan1..lan4 时替换为实测四口，
+    # 用户自己改过 ports 则不覆盖。
+    if [ "$(uci -q get network.@device[0].name 2>/dev/null)" = "br-lan" ] \
+       && [ "$(uci -q get network.@device[0].ports 2>/dev/null)" = "lan1 lan2 lan3 lan4" ]; then
+      uci -q delete network.@device[0].ports
+      for p in lan0 lan2 lan3 lan4; do
+        uci -q add_list network.@device[0].ports="$p"
+      done
+      uci -q commit network
+    fi
+    # LED_EPHY0 的 netdev trigger 默认绑在不存在的 lan1（恒灭），
+    # 改绑 lan0。真机验证：改后该口插线即亮、tx/rx 闪烁正常。
+    # LED_EPHY1/2/3 对 lan2/3/4 本来就对，不动。按 sysfs 匹配，
+    # 不依赖上游生成的 section 名。
+    idx=0
+    while uci -q get system.@led[$idx] >/dev/null 2>&1; do
+      if [ "$(uci -q get system.@led[$idx].sysfs 2>/dev/null)" = "LED_EPHY0" ] \
+         && [ "$(uci -q get system.@led[$idx].dev 2>/dev/null)" = "lan1" ]; then
+        uci -q set system.@led[$idx].dev='lan0'
+        uci -q commit system
+      fi
+      idx=$((idx+1))
+    done
+    ;;
   youhua,pt1570-h10)
     # TODO(H10-DORMANT): 真机采集后按实际 netdev 名称补 ucidef_set_interfaces_lan_wan。
     ;;

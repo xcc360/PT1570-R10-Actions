@@ -598,8 +598,8 @@ jobs:
           [ -f "$DF" ] || { echo "::error::镜像缺少 distfeeds.list"; exit 1; }
           nfeed=$(grep -c 'mirrors\.pku\.edu\.cn/immortalwrt/releases/25\.12-SNAPSHOT/packages/aarch64_cortex-a53/' "$DF" || true)
           [ "$nfeed" = 5 ] || { echo "::error::distfeeds 里北大 25.12 源 $nfeed 条 != 5（base/luci/packages/routing/telephony）"; exit 1; }
-          grep -q 'aarch64_cortex-a55' "$DF" \
-            && { echo "::error::distfeeds 指向了镜像不存在的 aarch64_cortex-a55 目录"; exit 1; }
+          grep -v '^[[:space:]]*#' "$DF" | grep -q 'aarch64_cortex-a55' \
+            && { echo "::error::distfeeds 有效源指向了镜像不存在的 aarch64_cortex-a55 目录（注释行不算）"; exit 1; }
           echo "  OK   distfeeds: 北大镜像 25.12-SNAPSHOT ×$nfeed（aarch64_cortex-a53）"
 
           # /etc/apk/arch 在 ROM 里只有 a55，首启由 91-pt1570-apk-arch 补 a53，
@@ -616,6 +616,19 @@ jobs:
           grep -q 'aarch64_cortex-a53' "$ROOT/etc/uci-defaults/91-pt1570-apk-arch" \
             || { echo "::error::91-pt1570-apk-arch 没写 aarch64_cortex-a53"; exit 1; }
           echo "APK_SOURCE_OK=True feeds=$nfeed"
+
+          # --- 网口接线兜底（2026-11-13 真机实证） ---
+          # rtl9617c-xram 原生驱动注册 lan0/lan2/lan3/lan4（无 lan1），02_network
+          # 默认分支写死 lan1..lan4 会把 lan0 漏在 br-lan 外（口不通、灯不亮），
+          # 99-pt1570-fit 负责修正 br-lan ports 与 LED_EPHY0 绑定，缺一不可。
+          U99="$ROOT/etc/uci-defaults/99-pt1570-fit"
+          [ -f "$U99" ] \
+            || { echo "::error::镜像缺少 99-pt1570-fit"; exit 1; }
+          grep -q "for p in lan0 lan2 lan3 lan4" "$U99" \
+            || { echo "::error::99-pt1570-fit 缺 R10 网口兜底（br-lan ports lan0/lan2/lan3/lan4）"; exit 1; }
+          grep -q "LED_EPHY0" "$U99" && grep -q "dev='lan0'" "$U99" \
+            || { echo "::error::99-pt1570-fit 缺 LED_EPHY0 改绑 lan0"; exit 1; }
+          echo "  OK   99-pt1570-fit 网口兜底：br-lan=lan0/lan2/lan3/4，LED_EPHY0→lan0"
 
           # --- RFE54 射频参数表 + TSSI 热补偿曲线 + 单板校准 ---
           # 这四类输入缺任何一个，rtl_ax_ap 都会在 phy/fem/cal 阶段失败退出：

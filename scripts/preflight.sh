@@ -80,6 +80,15 @@ for f in files/etc/uci-defaults/99-pt1570-fit migration/device-preflight.sh; do
   if sh -n "$f" 2>/dev/null; then ok "sh -n $f"; else bad "sh -n $f"; fi
 done
 
+echo "=== 4b. R10 网口接线兜底（2026-11-13 真机实证 lan0/lan2/lan3/lan4，无 lan1） ==="
+U99=files/etc/uci-defaults/99-pt1570-fit
+grep -q "for p in lan0 lan2 lan3 lan4" "$U99" \
+  && ok "99-pt1570-fit 含 br-lan ports 兜底 lan0/lan2/lan3/lan4" \
+  || bad "99-pt1570-fit 缺 br-lan ports 兜底（lan0 会游离，口不通灯不亮）"
+grep -q "LED_EPHY0" "$U99" && grep -q "dev='lan0'" "$U99" \
+  && ok "99-pt1570-fit 含 LED_EPHY0 改绑 lan0" \
+  || bad "99-pt1570-fit 缺 LED_EPHY0 改绑（面板灯恒灭）"
+
 echo "=== 5. R10 机型隔离与 UBI 命名 ==="
 b=r10
 dev="board/devices/pt1570-${b}.mk.inc"
