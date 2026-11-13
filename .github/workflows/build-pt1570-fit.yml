@@ -57,7 +57,7 @@ on:
         default: ''
         type: string
       apk_mirror_base:
-        description: '可选：外部 apk 镜像根 URL。注意本 target 架构是 aarch64_cortex-a55，多数国内镜像没有该目录，留空最安全'
+        description: '可选：覆盖内置 apk 源（默认北大镜像 immortalwrt 25.12-SNAPSHOT 的 aarch64_cortex-a53 目录，公钥随镜像）。留空即用内置地址'
         required: false
         default: ''
         type: string
@@ -586,6 +586,36 @@ jobs:
           n=$(ls -1 "$ROOT"/lib/firmware/realtek/tyfza1/*.bin 2>/dev/null | wc -l)
           [ "$n" = 7 ] || { echo "::error::镜像内 WiFi 固件数量 $n != 7"; exit 1; }
           echo "WIFI_FIRMWARE_OK=True files=$n"
+
+          # ---- apk 源与索引公钥（2026-11-13 真机：缺公钥会 UNTRUSTED signature） ----
+          KEY_SRC="$ASSETS/files/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
+          [ -f "$KEY_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 immortalwrt-25.12.pem"; exit 1; }
+          cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::镜像内 apk 公钥与资产不一致"; exit 1; }
+          echo "  OK   apk key: immortalwrt-25.12.pem ($(stat -c %s "$KEY_DST") B)"
+
+          DF="$ROOT/etc/apk/repositories.d/distfeeds.list"
+          [ -f "$DF" ] || { echo "::error::镜像缺少 distfeeds.list"; exit 1; }
+          nfeed=$(grep -c 'mirrors\.pku\.edu\.cn/immortalwrt/releases/25\.12-SNAPSHOT/packages/aarch64_cortex-a53/' "$DF" || true)
+          [ "$nfeed" = 5 ] || { echo "::error::distfeeds 里北大 25.12 源 $nfeed 条 != 5（base/luci/packages/routing/telephony）"; exit 1; }
+          grep -q 'aarch64_cortex-a55' "$DF" \
+            && { echo "::error::distfeeds 指向了镜像不存在的 aarch64_cortex-a55 目录"; exit 1; }
+          echo "  OK   distfeeds: 北大镜像 25.12-SNAPSHOT ×$nfeed（aarch64_cortex-a53）"
+
+          # /etc/apk/arch 在 ROM 里只有 a55，首启由 91-pt1570-apk-arch 补 a53，
+          # 否则镜像的 a53 包会被 apk 以 unsupported architecture 拒装。
+          if [ -f "$ROOT/etc/apk/arch" ]; then
+            grep -q 'aarch64_cortex-a55' "$ROOT/etc/apk/arch" \
+              || { echo "::error::/etc/apk/arch 缺本机架构 aarch64_cortex-a55"; exit 1; }
+            echo "  OK   /etc/apk/arch 本机架构 a55（a53 由首启脚本追加）"
+          else
+            echo "::error::镜像缺少 /etc/apk/arch"; exit 1
+          fi
+          [ -f "$ROOT/etc/uci-defaults/91-pt1570-apk-arch" ] \
+            || { echo "::error::镜像缺少 91-pt1570-apk-arch（a53 不会被允许安装）"; exit 1; }
+          grep -q 'aarch64_cortex-a53' "$ROOT/etc/uci-defaults/91-pt1570-apk-arch" \
+            || { echo "::error::91-pt1570-apk-arch 没写 aarch64_cortex-a53"; exit 1; }
+          echo "APK_SOURCE_OK=True feeds=$nfeed"
 
           # --- RFE54 射频参数表 + TSSI 热补偿曲线 + 单板校准 ---
           # 这四类输入缺任何一个，rtl_ax_ap 都会在 phy/fem/cal 阶段失败退出：

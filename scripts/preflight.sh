@@ -471,6 +471,58 @@ grep -q 'verify-fit-boot.py' "$WF" \
 grep -q 'KERNEL_FIT_ROOTFS_OK' "$WF" \
   && ok "workflow 断言编译后内核配置" || bad "workflow 没有断言内核 UIMAGE_FIT_BLK"
 
+echo "=== 17. apk 源 = 北大镜像 25.12-SNAPSHOT + 索引公钥（2026-11-13 真机） ==="
+# 真机现象：distfeeds 指到北大镜像后 apk update 报
+#   WARNING: ... packages/aarch64_cortex-a53/base/packages.adb: UNTRUSTED signature
+# 索引被整份丢弃（只剩本机 156 个包）。根因是镜像索引由 immortalwrt 25.12
+# 发布密钥签名，而镜像里只有上游 openwrt-snapshots.pem。补上
+# immortalwrt-25.12.pem 后 apk update 变 OK: 10435 distinct packages。
+PK="$ASSETS/files/etc/apk/keys/immortalwrt-25.12.pem"
+if [ -f "$PK" ]; then
+  sz=$(stat -c %s "$PK")
+  [ "$sz" = "178" ] && ok "apk 索引公钥 immortalwrt-25.12.pem ($sz B)" \
+                    || bad "公钥大小 $sz != 178（内容被破坏）"
+  grep -q -- '-----BEGIN PUBLIC KEY-----' "$PK" \
+    && ok "公钥是 PEM 格式" || bad "公钥不是 PEM（apk 会忽略，仍报 UNTRUSTED）"
+else
+  bad "缺少 files/etc/apk/keys/immortalwrt-25.12.pem（apk 更新会报 UNTRUSTED signature）"
+fi
+grep -q 'immortalwrt-25.12.pem' customize.sh \
+  && ok "customize.sh 注释里点明公钥依赖" || echo "  --   customize.sh 未提及公钥（仅注释，非致命）"
+
+for pat in 'WRT_APK_MIRROR:-https://mirrors.pku.edu.cn/immortalwrt' \
+           'WRT_APK_RELEASE:-25.12-SNAPSHOT' \
+           'WRT_APK_REPO_ARCH:-aarch64_cortex-a53' ; do
+  grep -q -- "$pat" customize.sh && ok "customize.sh 默认值 $pat" || bad "customize.sh 缺 $pat"
+done
+grep -q 'WRT_APK_MIRROR" = "none"' customize.sh \
+  && ok "可用 WRT_APK_MIRROR=none 关闭外部源" || bad "没有关闭外部源的开关"
+grep -q 'APK_MIRROR_BASE 显式指定' customize.sh \
+  && ok "APK_MIRROR_BASE 仍可覆盖内置镜像" || bad "APK_MIRROR_BASE 覆盖逻辑被破坏"
+feeds=$(grep -cE '^WRT_APK_FEEDS=' customize.sh || true)
+[ "$feeds" = "1" ] && ok "feed 列表只有一个来源（防重复）" || bad "WRT_APK_FEEDS 定义 $feeds 处"
+for f in base luci packages routing telephony; do
+  grep -qE "^WRT_APK_FEEDS=.*\b$f\b" customize.sh \
+    && ok "默认 feed 含 $f" || bad "默认 feed 缺 $f 目录（镜像上有该 feed）"
+done
+
+ARCH_UC=files/etc/uci-defaults/91-pt1570-apk-arch
+if [ -f "$ARCH_UC" ]; then
+  ok "存在 $ARCH_UC"
+  grep -q "aarch64_cortex-a53" "$ARCH_UC" \
+    && ok "首启脚本补 aarch64_cortex-a53" || bad "首启脚本没写 a53（镜像包会被拒装）"
+  grep -q 'grep -qx' "$ARCH_UC" \
+    && ok "首启脚本幂等（已存在就不重复写）" || bad "首启脚本不幂等"
+  [ -x "$ARCH_UC" ] && ok "首启脚本可执行" || bad "首启脚本没有可执行位"
+else
+  bad "缺少 $ARCH_UC（ROM 的 /etc/apk/arch 只有 a55，a53 包装不上）"
+fi
+
+grep -q 'APK_SOURCE_OK=True' "$WF" \
+  && ok "镜像校验有 APK_SOURCE_OK 标记" || bad "镜像校验缺 APK_SOURCE_OK 断言"
+grep -q "UNTRUSTED signature" "$WF" \
+  && ok "workflow 记录 UNTRUSTED 排查背景" || echo "  --   workflow 未提及 UNTRUSTED（仅注释，非致命）"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"

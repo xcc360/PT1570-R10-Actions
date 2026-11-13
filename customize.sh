@@ -11,11 +11,12 @@
 # 当前范围：R10-only（H10 暂缓），但保留按机型选择参数的骨架。
 #
 # ⚠️ 与 HG5585F-CT 路线 B 的关键差异：
-#      本 target 的 CPU_TYPE=cortex-a55，架构包目录是 aarch64_cortex-a55。
-#      国内 immortalwrt 镜像通常只有 aarch64_cortex-a53，直接照抄那 6 条会
-#      导致 apk 报 architecture mismatch / 404。因此 distfeeds.list 默认不带
-#      任何外部源，配套包一律由「同批 packages」提供（customfeeds.list）。
-#      只有确认镜像存在 aarch64_cortex-a55 目录时，才用 APK_MIRROR_BASE 打开。
+#      本 target 的 CPU_TYPE=cortex-a55，架构包目录是 aarch64_cortex-a55，
+#      而国内 immortalwrt 镜像（含北大）只提供 aarch64_cortex-a53 目录。
+#      a53/a55 同属 armv8-a，用户态通用，故 distfeeds 默认指向镜像的 a53 目录，
+#      并随镜像带上 immortalwrt 25.12 索引公钥（否则 apk 报 UNTRUSTED signature）。
+#      镜像目录写死版本（25.12-SNAPSHOT），可用 WRT_APK_MIRROR/WRT_APK_RELEASE
+#      覆盖，或设 WRT_APK_MIRROR=none 关掉外部源。
 
 set -euo pipefail
 
@@ -88,21 +89,47 @@ if [ "$WRT_NTP" = "1" ]; then
   echo "customize: NTP -> 国内源"
 fi
 
-# ---- 3. apk 源 ----
+# ---- 3. apk 源（默认：北大镜像 immortalwrt 25.12-SNAPSHOT） ----
+# 三个事实（2026-11-13 真机核实）：
+#   a) 本 target 编译架构是 aarch64_cortex-a55，但北大镜像（含国内其它镜像）
+#      releases/<ver>/packages/ 下只有 aarch64_cortex-a53 目录，没有 a55。
+#      a53/a55 同属 armv8-a，用户态二进制通用；镜像里 /etc/apk/arch 已同时
+#      列了 a55 和 a53，因此指到 a53 目录是能装能跑的（apk add 已实测）。
+#   b) 镜像索引由 immortalwrt 25.12 发布密钥签名。缺公钥时 apk 会打印
+#      "WARNING: ... UNTRUSTED signature" 并整份丢弃索引（只剩本机包）。
+#      公钥随镜像走：files/etc/apk/keys/immortalwrt-25.12.pem。
+#   c) kmod-* 与本机内核版本/配置强绑定，绝不要从镜像装，用同批 packages。
+WRT_APK_MIRROR="${WRT_APK_MIRROR:-https://mirrors.pku.edu.cn/immortalwrt}"
+WRT_APK_RELEASE="${WRT_APK_RELEASE:-25.12-SNAPSHOT}"
+WRT_APK_REPO_ARCH="${WRT_APK_REPO_ARCH:-aarch64_cortex-a53}"
+
 mkdir -p files/etc/apk/repositories.d
-{
-  echo "# 由 customize.sh 生成。本 target 架构 $WRT_ARCH_PACKAGES，"
-  echo "# 官方/国内镜像一般没有该目录，默认不启用任何外部源。"
-  echo "# 配套内核模块与用户态包请用同批 packages（customfeeds.list 或手动 apk add）。"
-  if [ -n "${APK_MIRROR_BASE:-}" ]; then
-    BASE="${APK_MIRROR_BASE%/}"
-    echo "# APK_MIRROR_BASE 已显式设置：请自行确认以下路径存在。"
+if [ "$WRT_APK_MIRROR" = "none" ] || [ "$WRT_APK_MIRROR" = "off" ]; then
+  {
+    echo "# 由 customize.sh 生成：WRT_APK_MIRROR=$WRT_APK_MIRROR，不启用外部源。"
+    echo "# 配套内核模块与用户态包请用同批 packages（customfeeds.list）。"
+  } > files/etc/apk/repositories.d/distfeeds.list
+elif [ -n "${APK_MIRROR_BASE:-}" ]; then
+  BASE="${APK_MIRROR_BASE%/}"
+  {
+    echo "# 由 customize.sh 生成：APK_MIRROR_BASE 显式指定，请自行确认路径存在。"
     echo "$BASE/targets/$WRT_TARGET_SUBTARGET/packages/packages.adb"
     for feed in $WRT_APK_FEEDS; do
       echo "$BASE/packages/$WRT_ARCH_PACKAGES/$feed/packages.adb"
     done
-  fi
-} > files/etc/apk/repositories.d/distfeeds.list
+  } > files/etc/apk/repositories.d/distfeeds.list
+else
+  MK="${WRT_APK_MIRROR%/}/releases/$WRT_APK_RELEASE/packages/$WRT_APK_REPO_ARCH"
+  {
+    echo "# 由 customize.sh 生成：北大镜像 immortalwrt $WRT_APK_RELEASE"
+    echo "# 本机架构 $WRT_ARCH_PACKAGES；镜像无该目录，改用 $WRT_APK_REPO_ARCH（同 armv8-a）"
+    echo "# 索引公钥 /etc/apk/keys/immortalwrt-25.12.pem，缺则报 UNTRUSTED signature"
+    echo "# kmod-* 别从镜像装（内核版本不同），用同批 packages"
+    for feed in $WRT_APK_FEEDS; do
+      echo "$MK/$feed/packages.adb"
+    done
+  } > files/etc/apk/repositories.d/distfeeds.list
+fi
 echo "customize: wrote distfeeds.list"
 sed 's/^/    /' files/etc/apk/repositories.d/distfeeds.list
 
