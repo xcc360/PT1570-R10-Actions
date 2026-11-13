@@ -4,7 +4,7 @@
 #
 #   sh device-preflight.sh > pt1570-preflight.txt 2>&1
 #
-# 迁移到 FIT ABI 前必须拿到这些东西，否则一旦重建 UBI 就无法回退。
+# 迁移到 统一 UBI 方案 前必须拿到这些东西，否则一旦重建 UBI 就无法回退。
 
 echo "===== PT1570 FIT migration preflight (READ ONLY) ====="
 echo "date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

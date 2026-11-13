@@ -1,5 +1,5 @@
 #!/bin/sh
-# 首次开机 uci-defaults：出厂默认设置兜底 + FIT ABI 机型接线修正。
+# 首次开机 uci-defaults：出厂默认设置兜底 + 统一 UBI 方案 机型接线修正。
 # 2026-11-09 起当前范围为 R10-only；H10 分支保留但标记为 DORMANT。
 # 执行后系统自动删除本脚本。只改"仍是出厂默认值"的项，不覆盖用户自定义配置。
 # 把 FORCE 改成 1 可强制覆盖时区与主机名。
@@ -48,8 +48,8 @@ if uci -q get system.ntp.server | grep -qE 'time\.apple\.com|time1\.google\.com|
 fi
 uci -q commit system
 
-# ---- FIT ABI：关闭 anon_mount ----
-# 上游 95-pt1500-storage 只对 pt1500 的 board_name 生效。FIT ABI 下只有
+# ---- 统一 UBI 方案：关闭 anon_mount ----
+# 上游 95-pt1500-storage 只对 pt1500 的 board_name 生效。统一 UBI 方案 下只有
 # fit（固件）与 rootfs_data（overlay）归 OpenWrt 所有；block-mount 的
 # anon_mount 可能把残留的原厂 UBIFS 卷以 rw 挂上并重放日志，必须关掉。
 case "$(board_name)" in

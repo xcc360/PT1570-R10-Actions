@@ -6,7 +6,7 @@
 // 只读导出（pt1570-ci-research/r10-fdt-dump-20261109.txt，447 个属性），
 // 并与 dreamtekcat/PonWRT-TYFZA1@pt1570 的 port/overlay DTS 交叉核对。
 //
-// FIT ABI 部分完全由上游 rtl9617c-tyfza1.dtsi 提供，本文件不重复：
+// 统一 UBI 方案部分完全由上游 rtl9617c-tyfza1.dtsi 提供，本文件不重复：
 //   chosen.rootdisk = <&ubi_rootdisk>
 //   ubi-volume-fit      { volname = "fit"; }
 //   ubi-volume-factory  { volname = "factory"; nvmem-layout { ... }; }
@@ -32,8 +32,9 @@
 //   1. 本 DTS 编译出的固件尚未在 R10 上启动过；
 //   2. U-Boot Web Failsafe 网口在 R10（4×GE）上未实测；
 //   3. PON / PCIe0(10ec:c852) / PCIe1(10ec:0192) / LED / 按键需开机后复测；
-//   4. FIT ABI 的 bootargs 由 FIT/DTS 提供，旧 env 里的 loglevel=4 与
-//      启动提速设置不会自动继承，需要在新固件里重做。
+//   4. bootargs / rootdisk 完全沿用上游 dtsi，不在本文件覆盖。Run14 实测
+//      该形态可刷入启动（当时仅 IPv4 网络层不通，已由 95-pt1570-wan-default
+//      修复）；run15 起误加 /chosen 覆盖块反而把刷入态启动搞坏，见下方注释。
 //
 // 完成上述真机启动验证、删除 UNVERIFIED 标记后，才允许以
 // dts_status=verified 编译并发布 Release。
@@ -43,37 +44,52 @@
 #include "rtl9617c-tyfza1-4ge.dts"
 
 / {
-	model = "Youhua PT1570-R10 (RTL9617C, 4xGE, FIT ABI)";
+	model = "Youhua PT1570-R10 (RTL9617C UBI)";
 	compatible = "youhua,pt1570-r10", "tianyi,tyfza1-4ge", "realtek,rtl9617c";
 
 	/*
-	 * FIT rootfs 自洽启动（2026-11-10 修，run #12 刷入 NAND 起不来的根因）
+	 * ⛔ 不要在这里写 /chosen 覆盖块 —— 这是 run15~run22 刷入态起不来的根因。
 	 *
-	 * 上游 dtsi 的 bootargs 只有 console/loglevel，没有 root=。它依赖
-	 * bootloader 把 /chosen/rootdisk 翻译成 "root=/dev/fitblk0" 注入 ——
-	 * 而 qwe-qaq/rtl9617c-uboot@4c13f1b7 里根本没有 rootdisk/fitblk 代码
-	 * （代码搜索 fitblk / rootdisk 命中 0），rtk_boot 也只是
-	 * `ubi part; ubi read; bootm`，env 里连 bootargs 都没有。
-	 * 结果内核拿不到 root=，挂根失败。
+	 * 实证差分（2026-11-13，逐个解包 fw12~fw22 的内嵌 DTB）：
+	 *   fw12 / fw14（Run14 真机刷入能启动）：
+	 *     bootargs = "earlycon console=ttyS0,115200n8 loglevel=7
+	 *                 clk_ignore_unused maxcpus=4"     ← 没有 root=
+	 *     rootdisk = <&ubi_rootdisk>  (volname="fit")
+	 *     没有 u-boot,version
+	 *   fw15 / 17 / 19 / 21 / 22（全部刷入态灯全灭、无 DHCP）：
+	 *     bootargs 多了 "root=/dev/fitblk0 rootwait rootfstype=squashfs"
+	 *     多了 u-boot,version = "2025.01"
+	 *   FIT 结构（external-data、loadables=rootfs-1、rootdisk phandle）两边完全一致。
 	 *
-	 * 这里直接把 root= 写进 DTS，让固件自洽，不依赖 bootloader：
-	 *   root=/dev/fitblk0  —— generic/pending-6.18/510-block-add-uImage.FIT-
-	 *                         subimage-block-driver.patch 会把 FIT 里
-	 *                         type="filesystem" 且属于 config.loadables 的
-	 *                         rootfs 子镜像映射成 /dev/fitblk0；
-	 *   rootwait           —— 511-init-bypass-device-lookup-for-dev-fit-rootfs
-	 *                         让 init 对 /dev/fit* 走 Root_Generic 并等待；
-	 *   rootfstype=squashfs—— 免探测。
+	 * 为什么不该在这里加参数（源码依据）：
+	 *   1. 这套统一 UBI 方案的挂根由内核侧完成，不依赖 bootargs 的 root=：
+	 *      CONFIG_MTD_ROOTFS_ROOT_DEV 会为 chosen.rootdisk 指向的卷建
+	 *      ubiblock；generic/pending-6.18/510-* 的 fitblk 驱动在
+	 *      device_add_disk() 之后自己做
+	 *        `if (!ROOT_DEV) ROOT_DEV = disk->part0->bd_dev;`
+	 *      把 FIT 里 type=filesystem 的 rootfs 子镜像设成根设备（节点名是
+	 *      FIT_DEVICE_PREFIX "fit" + slot，即 /dev/fit0）。
+	 *      511-init-bypass-device-lookup-for-dev-fit-rootfs.patch 让
+	 *      parse_root_device() 对 "fit*" 返回 Root_Generic 并允许 rootwait。
+	 *      显式写 `root=/dev/fitblk0 rootwait` 改变了内核的挂根/等待路径，
+	 *      而这个名字与驱动实际建出的 /dev/fit0 并不一致 —— 在 env 干净、
+	 *      没有别的变量时，它是 run15 起的唯一新增变量。
+	 *   2. fdt_support.c 的 fdt_chosen() 无条件写入 u-boot,version（在
+	 *      `if (str)` 之外），所以 fitblk_init() 的门闩本来就被 U-Boot 满足；
+	 *      DTS 里那份 "2025.01" 从头到尾是多余的，且会被真实版本号覆盖。
+	 *      Run14 的 DTB 没有这个属性照样启动，即为实证。
+	 *   3. `ubi.mtd=4` / `ubi.block=0,fit` 同样不属于这套布局：上游 dtsi 的
+	 *      partition@340000 已带 `compatible = "linux,ubi"` 与 volumes
+	 *      子节点，内核自动 attach；手工再指定反而可能重复 attach。
 	 *
-	 * u-boot,version 是 fitblk 驱动的"门闩"：驱动 init 里
-	 *   ubootver = of_get_property(of_chosen, "u-boot,version", NULL);
-	 *   if (!ubootver) return 0;          // 静默不注册
-	 * qwe-qaq 的 U-Boot 不写这个属性，所以这里补一个。属性值不参与判断。
+	 * 另：用户已在 U-Boot 里做过 env 清空、恢复编译默认（pt1570.env 无 bootargs），
+	 * fdt_chosen() 里 `board_fdt_chosen_bootargs()` 默认返回 env_get("bootargs")
+	 * = NULL，`if (str)` 不成立，根本不会覆盖 DTB。所以「NAND env 残留污染」
+	 * 不是本次根因，也不需要在 U-Boot 侧加 hook（已回退）。
+	 *
+	 * 结论：bootargs / rootdisk / stdout-path 全部交给上游 rtl9617c-tyfza1.dtsi，
+	 * 本文件不覆盖，精确复现 Run14 已验证可启动的形态。
 	 */
-	chosen {
-		u-boot,version = "2025.01";
-		bootargs = "earlycon console=ttyS0,115200n8 loglevel=7 clk_ignore_unused maxcpus=4 root=/dev/fitblk0 rootwait rootfstype=squashfs";
-	};
 
 	/*
 	 * ubi_device 分区的 read-only 在本文件末尾的 &qspi 覆盖块里删除，

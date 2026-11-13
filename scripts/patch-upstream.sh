@@ -105,23 +105,20 @@ EOF
 extra=$(find "$FW_DIR" -maxdepth 1 -type f -name '*.bin' | wc -l)
 [ "$extra" = 7 ] || fail "WiFi 固件目录里有 $extra 个 .bin，期望 7 个（多余文件需确认用途）"
 
-# ---------- 3. fitblk：解除 4MiB FIT 上限（刷入态起不来的根因） ----------
+# ---------- 3. fitblk：放宽 FIT 头上限（健壮性加固，非启动根因） ----------
 #
-# target/linux/generic/pending-6.18/510-block-add-uImage.FIT-subimage-block-driver.patch
-# 里写着（注意 FIT_MAX_PAGES 与数值之间是两个 TAB，不是空格）：
-#   #define FIT_MAX_PAGES		1024
-#   if (size > PAGE_SIZE * FIT_MAX_PAGES) ret = -EOPNOTSUPP;
-#   fit = kmalloc(size, GFP_KERNEL);
-# 4 KiB 页时上限只有 4 MiB，而本机型 sysupgrade 的 FIT 是 20.7 MB、initramfs 是
-# 23.6 MB，于是 probe 直接返回 -95：
-#   fitblk fitblk: probe with driver fitblk failed with error -95
-# /dev/fitblk0 永远不出现 → 内核按 root=/dev/fitblk0 挂根失败 → 灯全灭。
-# initramfs 不需要 root 设备，所以内存启动一直正常：这正是"内存能起、刷入起不来"
-# 的唯一原因。
+# 2026-11-13 二次核对：这不是"刷入态起不来"的根因，原先的推理是错的。
+# 510 补丁里 `size = fdt_totalsize(pre_fit)`；本机型 sysupgrade.itb 是
+# external-data FIT，实测 FIT 头 totalsize 只有 4096 字节，20.7 MB 是
+# data-position 指向的外部数据，不进 `size`，所以 4 MiB 上限根本不会触发，
+# kmalloc(4096) 也不会 -ENOMEM。Run14 未打此补丁仍实测刷入能启动，即为反证。
+# 真正的回归点是 run15 起在 DTS 里加的 /chosen 覆盖块（root=/dev/fitblk0 等），
+# 详见 board/dts/rtl9617c-pt1570-r10.dts 注释与 scripts/verify-fit-boot.py。
 #
-# 修法：上限提到 16384 页（64 MiB），并把整块 kmalloc 改成 kvmalloc —— 20 MB
-# 的 kmalloc 会因伙伴系统 MAX_ORDER 直接 -ENOMEM，vmalloc 走 vmap 区才拿得到。
-# run20 教训：匹配必须对空白容错（\s+），按单空格精确匹配直接 0 命中 fail。
+# 本补丁仍保留：把上限提到 16384 页并改用 kvmalloc，对 embedded-data FIT
+# （例如网友的 system.itb，FIT 头就是整个文件）有意义，且对当前布局无害。
+# 注意 FIT_MAX_PAGES 与数值之间是两个 TAB，匹配必须对空白容错（\s+）；
+# run20 教训：按单空格精确匹配直接 0 命中 fail。
 FITBLK_PATCH="$WRT/target/linux/generic/pending-6.18/510-block-add-uImage.FIT-subimage-block-driver.patch"
 [ -f "$FITBLK_PATCH" ] || fail "找不到 $FITBLK_PATCH（上游 pending 目录结构变了？）"
 

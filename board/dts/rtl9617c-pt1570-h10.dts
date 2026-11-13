@@ -22,7 +22,7 @@
 //   一致；而 pt1500-h10-2p5g.dts 描述的是 RTL8367SB switch + 2.5G 口，
 //   且注释明确「switch bring-up lands with its own driver」，直接复用会没网。
 //
-// FIT ABI 部分（chosen.rootdisk / ubi-volume-fit / factory nvmem-layout）
+// 统一 UBI 方案 部分（chosen.rootdisk / ubi-volume-fit / factory nvmem-layout）
 // 由 rtl9617c-tyfza1.dtsi 提供，本文件只负责硬件差异。
 //
 // 待真机核对/移植：
@@ -40,7 +40,7 @@
 #include "rtl9617c-tyfza1-2p5g.dts"
 
 / {
-	model = "Youhua PT1570-H10 (RTL9617C, 4xGE, FIT ABI)";
+	model = "Youhua PT1570-H10 (RTL9617C UBI)";
 	compatible = "youhua,pt1570-h10", "realtek,rtl9617c";
 };
 

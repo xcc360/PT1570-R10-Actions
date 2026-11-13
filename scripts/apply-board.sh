@@ -101,7 +101,7 @@ grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" "$IMG_MK" \
 grep -q "$BOARD_NAME" "$PLATFORM" \
   || { echo "ERROR: platform.sh whitelist missing" >&2; exit 1; }
 grep -q 'rootdisk' "$WRT/target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi" \
-  || { echo "ERROR: 上游 dtsi 没有 chosen.rootdisk，FIT ABI 不成立" >&2; exit 1; }
+  || { echo "ERROR: 上游 dtsi 没有 chosen.rootdisk，统一 UBI 方案不成立" >&2; exit 1; }
 grep -q 'volname = "fit"' "$WRT/target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi" \
   || { echo "ERROR: 上游 dtsi 没有 fit 卷" >&2; exit 1; }
 

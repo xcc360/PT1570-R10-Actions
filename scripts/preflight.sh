@@ -80,7 +80,7 @@ for f in files/etc/uci-defaults/99-pt1570-fit migration/device-preflight.sh; do
   if sh -n "$f" 2>/dev/null; then ok "sh -n $f"; else bad "sh -n $f"; fi
 done
 
-echo "=== 5. R10 机型隔离与 ABI 关键字 ==="
+echo "=== 5. R10 机型隔离与 UBI 命名 ==="
 b=r10
 dev="board/devices/pt1570-${b}.mk.inc"
 dts="board/dts/rtl9617c-pt1570-${b}.dts"
@@ -287,30 +287,37 @@ grep -q 'WIFI_FIRMWARE_OK=True' "$WF" \
 grep -q 'FACTORY_PATCH_OK=True' "$WF" \
   && ok "镜像补丁校验有正向标记" || bad "缺 FACTORY_PATCH_OK 断言"
 
-echo "=== 15. 默认 WAN=pon0 与 WiFi 诊断开关（2026-11-10 真机反馈） ==="
-# 上游 90-tyfza1-pon-wan 照抄原厂 PT1500 布局，把 wan.device 绑到
-# pon0.<pon.wan_vlan>（默认 3961）。R10 默认要求 WAN=pon0，用 uci-defaults
-# 在 90 之后回退；脚本必须保留"只改默认值"的边界，否则会覆盖用户配置。
+echo "=== 15. 默认 WAN=pon0.1101 + PPPoE + PON FE（2026-11-11 真机实证） ==="
+# Run14 刷入能启动但 IPv4 完全失效、IPv6 可访问，根因是上游 90-tyfza1-pon-wan
+# 照抄原厂 PT1500 布局：untagged pon0 收不到 PADO，且 pon.pon.offload=0（FE 关）
+# 时单播上行帧被静默丢弃，PADS 之后 LCP ConfReq 无回应 → Modem hangup。
+# 修法（95-pt1570-wan-default）：wan.device=pon0.1101（8021q）+ proto=pppoe
+# + pon.pon.offload=1 + firewall flow_offloading(_hw)=1。真机打开 FE 后
+# 立刻 PAP 通过、IPCP 拿到 100.125.x.x。脚本必须保留"只改默认值"的边界。
 WAN_UC=files/etc/uci-defaults/95-pt1570-wan-default
 if [ -f "$WAN_UC" ]; then
   ok "存在 $WAN_UC"
-  grep -q "network.wan.device='pon0'" "$WAN_UC" \
-    && ok "脚本把 wan.device 写回 pon0" || bad "脚本没有写 network.wan.device='pon0'"
-  grep -q 'pon0\.\$wan_vlan' "$WAN_UC" \
-    && ok "脚本识别上游默认 pon0.<wan_vlan>" || bad "脚本没有匹配上游默认设备的 case 分支"
+  grep -q 'network.wan.device="\$vlan_dev"' "$WAN_UC" \
+    && ok "脚本把 wan.device 设为 pon0.<wan_vlan>" || bad "脚本没设置 wan.device=pon0.\$vlan_dev"
+  grep -q "wan_vlan=1101" "$WAN_UC" \
+    && ok "R10 实测 VLAN 1101（非上游 EPON 默认 3961）" || bad "缺 wan_vlan=1101"
+  grep -q 'network.wan.proto=.pppoe.' "$WAN_UC" \
+    && ok "WAN 协议 PPPoE" || bad "WAN 不是 PPPoE"
+  grep -q 'pon.pon.offload=.1.' "$WAN_UC" \
+    && ok "打开 PON 转发引擎（单播上行必需）" || bad "没打开 pon.pon.offload=1"
   grep -q 'case "\$wan_dev" in' "$WAN_UC" \
     && ok "先判 wan.device 再动手" || bad "缺少 wan.device 判定"
-  grep -q '"8021q"' "$WAN_UC" \
-    && ok "只删 8021q 设备" || bad "缺少 8021q 设备判定（可能误删自定义设备）"
+  grep -q 'type=8021q' "$WAN_UC" \
+    && ok "建 8021q VLAN 设备" || bad "缺少 8021q 设备判定"
   grep -q 'board_name' "$WAN_UC" \
     && ok "按 board_name 限定 R10" || bad "缺少 board_name 限定"
-  # 命名必须在 90-tyfza1-pon-wan 之后、99-pt1570-fit 之前/同段，保证看到上游默认值
+  # 命名必须在 90-tyfza1-pon-wan 之后，保证看到上游默认值
   case "$(basename "$WAN_UC")" in
     9[5-9]-*) ok "uci-defaults 排序在 90 之后" ;;
     *) bad "脚本名不在 95..99，无法保证在 90-tyfza1-pon-wan 之后执行" ;;
   esac
 else
-  bad "缺少 $WAN_UC（默认 WAN 会退回 pon0.3961）"
+  bad "缺少 $WAN_UC（默认 WAN 会退回 pon0.3961 + FE off，IPv4 拨不上）"
 fi
 
 # WiFi 诊断：开关式资产，默认开着出调试镜像；关掉时不得残留 DEVMEM
@@ -351,24 +358,44 @@ grep -q '正式产物不允许 CONFIG_DEVMEM' "$WF" \
 grep -q 'WAN_DEFAULT_OK=True' "$WF" \
   && ok "镜像校验断言默认 WAN=pon0" || bad "镜像校验缺 WAN_DEFAULT_OK"
 
-echo "=== 16. FIT rootfs 自洽启动（run #12 刷 NAND 起不来的根因） ==="
-# 事实链（2026-11-10 实证）：
-#   * 上游 dtsi 的 /chosen/bootargs 没有 root=，靠 bootloader 注入；
-#   * qwe-qaq/rtl9617c-uboot@4c13f1b7 里 fitblk / rootdisk 代码搜索命中 0，
-#     rtk_boot 只做 `ubi part; ubi read; bootm`，env 也没有 bootargs；
-#   * 内核 fitblk 驱动（generic/pending-6.18/510-*）init 里
-#     `if (!of_get_property(of_chosen, "u-boot,version", NULL)) return 0;`
-#     —— U-Boot 不写这个属性，驱动静默不注册，/dev/fitblk0 不存在；
-#   * UIMAGE_FIT_BLK 在 generic/config-6.18 里默认 *关闭*。
-# 所以固件必须自己带 root=，并且由 DTS 补 u-boot,version。
+echo "=== 16. 统一 UBI 方案自洽启动（run15 回归，2026-11-13 二次修订） ==="
+# 差分实证（逐个解包 fw12~fw22 内嵌 DTB）：
+#   * 用户确认 U-Boot env 已清空恢复默认（pt1570.env 无 bootargs），
+#     fdt_chosen() 里 board_fdt_chosen_bootargs() 返回 NULL，`if (str)` 不成立，
+#     DTB 的 bootargs 不会被覆盖 —— "NAND env 残留污染"不是根因；
+#   * 用户确认 Run14 刷机验证能启动（当时仅 IPv4 不通、IPv6 可访问，
+#     已由 95-pt1570-wan-default 单独修复），说明刷入态启动本来是通的；
+#   * fw12/fw14（能启动）  : bootargs 无 root= / 无 u-boot,version
+#     fw15..fw22（起不来）: 多了 root=/dev/fitblk0 rootwait rootfstype=squashfs
+#                            和 u-boot,version="2025.01"
+#     FIT 结构 / rootdisk phandle / 内核配置两边完全一致；
+#   * 挂根由内核侧完成：CONFIG_MTD_ROOTFS_ROOT_DEV 为 chosen.rootdisk 建
+#     ubiblock，510-* fitblk 驱动 `if (!ROOT_DEV) ROOT_DEV = bd_dev;` 自设根
+#     设备（/dev/fit0）；fdt_chosen() 无条件写 u-boot,version 满足门闩。
+#     所以 DTS 不该覆盖 /chosen，尤其不能写 root= / ubi.mtd / ubi.block。
 R10_DTS=board/dts/rtl9617c-pt1570-r10.dts
 if [ -f "$R10_DTS" ]; then
-  grep -q 'root=/dev/fitblk0' "$R10_DTS" \
-    && ok "DTS 自带 root=/dev/fitblk0" || bad "DTS 没有 root=/dev/fitblk0（bootloader 不会注入，内核挂根必失败）"
-  grep -q 'rootwait' "$R10_DTS" \
-    && ok "DTS 带 rootwait" || bad "DTS 缺 rootwait"
-  grep -q 'u-boot,version' "$R10_DTS" \
-    && ok "DTS 补了 u-boot,version（fitblk 驱动门闩）" || bad "DTS 缺 u-boot,version，fitblk 驱动会静默退出"
+  # 只检查 DTS 正文里真正生效的 bootargs 赋值行（注释里出现不算）
+  DTS_BA=$(grep -E '^\s*bootargs\s*=' "$R10_DTS" || true)
+  if [ -n "$DTS_BA" ]; then
+    for badtok in 'root=' 'rootwait' 'rootfstype=' 'ubi.mtd=' 'ubi.block='; do
+      case "$DTS_BA" in
+        *"$badtok"*) bad "DTS 的 bootargs 含 $badtok（run15 回归，应交给内核/驱动处理）" ;;
+      esac
+    done
+    ok "DTS 的 bootargs 无 root=/rootwait/ubi.*（如有）"
+  else
+    ok "DTS 未覆盖 bootargs（沿用上游 dtsi，Run14 已验证形态）"
+  fi
+  if grep -qE '^\s*u-boot,version\s*=' "$R10_DTS"; then
+    bad "DTS 写了 u-boot,version —— U-Boot fdt_chosen() 会无条件写入，多余"
+  else
+    ok "DTS 未写 u-boot,version（由 U-Boot 注入）"
+  fi
+  grep -q 'RTL9617C UBI' "$R10_DTS" \
+    && ok "model 显示 RTL9617C UBI" || bad "model 不是 RTL9617C UBI（状态页会显示成 ABI）"
+  ! grep -q 'FIT ABI' "$R10_DTS" \
+    && ok "DTS 已无 FIT ABI 命名" || bad "DTS 仍残留 FIT ABI 命名"
 else
   bad "缺少 $R10_DTS"
 fi
@@ -377,10 +404,14 @@ if [ -f scripts/verify-fit-boot.py ]; then
   ok "存在 scripts/verify-fit-boot.py"
   python -c "compile(open('scripts/verify-fit-boot.py').read(),'verify-fit-boot.py','exec')" 2>/dev/null \
     && ok "校验脚本语法通过" || bad "scripts/verify-fit-boot.py 语法错误"
-  grep -q 'root=/dev/fitblk' scripts/verify-fit-boot.py \
-    && ok "校验脚本检查 root=/dev/fitblk*" || bad "校验脚本没检查 root="
-  grep -q 'u-boot,version' scripts/verify-fit-boot.py \
-    && ok "校验脚本检查 u-boot,version" || bad "校验脚本没检查 u-boot,version"
+  grep -q 'FORBIDDEN_BOOTARGS' scripts/verify-fit-boot.py \
+    && ok "校验脚本禁止 bootargs 里的 root=/rootwait/ubi.*" || bad "校验脚本没拦 run15 回归"
+  grep -q 'linux,ubi' scripts/verify-fit-boot.py \
+    && ok "校验脚本检查 linux,ubi 分区" || bad "校验脚本没检查 UBI 自动 attach 前提"
+  grep -q 'rootdisk' scripts/verify-fit-boot.py \
+    && ok "校验脚本检查 rootdisk -> volname=fit" || bad "校验脚本没检查 rootdisk"
+  grep -q '"ABI" in model' scripts/verify-fit-boot.py \
+    && ok "校验脚本拒绝 ABI 命名" || bad "校验脚本没检查 model 命名"
 else
   bad "缺少 scripts/verify-fit-boot.py（无法在 CI 拦住不可启动的镜像）"
 fi

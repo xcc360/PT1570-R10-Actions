@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
-# PonWRT / PT1570-R10 单机型 / 统一 FIT ABI 云编译
+# PonWRT / PT1570-R10 单机型 / 统一 UBI 方案云编译
 #
 # 这套资产对应《PT1570-R10_H10-FIT统一ABI-云编译补齐方案.md》的方案③。
-# ABI：factory(8 MiB static) + fit + rootfs_data，产物 sysupgrade.itb。
+# 布局：factory(8 MiB static) + fit + rootfs_data，产物 sysupgrade.itb。
+# 注：方案名为「统一 UBI 方案」，不是 ABI；状态页型号显示为 RTL9617C UBI。
 #
 # ⚠️ 2026-11-09 起按用户决定收窄为 **R10-only**：
 #    PT1570-H10 暂缓（设备未上线、无 factory、DTS 无可验证硬件事实）。
@@ -606,8 +607,9 @@ jobs:
           done
 
           # ---- FIT rootfs 自洽性 ----
-          # 内核最终配置（kconfig 合并后）里必须有 UIMAGE_FIT_BLK，否则
-          # 即使 DTB 写了 root=/dev/fitblk0 也不会有这个设备。
+          # 挂根完全靠内核侧：CONFIG_MTD_ROOTFS_ROOT_DEV 为 chosen.rootdisk 指向的
+          # fit 卷建 ubiblock，CONFIG_UIMAGE_FIT_BLK 的 fitblk 驱动解析 FIT 并自设
+          # ROOT_DEV。bootargs 里不写 root=（run15 回归，见板级 DTS 注释）。
           KCFG=$(ls -d build_dir/target-*/linux-rtl9617c/linux-*/.config 2>/dev/null | head -1)
           [ -n "$KCFG" ] || KCFG=$(find build_dir -maxdepth 6 -path '*linux-rtl9617c*' \
               -name auto.conf 2>/dev/null | head -1)
@@ -621,8 +623,11 @@ jobs:
             echo "::warning::找不到内核编译后的 .config，跳过 KERNEL_FIT_ROOTFS_OK"
           fi
 
-          # 直接解析产出的 sysupgrade.itb：bootloader 不会注入 root=，
-          # 固件必须自己带 root=/dev/fitblk0 + rootwait + u-boot,version。
+          # 直接解析产出的 sysupgrade.itb。差分实证（fw12/fw14 能启动、
+          # fw15..fw22 起不来）显示 run15 起往 DTS 加的 /chosen 覆盖块就是回归点，
+          # 所以校验重点是：bootargs 不含 root=/rootwait/ubi.*、rootdisk 指向
+          # volname=fit 的卷、分区带 linux,ubi、model 不再是 ABI。
+          # 用户已在 U-Boot 清空 env 恢复默认，fdt_chosen() 不会覆盖 DTB bootargs。
           ITB=$(ls bin/targets/rtl9617c/generic/*sysupgrade.itb 2>/dev/null | head -1)
           [ -n "$ITB" ] || { echo "::error::找不到 sysupgrade.itb"; exit 1; }
           python3 "$ASSETS/scripts/verify-fit-boot.py" "$ITB"
@@ -770,8 +775,10 @@ jobs:
           body: |
             源码 lyq1996/rtl9617c-openwrt `${{ env.SOURCE_REF }}` @ `${{ env.SOURCE_HASH }}`
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`
-            ABI：factory(8 MiB static) + fit + rootfs_data，产物 sysupgrade.itb
+            布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
             同批 packages 见 `packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
-            ⚠️ 刷机前必须已完成 U-Boot FIT ABI 确认、factory 导入与卷表重建，详见方案文档。
+            ⚠️ 刷机前必须已完成新 U-Boot（rtk_boot / 读 fit 卷）确认、factory 导入与卷表重建，详见方案文档。
+            ⚠️ 刷机前 U-Boot env 应保持编译默认（pt1570.env 无 bootargs）；清空动作执行一次即可。
+            ⚠️ 本固件 bootargs 不含 root=，挂根由内核 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV 完成。
             ⚠️ 本仓库当前为 R10-only 范围，产物仅适用于 PT1570-R10。

@@ -1,19 +1,34 @@
 #!/usr/bin/env python3
-"""校验 FIT-A 镜像能否被「不写 root= 的 bootloader」启动。
+"""校验「统一 UBI 方案」镜像能否在新 U-Boot 的 rtk_boot 路径下自洽启动。
 
-背景（2026-11-10）：run #12 的 sysupgrade.itb 刷进 NAND 后起不来。根因是
-上游 dtsi 的 /chosen/bootargs 没有 root=，靠 bootloader 注入；而
-qwe-qaq/rtl9617c-uboot 里没有任何 rootdisk/fitblk 代码。本脚本把"固件必须
-自洽"这件事变成可断言的检查项，避免再次编译出无法启动的镜像。
+背景（2026-11-13 二次修订，结论与上一版相反）：
+  * 用户已确认 U-Boot env 做过清空、恢复编译默认（pt1570.env 无 bootargs），
+    所以 fdt_chosen() 里 board_fdt_chosen_bootargs() 返回 NULL，`if (str)`
+    不成立，DTB 的 /chosen/bootargs 不会被覆盖。"NAND env 残留污染"不是根因。
+  * 用户已确认 Run14 刷机验证能启动（当时只是 IPv4 网络层不通，IPv6 可访问，
+    已由 95-pt1570-wan-default 单独修复）。说明刷入态启动本来是通的。
+  * 逐个解包 fw12~fw22 的内嵌 DTB 做差分：
+      fw12/fw14（能启动）  : bootargs 无 root= / 无 u-boot,version
+      fw15..fw22（起不来）: 多了 "root=/dev/fitblk0 rootwait rootfstype=squashfs"
+                            和 u-boot,version="2025.01"
+      FIT 结构、rootdisk phandle、内核配置两边完全一致。
+    回归点 = run15 起往 DTS 里加的 /chosen 覆盖块。
+  * 挂根本来由内核侧完成：CONFIG_MTD_ROOTFS_ROOT_DEV 为 chosen.rootdisk
+    指向的卷建 ubiblock；510-* 的 fitblk 驱动在 device_add_disk() 之后
+    `if (!ROOT_DEV) ROOT_DEV = disk->part0->bd_dev;` 自设根设备（/dev/fit0）。
+    fdt_chosen() 无条件写 u-boot,version，fitblk_init() 门闩天然满足。
+    因此 bootargs 里不该出现 root= / rootwait / ubi.mtd / ubi.block。
 
 检查项：
   1. FIT 结构：kernel / fdt / rootfs 子镜像齐全，default config 的
      loadables 里包含 rootfs 子镜像名；
   2. rootfs 子镜像 type=filesystem，data-position 与 data-size 都 4K 对齐
      （内核 fitblk 驱动会跳过未对齐的子镜像）；
-  3. DTB 的 /chosen 必须有 bootargs 含 root=/dev/fitblk0 与 rootwait；
-  4. DTB 的 /chosen 必须有 u-boot,version（内核 fitblk 驱动的门闩）；
-  5. DTB 的 /chosen/rootdisk phandle 必须指向一个 volname="fit" 的 UBI 卷节点。
+  3. DTB 的 /chosen/bootargs 不得含 root= / rootwait / rootfstype /
+     ubi.mtd= / ubi.block= —— 出现任何一个都是 run15 回归复发；
+  4. DTB 的 /chosen/rootdisk phandle 必须指向 volname="fit" 的 UBI 卷节点；
+  5. DTB 必须带 `compatible = "linux,ubi"` 的分区节点（内核自动 attach）；
+  6. model 不得再出现 "ABI"（应为 "RTL9617C UBI"，与状态页一致）。
 
 用法：
   python3 verify-fit-boot.py <xxx-sysupgrade.itb>
@@ -23,7 +38,9 @@ import struct
 import sys
 
 FDT_BEGIN_NODE, FDT_END_NODE, FDT_PROP, FDT_NOP, FDT_END = 1, 2, 3, 4, 9
-BOOT_ROOT = "root=/dev/fitblk"
+
+# run15 回归特征：这些参数本该由内核/驱动自己处理，写进 bootargs 反而挂不上根。
+FORBIDDEN_BOOTARGS = ("root=", "rootwait", "rootfstype=", "ubi.mtd=", "ubi.block=")
 
 
 def be32(b, o):
@@ -112,25 +129,44 @@ def fail(msg):
     sys.exit(1)
 
 
+ALLOW_LEGACY_MODEL = False
+
+
 def check_devtree(dtb, label="DTB"):
     """校验 /chosen 是否满足 fitblk 自洽启动条件。返回 True/抛 fail。"""
     dev = parse_fdt(dtb)
+
+    model = sval(dev.props.get("model", b""))
+    print("  model: %s" % (model or "<空>"))
+    if "ABI" in model:
+        if ALLOW_LEGACY_MODEL:
+            print("  ::warning:: model 仍是 ABI（--allow-legacy-model 已放行，仅用于差分验证历史固件）")
+        else:
+            fail("%s 的 model 仍是 %r —— 应为 '... (RTL9617C UBI)'，不是 ABI"
+                 % (label, model))
+
     chosen = dev.find("/chosen")
     if chosen is None:
         fail("%s 没有 /chosen 节点" % label)
 
     bootargs = sval(chosen.props.get("bootargs", b""))
     print("  bootargs: %s" % (bootargs or "<空>"))
-    if BOOT_ROOT not in bootargs:
-        fail("%s 的 bootargs 里没有 %s0 —— bootloader 不会替你注入，内核会挂根失败"
-             % (label, BOOT_ROOT))
-    if "rootwait" not in bootargs:
-        fail("%s 的 bootargs 里没有 rootwait —— ubiblock/fitblk 可能晚于挂根出现" % label)
+    for bad in FORBIDDEN_BOOTARGS:
+        if bad in bootargs:
+            fail("%s 的 bootargs 含 %r —— 这是 run15 回归（fw12/fw14 能启动时"
+                 "没有这些参数）。挂根由 CONFIG_MTD_ROOTFS_ROOT_DEV + fitblk 驱动"
+                 "自设 ROOT_DEV 完成，显式 root= 反而把内核钉在 /dev/fitblk0 这个"
+                 "驱动并不创建的节点名上，rootwait 无限等 → 灯全灭"
+                 % (label, bad))
+    print("  bootargs 干净（无 root=/rootwait/ubi.*）: OK")
 
-    if "u-boot,version" not in chosen.props:
-        fail("%s 的 /chosen 缺少 u-boot,version —— 内核 fitblk_init 会静默 return 0，"
-             "不注册 /dev/fitblk0" % label)
-    print("  u-boot,version: %r" % sval(chosen.props["u-boot,version"]))
+    # 内核自动 attach UBI 的前提：分区节点带 compatible = "linux,ubi"
+    ubi_nodes = [n for n in dev.walk()
+                 if b"linux,ubi" in n.props.get("compatible", b"")]
+    if not ubi_nodes:
+        fail("%s 找不到 `compatible = \"linux,ubi\"` 的分区节点 —— "
+             "内核不会自动 attach UBI，rootdisk 指向的卷无块设备" % label)
+    print("  linux,ubi 分区: %s" % ubi_nodes[0].path())
 
     rd = chosen.props.get("rootdisk")
     if rd is None:
@@ -152,12 +188,19 @@ def check_devtree(dtb, label="DTB"):
 
 
 def main():
+    global ALLOW_LEGACY_MODEL
     if len(sys.argv) < 2:
-        fail("用法: verify-fit-boot.py [--dtb] <image.itb|dtb>")
+        fail("用法: verify-fit-boot.py [--dtb] [--allow-legacy-model] <image.itb|dtb>")
     args = sys.argv[1:]
     dtb_only = False
-    if args[0] == "--dtb":
-        dtb_only = True
+    while args and args[0].startswith("--"):
+        if args[0] == "--dtb":
+            dtb_only = True
+        elif args[0] == "--allow-legacy-model":
+            # 只用于拿历史固件（fw12/fw14）做启动形态差分，正式产物不得使用
+            ALLOW_LEGACY_MODEL = True
+        else:
+            fail("未知选项 %s" % args[0])
         args = args[1:]
     if not args:
         fail("缺少文件名")

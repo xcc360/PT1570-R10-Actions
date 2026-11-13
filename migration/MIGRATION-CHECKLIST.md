@@ -1,11 +1,11 @@
-# PT1570 → 统一 FIT ABI 迁移检查清单（执行前必读）
+# PT1570 → 统一 UBI 方案 迁移检查清单（执行前必读）
 
 > **本文件是方案与检查表，不是已执行的操作。** 迁移会擦掉 `ubi_device` 整片，
 > 等于全量重刷；本轮未连接设备、未刷机、未编译。
 >
 > 🔄 **2026-11-09 晚范围与结论变更**：按用户决定收窄为 **R10-only**（H10 暂缓）。
 > 设备 U-Boot 已定案为 `lyq1996/rtl9617c-uboot@refactor 2026.07-g9abafc0572b2`，
-> 源码确认 `rtk_boot` 就是 FIT ABI 引导（读 `fit` → 自动建 `rootfs_data` → `bootm`），
+> 源码确认 `rtk_boot` 就是 统一 UBI 引导（读 `fit` → 自动建 `rootfs_data` → `bootm`），
 > **不需要重刷 U-Boot**；旧阻断项 C 已解除、A 降级、B 可从路径中移除。
 > 详见 `PT1570-R10-单机型验证报告-20261109.md`。
 
@@ -40,7 +40,7 @@
 2. **factory 工具没有 pt1570-h10 profile**。`rtl9617c-factory` 只支持 `model=1 tyfza1` 与
    `model=2 pt1500-h10`。本机已有一份 R10 的 `factory-pt1570-r10.bin`（8,388,608 B，
    magic `RTLFACT1`，version 1，image_size 0x800000，**model=4**）——说明它来自另一套生成流程。
-   → 新 ABI 的 Web Failsafe 只是把 8 MiB 原样写进 static 卷，OpenWrt 侧按 `nvmem-layout`
+   → 统一 UBI 方案的 Web Failsafe 只是把 8 MiB 原样写进 static 卷，OpenWrt 侧按 `nvmem-layout`
    固定偏移读取，**不校验 model**，所以 R10 这份可以继续用。
    ✅ 2026-11-09 已复核：设备上 `factory` 卷（ID 8, static, 8,388,608 B，头部 `RTLFACT1` v1 /
    image_size 0x800000 / model=4）完整读出，SHA-256 `f97d93dbe82e4455…` 与本地
@@ -54,7 +54,7 @@
    以下为当时原始描述：
    BL33 段（熵 8.00，已压缩）内唯一板名字符串就是 `PT1500-H10-2P5G`；这与历史记录
    「当初刷的是 qwe-qaq PT1500 U-Boot」吻合。而 R10 实测是 **4×GE（PHY 001ccac4）+ XGPON +
-   双 PCIe WiFi**，没有 2.5G switch。当前它只负责读卷跳内核，所以旧 ABI 能跑；
+   双 PCIe WiFi**，没有 2.5G switch。当前它只负责读卷跳内核，所以旧方案 能跑；
    但 **`ubi-rebuild` 全程依赖 Web Failsafe 网页，其网口驱动是否适配 R10 未经验证**。
    1570 分支候选板型：`pt1570-h10` / `pt1500-h10-2p5g` / `tyfza1-2p5g` / `tyfza1-4ge`。
    → 动手前必须：确认串口可用；确认/换用与 R10 匹配且 Web Failsafe 网口已验证的 U-Boot；
@@ -72,7 +72,7 @@
    `lyq1996/rtl9617c-uboot@refactor` HEAD，读 `board/realtek/common/boot.c` 的
    `rtk_boot_system()` 确认就是「`ubi_part` → 读 `fit` 整卷 → `fit_check_format` →
    自动建 `rootfs_data` → `bootm`」。内置 env `bootcmd=bootmenu` + `bootmenu_0=rtk_boot`。
-   → **清 env（mtd1+mtd2）即自动切换到 FIT ABI，不需重刷 U-Boot。**
+   → **清 env（mtd1+mtd2）即自动切换到 统一 UBI 方案，不需重刷 U-Boot。**
 7. **H10 暂缓（DORMANT，移出本轮范围）**：设备未上线，网口版本 / factory / env 均未采集。
    恢复条件见 `PT1570-R10-单机型验证报告-20261109.md` 第 1 节；
    当前 workflow 与注入脚本默认拒绝产出 H10 固件。
@@ -105,7 +105,7 @@
    在旧系统仍正常时进入 `rtk_recovery`，PC 连 `192.168.0.1` 确认网页能打开。
    env 里有 `active_port` / `auto_scan_active_port=1`，但设备用的是 PT1500 defconfig，
    其 `network-2p5g.c` 会做 2.5G 上电序列；**网页不通又无串口 = 变砖不可恢复**。
-1. **~~刷 U-Boot~~ → 改为「只清 env」**：当前 U-Boot 已原生支持 FIT ABI，
+1. **~~刷 U-Boot~~ → 改为「只清 env」**：当前 U-Boot 已原生支持 统一 UBI 方案，
    **不需要重刷**（因此第 1 节的指纹不匹配问题可绕过）。
    用 Web Failsafe 的 `env-default` / 或擦除 `env` + `env2` 两份（mtd1/mtd2，内容不同，
    必须一起擦），让 U-Boot 写回内置默认 `bootcmd=bootmenu`。
@@ -140,7 +140,7 @@
 ## 5. 回退路径
 
 - 有 Web Failsafe：重新 `ubi-rebuild` + 导入 factory + 写回旧布局（**注意旧固件是
-  `sysupgrade.bin` / 原厂卷号路线，与新 ABI 不兼容**，需要按当年方案 B+ 的卷表重建）。
+  `sysupgrade.bin` / 原厂卷号路线，与统一 UBI 方案 不兼容**，需要按当年方案 B+ 的卷表重建）。
 - 有整机 mtd 备份：按 mtd 号逐片写回，恢复旧 env（含手写 bootcmd）。
 - 最坏情况：XModem 刷 `<board>.fip.bin` 到 fip0，再在 Web Failsafe 里刷完整 `.boot.bin`
   （U-Boot README 记载可能要断电重启一次才会从 fip0 启动）。
@@ -148,7 +148,7 @@
 ## 6. 不能做的事
 
 - 不要把 R10 的 factory bin 刷进 H10，也不要把两台设备的 `/etc/tyfza1-factory/` 互换。
-- 不要在新 ABI 上刷 `dreamtekcat@pt1570` 产出的 `sysupgrade.bin`（卷名/格式全不同）。
+- 不要在统一 UBI 方案上刷 `dreamtekcat@pt1570` 产出的 `sysupgrade.bin`（卷名/格式全不同）。
 - 不要在 `DTS_STATUS=experimental` 时用产物刷机；workflow 会额外产出
   `DO-NOT-FLASH-EXPERIMENTAL.txt` 并禁止发布 Release。
 - 不要清空 env 之前就把 `ubi_device` 擦掉；顺序反了就没有可引导的 U-Boot 恢复入口。

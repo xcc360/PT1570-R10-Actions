@@ -11,7 +11,7 @@ CONFIG_TARGET_BOARD="rtl9617c"
 CONFIG_TARGET_SUBTARGET="generic"
 CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a55"
 
-# ---- FIT ABI 必需 ----
+# ---- 统一 UBI 方案必需 ----
 # fitblk 提供 /lib/upgrade/fit.sh；platform.sh 用 CI_KERNPART=fit + nand_do_upgrade
 CONFIG_PACKAGE_fitblk=y
 # 该 target 的 host fw_printenv 会挂，pt1500-build.sh 已验证必须关掉
