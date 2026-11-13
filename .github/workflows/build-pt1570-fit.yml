@@ -630,6 +630,24 @@ jobs:
             || { echo "::error::99-pt1570-fit 缺 LED_EPHY0 改绑 lan0"; exit 1; }
           echo "  OK   99-pt1570-fit 网口兜底：br-lan=lan0/lan2/lan3/4，LED_EPHY0→lan0"
 
+          # --- sysupgrade 机型校验（2026-11-14 真机实证） ---
+          # 上游 base-files 带 lib/upgrade/pt1500-fip.sh，/sbin/sysupgrade 的
+          # `include /lib/upgrade` 按字母序 source，它排在 platform.sh 之后，
+          # 会覆盖 R10 的 platform_check_image，报
+          #   "this image is for youhua,pt1500-h10, not youhua,pt1570-r10"
+          # 且 platform_do_upgrade 会写不存在的 fip 卷。编译期已移除，这里复核产物。
+          UPG="$ROOT/lib/upgrade"
+          [ -d "$UPG" ] || { echo "::error::镜像缺少 /lib/upgrade"; exit 1; }
+          [ ! -e "$UPG/pt1500-fip.sh" ] \
+            || { echo "::error::镜像仍含 pt1500-fip.sh（sysupgrade 机型校验会被覆盖）"; exit 1; }
+          ! grep -rl 'this image is for youhua,pt1500-h10' "$UPG" 2>/dev/null | grep -q . \
+            || { echo "::error::镜像 /lib/upgrade 残留 PT1500-H10 机型检查"; exit 1; }
+          grep -q 'youhua,pt1570-r10' "$UPG/platform.sh" \
+            || { echo "::error::platform.sh 白名单缺少 youhua,pt1570-r10"; exit 1; }
+          grep -q 'CI_KERNPART=fit' "$UPG/platform.sh" \
+            || { echo "::error::platform.sh 升级目标卷不是 fit"; exit 1; }
+          echo "SYSUPGRADE_BOARD_OK=True"
+
           # --- RFE54 射频参数表 + TSSI 热补偿曲线 + 单板校准 ---
           # 这四类输入缺任何一个，rtl_ax_ap 都会在 phy/fem/cal 阶段失败退出：
           #   realtek/tyfza1/<chip>/RFE54/*.txt        PHY/Radio/功率限值

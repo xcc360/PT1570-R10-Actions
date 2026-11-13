@@ -95,11 +95,41 @@ else
   echo "platform.sh already lists $BOARD_NAME, skip"
 fi
 
+# ---- 4. 移除上游 PT1500-H10 的 FIP 升级脚本（2026-11-14 真机实证） ----
+# 上游 feature/pt1500-h10-openwrt-fixes 分支带
+#   target/linux/rtl9617c/base-files/lib/upgrade/pt1500-fip.sh
+# 它自定义 platform_check_image() / platform_do_upgrade() / platform_copy_config()，
+# 而 /sbin/sysupgrade 的 `include /lib/upgrade` 按文件名字母序 source 全部 *.sh：
+#   common.sh ... platform.sh → pt1500-fip.sh → tar.sh
+# pt1500-fip.sh 排在 platform.sh 之后，会整体覆盖第 3 节注入的 R10 白名单实现。
+# 真机（run28）实测报错：
+#   "this image is for youhua,pt1500-h10, not youhua,pt1570-r10" / Image check failed.
+# 更危险的是它的 platform_do_upgrade 会写 `fip` UBI 卷（PT1500-H10 老布局），
+# 而 R10 统一 UBI 方案只有 factory / fit / rootfs_data 三卷；强行 sysupgrade -F
+# 会写错分区。R10 必须走 platform.sh 的 CI_KERNPART=fit + nand_do_upgrade。
+# 编译期根除该文件即可（workflow 后面有 make package/base-files/clean 重编）。
+UPG_DIR="$WRT/target/linux/rtl9617c/base-files/lib/upgrade"
+FIP_SH="$UPG_DIR/pt1500-fip.sh"
+if [ -f "$FIP_SH" ]; then
+  rm -f "$FIP_SH"
+  echo "removed upstream pt1500-fip.sh (PT1500-H10 FIP layout, not applicable to R10)"
+else
+  echo "upstream pt1500-fip.sh absent, nothing to remove"
+fi
+
 # ---- 结果校验 ----
 grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" "$IMG_MK" \
   || { echo "ERROR: SUPPORTED_DEVICES missing" >&2; exit 1; }
 grep -q "$BOARD_NAME" "$PLATFORM" \
   || { echo "ERROR: platform.sh whitelist missing" >&2; exit 1; }
+# 升级实现必须是 R10 统一 UBI 的 fit 卷，且不能残留 PT1500-H10 的 FIP 覆盖脚本：
+# include /lib/upgrade 按字母序 source，pt1500-fip.sh 会盖掉 platform.sh。
+find "$UPG_DIR" -name 'pt1500-fip.sh' -print -quit | grep -q . \
+  && { echo "ERROR: pt1500-fip.sh 仍存在，会覆盖 R10 的 sysupgrade 机型校验并写错 fip 卷" >&2; exit 1; }
+! grep -rl 'this image is for youhua,pt1500-h10' "$UPG_DIR" 2>/dev/null | grep -q . \
+  || { echo "ERROR: /lib/upgrade 仍残留 PT1500-H10 机型检查" >&2; exit 1; }
+grep -q 'CI_KERNPART=fit' "$PLATFORM" \
+  || { echo "ERROR: platform.sh 未把升级目标卷设为 fit（统一 UBI 方案）" >&2; exit 1; }
 grep -q 'rootdisk' "$WRT/target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi" \
   || { echo "ERROR: 上游 dtsi 没有 chosen.rootdisk，统一 UBI 方案不成立" >&2; exit 1; }
 grep -q 'volname = "fit"' "$WRT/target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi" \

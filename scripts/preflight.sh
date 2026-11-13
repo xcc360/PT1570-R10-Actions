@@ -89,6 +89,18 @@ grep -q "LED_EPHY0" "$U99" && grep -q "dev='lan0'" "$U99" \
   && ok "99-pt1570-fit 含 LED_EPHY0 改绑 lan0" \
   || bad "99-pt1570-fit 缺 LED_EPHY0 改绑（面板灯恒灭）"
 
+echo "=== 4c. sysupgrade 机型校验（2026-11-14 真机实证：pt1500-fip.sh 覆盖修复） ==="
+AB=scripts/apply-board.sh
+grep -q "removed upstream pt1500-fip.sh" "$AB" \
+  && ok "apply-board.sh 编译期移除 pt1500-fip.sh" \
+  || bad "apply-board.sh 未移除 pt1500-fip.sh（会报 'this image is for youhua,pt1500-h10' 且写错 fip 卷）"
+grep -q "CI_KERNPART=fit" "$AB" \
+  && ok "apply-board.sh 校验升级目标卷 = fit" \
+  || bad "apply-board.sh 缺 fit 卷升级断言"
+grep -q "this image is for youhua,pt1500-h10" .github/workflows/build-pt1570-fit.yml \
+  && ok "workflow 镜像侧断言无 PT1500-H10 机型检查残留" \
+  || bad "workflow 缺 sysupgrade 机型校验断言（产物会悄悄带回坏脚本）"
+
 echo "=== 5. R10 机型隔离与 UBI 命名 ==="
 b=r10
 dev="board/devices/pt1570-${b}.mk.inc"
