@@ -29,7 +29,11 @@ static inline int rtl_ax_board_cal_load(struct device *dev, unsigned int chip,
 
 	if (ret)
 		return ret;
-	if (fw->size != sizeof(*calibration) || memcmp(fw->data, "TYFC0003", 8))
+	/* 真机 factory_blob() 按 4096 字节整块导出（dd count=4096），而有效结构
+	 * 只有 sizeof(*calibration)=284 字节，其余全是 0xFF 填充。原实现要求
+	 * size 完全相等，导致 probe 在 phy/fem 全部就绪后仍以 -EINVAL 失败、
+	 * WiFi 一个接口都不出。这里放宽为"不短于结构体"，多余的填充忽略。 */
+	if (fw->size < sizeof(*calibration) || memcmp(fw->data, "TYFC0003", 8))
 		ret = -EINVAL;
 	else
 		memcpy(calibration, fw->data, sizeof(*calibration));

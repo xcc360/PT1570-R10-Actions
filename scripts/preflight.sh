@@ -258,6 +258,47 @@ done
 n=$(find "$FW" -maxdepth 1 -type f -name '*.bin' 2>/dev/null | wc -l)
 [ "$n" = 7 ] && ok "WiFi 固件 7/7" || bad "WiFi 固件数量 $n != 7"
 
+# RFE54 射频参数表 + TSSI 热补偿曲线（2026-11-13 真机定位的第二个断点）
+# 驱动按 realtek/tyfza1/<chip>/RFE54/ 与 <chip>/tssi-thermal-*.bin 请求，
+# 缺一个就在 phy/fem 阶段失败，probe -EINVAL，phy0/phy1 都不出现。
+rfe=$(find "$FW" -path '*RFE54*' -name '*.txt' | wc -l)
+[ "$rfe" -ge 40 ] && ok "RFE54 参数表 $rfe 个" || bad "RFE54 参数表只有 $rfe 个（期望 ≥40）"
+for spec in rtl8852ce/tssi-thermal-5g.bin:360 rtl8192xbe/tssi-thermal-2g.bin:120 \
+            rtl8852ce/RFE54/PHY_REG.txt:27429 \
+            rtl8852ce/RFE54/RTK66587_BPF/PHY_REG.txt:2351 \
+            rtl8192xbe/RFE54/RTK66287/PHY_REG.txt:1856 ; do
+  rel=${spec%:*}; size=${spec##*:}
+  if [ -f "$FW/$rel" ]; then
+    actual=$(stat -c %s "$FW/$rel")
+    [ "$actual" = "$size" ] && ok "$rel ($size B)" || bad "$rel 大小 $actual != $size"
+  else
+    bad "缺少参数文件 $rel"
+  fi
+done
+# 厂商原表 RU106/2T 6GHz 的两处 PShape 行缺列（一个 8 列只给 7 个 0，
+# 另一个 1 列完全为空），驱动按列数逐个 fscanf 会 -EINVAL，必须补零。
+if awk -F'\t' '$1=="PShape"{c=0; for(i=2;i<=NF;i++) if($i ~ /^[0-9]+$/) c++; if(c!=8) exit 1}' \
+     "$FW/rtl8852ce/RFE54/TXPWR_LMT_RU_6G_LPI.txt"; then
+  ok "RU_6G_LPI 各 PShape 行均为 8 列"
+else
+  bad "RU_6G_LPI 仍有 PShape 行不是 8 列（驱动会 -EINVAL）"
+fi
+if awk -F'\t' '$1=="PShape"{c=0; for(i=2;i<=NF;i++) if($i ~ /^[0-9]+$/) c++; if(c!=1) exit 1}' \
+     "$FW/rtl8852ce/RFE54/TXPWR_LMT_RU_6G_VLP.txt"; then
+  ok "RU_6G_VLP 各 PShape 行均为 1 列"
+else
+  bad "RU_6G_VLP 仍有 PShape 行为空（驱动会 -EINVAL）"
+fi
+
+# 默认无线配置：刷完就要能看到 WiFi（两颗射频都 enabled）
+if [ -f "$ASSETS/files/etc/config/wireless" ]; then
+  dis=$(grep -c "option disabled '0'" "$ASSETS/files/etc/config/wireless")
+  [ "$dis" = 2 ] && ok "默认 wireless 配置启用 2 个 radio" \
+                 || bad "默认 wireless 配置启用 radio 数 $dis != 2"
+else
+  bad "缺少默认无线配置 files/etc/config/wireless"
+fi
+
 # tyfza1-factory 的 factory_blob 把临时文件 mv 到 "$2"（长度）而不是 "$3"（目标路径），
 # 导致 /lib/firmware 下校准文件全是悬空链接。修补必须落在镜像里的脚本上。
 grep -q 'mv "\$tmp" "\$3"' scripts/patch-upstream.sh \

@@ -587,6 +587,46 @@ jobs:
           [ "$n" = 7 ] || { echo "::error::镜像内 WiFi 固件数量 $n != 7"; exit 1; }
           echo "WIFI_FIRMWARE_OK=True files=$n"
 
+          # --- RFE54 射频参数表 + TSSI 热补偿曲线 + 单板校准 ---
+          # 这四类输入缺任何一个，rtl_ax_ap 都会在 phy/fem/cal 阶段失败退出：
+          #   realtek/tyfza1/<chip>/RFE54/*.txt        PHY/Radio/功率限值
+          #   realtek/tyfza1/<chip>/RFE54/<FEM>/*.txt  FEM 二级表（8852CE=RTK66587_BPF，
+          #                                            8192XBE=RTK66287）
+          #   realtek/tyfza1/<chip>/tssi-thermal-*.bin 由 TXPWR_TrackTSSI 曲线导出
+          #   realtek/tyfza1/<chip>/flash-calibration.bin 开机由 tyfza1-factory 从
+          #                                            ubi_Config 导出（镜像内是软链接）
+          # 路径必须与驱动 request_firmware() 拼出的字符串完全一致。
+          rfe_expected=$(find "$ASSETS"/files/lib/firmware/realtek/tyfza1 \
+                           -path '*RFE54*' -name '*.txt' | wc -l)
+          rfe_got=$(find "$ROOT/lib/firmware/realtek/tyfza1" \
+                      -path '*RFE54*' -name '*.txt' 2>/dev/null | wc -l)
+          [ "$rfe_expected" -ge 40 ] \
+            || { echo "::error::仓库里 RFE54 参数表只有 $rfe_expected 个，资产不完整"; exit 1; }
+          [ "$rfe_got" = "$rfe_expected" ] \
+            || { echo "::error::镜像内 RFE54 参数表 $rfe_got != $rfe_expected"; exit 1; }
+          for f in \
+            rtl8852ce/RFE54/PHY_REG.txt rtl8852ce/RFE54/RadioA.txt \
+            rtl8852ce/RFE54/RTK66587_BPF/PHY_REG.txt \
+            rtl8192xbe/RFE54/PHY_REG.txt \
+            rtl8192xbe/RFE54/RTK66287/PHY_REG.txt \
+            rtl8852ce/tssi-thermal-5g.bin rtl8192xbe/tssi-thermal-2g.bin; do
+            [ -f "$ROOT/lib/firmware/realtek/tyfza1/$f" ] \
+              || { echo "::error::镜像缺少 WiFi 参数文件 $f"; exit 1; }
+          done
+          # 曲线长度是驱动结构体尺寸：8852C 3组×2路×2符号×30 = 360；XB 2×2×30 = 120
+          [ "$(wc -c < "$ROOT/lib/firmware/realtek/tyfza1/rtl8852ce/tssi-thermal-5g.bin")" = 360 ] \
+            || { echo "::error::5G TSSI 热补偿曲线不是 360 字节"; exit 1; }
+          [ "$(wc -c < "$ROOT/lib/firmware/realtek/tyfza1/rtl8192xbe/tssi-thermal-2g.bin")" = 120 ] \
+            || { echo "::error::2.4G TSSI 热补偿曲线不是 120 字节"; exit 1; }
+          echo "WIFI_RF54_OK=True tables=$rfe_got"
+
+          # 默认无线配置：两颗射频都要在而且默认启用，否则刷完看不到 WiFi
+          [ -f "$ROOT/etc/config/wireless" ] \
+            || { echo "::error::镜像缺少默认 /etc/config/wireless"; exit 1; }
+          [ "$(grep -c "option disabled '0'" "$ROOT/etc/config/wireless")" = 2 ] \
+            || { echo "::error::默认 wireless 配置的 radio 数不是 2 或未启用"; exit 1; }
+          echo "WIFI_DEFAULT_CFG_OK=True"
+
           # 校验打包的是修补后的 factory 提取脚本，且校准软链接存在（目标在 /tmp，属于正常）
           grep -q 'mv "\$tmp" "\$3"' "$ROOT/etc/init.d/tyfza1-factory" \
             || { echo "::error::镜像里的 tyfza1-factory 未应用 factory_blob 修补"; exit 1; }
