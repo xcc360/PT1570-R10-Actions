@@ -282,6 +282,18 @@ jobs:
           chmod -R go-w feeds/luci feeds/packages 2>/dev/null || true
           find feeds/luci -path '*/root/usr/share/rpcd/ucode/*' -type f -exec chmod 0755 {} + 2>/dev/null || true
           find feeds/luci -path '*/root/usr/share/rpcd/acl.d/*.json' -type f -exec chmod 0644 {} + 2>/dev/null || true
+          # rpcd exec 插件（/usr/libexec/rpcd/*）另有两个坑，2026-11-14 真机实证：
+          #   luci-app-argon-config / luci-theme-argon 带的是 CRLF 文本，首行变成
+          #   "#!/bin/sh\r"，内核找不到名为 /bin/sh\r 的解释器；且安装成 0644。
+          #   结果 5 个 luci.argon* ubus 对象全不注册，主题设置页第一发 RPC 就报
+          #   "RPC call to luci.argon/avail failed ... -32000: Object not found"。
+          # 这里对 feed 源码做第一道归一化；真正保证由 files/ overlay + 产物断言兜底。
+          find feeds -path '*/root/usr/libexec/rpcd/*' -type f -print 2>/dev/null | while IFS= read -r f; do
+            [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ] || continue
+            tr -d '\r' < "$f" > "$f.lf" && cat "$f.lf" > "$f" && rm -f "$f.lf"
+            chmod 0755 "$f"
+          done || true
+          echo "  OK   rpcd exec 插件：CRLF 归一化 + 0755"
 
       - name: Apply board support (DTS + Device + sysupgrade whitelist)
         env:
@@ -300,6 +312,8 @@ jobs:
           if [ -d "$GITHUB_WORKSPACE/files" ]; then
             cp -a "$GITHUB_WORKSPACE/files/." "$GITHUB_WORKSPACE/wrt/files/"
             chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
+            # rpcd exec 插件必须可执行，否则 rpcd 不加载，luci.argon* 对象不注册
+            chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
             echo "custom rootfs files injected:"
             find "$GITHUB_WORKSPACE/files" -type f -printf '  %P\n'
           fi
@@ -647,6 +661,30 @@ jobs:
           grep -q 'CI_KERNPART=fit' "$UPG/platform.sh" \
             || { echo "::error::platform.sh 升级目标卷不是 fit"; exit 1; }
           echo "SYSUPGRADE_BOARD_OK=True"
+
+          # --- rpcd exec 插件 / argon 主题设置（2026-11-14 真机实证） ---
+          # LuCI「系统 → 主题设置」报 luci.argon/avail -32000 Object not found，
+          # 根因是 /usr/libexec/rpcd/luci.argon* 为 CRLF（#!/bin/sh\r）+ 0644，
+          # rpcd 的 exec 插件一个都加载不了。assets 注入 LF+0755 版本覆盖包内文件，
+          # 这里逐文件复核产物，避免 feed 升级悄悄把坏文件带回来。
+          RPCD="$ROOT/usr/libexec/rpcd"
+          [ -d "$RPCD" ] || { echo "::error::镜像缺少 /usr/libexec/rpcd"; exit 1; }
+          n=0
+          for f in "$ASSETS"/files/usr/libexec/rpcd/luci.argon*; do
+            base=${f##*/}
+            tgt="$RPCD/$base"
+            [ -f "$tgt" ] || { echo "::error::镜像缺少 rpcd 插件 $base"; exit 1; }
+            [ -x "$tgt" ] || { echo "::error::rpcd 插件 $base 不可执行（rpcd 不会加载）"; exit 1; }
+            if grep -q "$(printf '\r')" "$tgt"; then
+              echo "::error::rpcd 插件 $base 仍是 CRLF（shebang 会变成 /bin/sh\r）"; exit 1
+            fi
+            cmp -s "$f" "$tgt" || { echo "::error::镜像内 $base 与 assets 的 LF 版本不一致"; exit 1; }
+            n=$((n+1))
+          done
+          [ "$n" = 5 ] || { echo "::error::argon rpcd 插件数量 $n != 5"; exit 1; }
+          [ -f "$ROOT/etc/uci-defaults/92-pt1570-rpcd-eol" ] \
+            || { echo "::error::镜像缺少 92-pt1570-rpcd-eol 兜底脚本"; exit 1; }
+          echo "RPCD_ARGON_OK=True plugins=$n"
 
           # --- RFE54 射频参数表 + TSSI 热补偿曲线 + 单板校准 ---
           # 这四类输入缺任何一个，rtl_ax_ap 都会在 phy/fem/cal 阶段失败退出：

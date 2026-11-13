@@ -544,6 +544,43 @@ grep -q 'APK_SOURCE_OK=True' "$WF" \
 grep -q "UNTRUSTED signature" "$WF" \
   && ok "workflow 记录 UNTRUSTED 排查背景" || echo "  --   workflow 未提及 UNTRUSTED（仅注释，非致命）"
 
+echo "=== 18. rpcd exec 插件 / argon 主题设置（2026-11-14 真机实证） ==="
+# LuCI「系统 → 主题设置」报 luci.argon/avail -32000 Object not found：
+# /usr/libexec/rpcd/luci.argon* 是 CRLF（#!/bin/sh\r 找不到解释器）且 0644，
+# rpcd 的 exec 插件一个都不加载。files/ 注入 LF+0755 覆盖，92-* 首启兜底。
+RPCD_SRC=files/usr/libexec/rpcd
+n=0
+for f in "$RPCD_SRC"/luci.argon*; do
+  [ -f "$f" ] || continue
+  n=$((n+1))
+  base=${f##*/}
+  head -n1 "$f" | grep -q '^#!/bin/sh$' \
+    && ok "$base shebang 是干净的 #!/bin/sh" \
+    || bad "$base shebang 异常（CRLF 会让内核找不到 /bin/sh）"
+  if grep -q "$(printf '\r')" "$f"; then
+    bad "$base 仍含 CR"
+  else
+    ok "$base 已是 LF"
+  fi
+  [ -x "$f" ] && ok "$base 可执行（0755）" || bad "$base 没有可执行位（rpcd 不加载）"
+done
+[ "$n" = 5 ] && ok "argon rpcd 插件 5 个齐全" || bad "argon rpcd 插件数量 $n != 5"
+
+UC=files/etc/uci-defaults/92-pt1570-rpcd-eol
+if [ -f "$UC" ]; then
+  ok "存在 $UC 兜底脚本"
+  [ -x "$UC" ] && ok "兜底脚本可执行" || bad "兜底脚本没有可执行位"
+  grep -q 'tr -d' "$UC" && ok "兜底脚本会去除 CR" || bad "兜底脚本没有去 CR"
+  grep -q '/etc/init.d/rpcd restart' "$UC" \
+    && ok "兜底脚本改完后重启 rpcd" || bad "兜底脚本没重启 rpcd"
+else
+  bad "缺少 $UC（feed 升级带回 CRLF 时无法自愈）"
+fi
+grep -q 'RPCD_ARGON_OK=True' "$WF" \
+  && ok "镜像校验有 RPCD_ARGON_OK 断言" || bad "镜像校验缺 rpcd/argon 断言"
+grep -q 'wrt/files/usr/libexec/rpcd/' "$WF" \
+  && ok "workflow 给 rpcd 插件补可执行位" || bad "workflow 没给 rpcd 插件补可执行位"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"
