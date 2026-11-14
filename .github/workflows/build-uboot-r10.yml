@@ -1,4 +1,10 @@
-name: Build PT1570-R10 U-Boot
+# 统一命名 ID: PT1570-R10-4GE-CU-uboot
+#   规则 <型号>-<网口>-<运营商>-<产物类型>（uboot / sysupgrade）。
+#   仅作用于展示层：workflow / job / artifact / release / packages / BUILD_INFO。
+#   机器层 PROFILE / BOARD_NAME / DTS / SUPPORTED_DEVICES / Config target 符号
+#   一律不动（uci-defaults 门控与 sysupgrade 白名单依赖它们），workflow 文件名
+#   也保留，避免 GitHub 按路径重建 workflow、丢失 run 历史。
+name: PT1570-R10-4GE-CU-uboot
 
 # The U-Boot source tree (upstream qwe-qaq/rtl9617c-uboot@1570 plus the
 # pt1570-r10 board assets) lives on the "uboot-r10" branch of this repo.
@@ -23,12 +29,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: uboot-r10-${{ github.ref }}
+  group: pt1570-r10-4ge-cu-uboot-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: pt1570-r10 boot image
+    name: PT1570-R10-4GE-CU-uboot / build
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -117,7 +123,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: pt1570-r10-uboot-${{ github.sha }}
+          name: PT1570-R10-4GE-CU-uboot-${{ github.run_number }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
@@ -128,6 +134,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          tag="uboot-r10-$(git rev-parse --short=12 HEAD)"
+          tag="PT1570-R10-4GE-CU-uboot-${{ github.run_number }}"
           gh release create "$tag" --title "$tag" --generate-notes --target "$GITHUB_SHA" || true
           gh release upload "$tag" dist/*.bin dist/*.json dist/*.txt --clobber || true

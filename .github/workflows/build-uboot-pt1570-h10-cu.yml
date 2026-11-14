@@ -23,7 +23,13 @@
 #
 # ⚠️ stock 与这台设备绑定（GPT GUID 每机唯一）。换机需重新备份 mtd0 并更新
 #    boards/*.json 的 stock_sha256 与 stocks/.../stock-mtd0.bin.b64。
-name: Build U-Boot PT1570-H10-CU (Unicom)
+# 统一命名 ID: PT1570-H10-2P5G-CU-uboot
+#   规则 <型号>-<网口>-<运营商>-<产物类型>（uboot / sysupgrade）。
+#   仅作用于展示层：workflow / job / artifact / release / packages / BUILD_INFO。
+#   机器层 PROFILE / BOARD_NAME / DTS / SUPPORTED_DEVICES / Config target 符号
+#   一律不动（uci-defaults 门控与 sysupgrade 白名单依赖它们），workflow 文件名
+#   也保留，避免 GitHub 按路径重建 workflow、丢失 run 历史。
+name: PT1570-H10-2P5G-CU-uboot
 
 on:
   workflow_dispatch:
@@ -47,7 +53,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: uboot-pt1570-h10-cu-${{ github.ref }}
+  group: pt1570-h10-2p5g-cu-uboot-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -56,7 +62,7 @@ env:
 
 jobs:
   build:
-    name: U-Boot / RTL9617C / PT1570-H10-CU
+    name: PT1570-H10-2P5G-CU-uboot / build
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout assets
@@ -259,7 +265,7 @@ jobs:
         if: ${{ !inputs.test_only }}
         uses: actions/upload-artifact@v4
         with:
-          name: pt1570-h10-cu-uboot-${{ github.run_number }}
+          name: PT1570-H10-2P5G-CU-uboot-${{ github.run_number }}
           path: output-cu-uboot/
           retention-days: 90
 
@@ -270,7 +276,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="pt1570-h10-cu-uboot-run${{ github.run_number }}"
+          TAG="PT1570-H10-2P5G-CU-uboot-${{ github.run_number }}"
           gh release create "$TAG" output-cu-uboot/* \
-            --title "PT1570-H10-CU U-Boot (run ${{ github.run_number }})" \
+            --title "PT1570-H10-2P5G-CU-uboot (run ${{ github.run_number }})" \
             --notes "联通版专用（1x2.5GE + 3xGE）：stock 用本机联通 mtd0 备份，GPT/BL2/BL31 原样保留，仅替换 BL33；BL33 沿用 CT-2P5G 板级描述。factory 卷 8 MiB。"

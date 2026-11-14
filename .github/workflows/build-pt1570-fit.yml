@@ -20,7 +20,13 @@
 # Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3（Node 24）。
 # 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
 
-name: Build PonWRT PT1570 FIT
+# 统一命名 ID: PT1570-R10-4GE-CU-sysupgrade
+#   规则 <型号>-<网口>-<运营商>-<产物类型>（uboot / sysupgrade）。
+#   仅作用于展示层：workflow / job / artifact / release / packages / BUILD_INFO。
+#   机器层 PROFILE / BOARD_NAME / DTS / SUPPORTED_DEVICES / Config target 符号
+#   一律不动（uci-defaults 门控与 sysupgrade 白名单依赖它们），workflow 文件名
+#   也保留，避免 GitHub 按路径重建 workflow、丢失 run 历史。
+name: PT1570-R10-4GE-CU-sysupgrade
 
 on:
   workflow_dispatch:
@@ -76,7 +82,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pt1570-fit-${{ github.ref }}
+  group: pt1570-r10-4ge-cu-sysupgrade-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -85,7 +91,7 @@ env:
 
 jobs:
   build:
-    name: FIT / rtl9617c / PT1570-R10
+    name: PT1570-R10-4GE-CU-sysupgrade / build
     runs-on: ubuntu-24.04
     timeout-minutes: 480
     strategy:
@@ -534,7 +540,7 @@ jobs:
         if: ${{ inputs.test_only }}
         uses: actions/upload-artifact@v6
         with:
-          name: pt1570-${{ matrix.board }}-config-${{ github.run_number }}
+          name: PT1570-R10-4GE-CU-sysupgrade-config-${{ github.run_number }}
           path: Config-final.txt
           retention-days: 14
 
@@ -826,7 +832,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: pt1570-${{ matrix.board }}-build-log-${{ github.run_number }}
+          name: PT1570-R10-4GE-CU-sysupgrade-build-log-${{ github.run_number }}
           path: |
             build.log
             step-feeds.log
@@ -865,6 +871,8 @@ jobs:
           echo "$SOURCE_HASH" > "$OUT/source-commit.txt"
           {
             echo "board=$MODEL ($BOARD_NAME)"
+            echo "release_id=PT1570-R10-4GE-CU-sysupgrade"
+            echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
             echo "dts=$DTS"
             echo "dts_status=${DTS_STATUS:-experimental}"
@@ -933,9 +941,9 @@ jobs:
             } > "$ROOT/BUILD_INFO.txt"
 
             cd "$GITHUB_WORKSPACE"
-            tar --zstd -cf "artifact/packages-${{ matrix.board }}-${{ github.run_number }}.tar.zst" \
+            tar --zstd -cf "artifact/PT1570-R10-4GE-CU-sysupgrade-packages-${{ github.run_number }}.tar.zst" \
                 -C "$ROOT" .
-            ls -lh "artifact/packages-${{ matrix.board }}-${{ github.run_number }}.tar.zst"
+            ls -lh "artifact/PT1570-R10-4GE-CU-sysupgrade-packages-${{ github.run_number }}.tar.zst"
           fi
 
           cd "$OUT"
@@ -948,7 +956,7 @@ jobs:
         if: ${{ !inputs.test_only }}
         uses: actions/upload-artifact@v6
         with:
-          name: pt1570-${{ matrix.board }}-fit-${{ github.run_number }}
+          name: PT1570-R10-4GE-CU-sysupgrade-${{ github.run_number }}
           path: artifact/*
           if-no-files-found: error
           retention-days: 30
@@ -957,15 +965,16 @@ jobs:
         if: ${{ !inputs.test_only && inputs.create_release && inputs.dts_status == 'verified' }}
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: pt1570-${{ matrix.board }}-fit-${{ github.run_number }}
-          name: PonWRT PT1570-${{ matrix.board }} FIT (${{ github.run_number }})
+          tag_name: PT1570-R10-4GE-CU-sysupgrade-${{ github.run_number }}
+          name: PT1570-R10-4GE-CU-sysupgrade (${{ github.run_number }})
           files: artifact/*
           body: |
+            Release ID `PT1570-R10-4GE-CU-sysupgrade`
             源码 lyq1996/rtl9617c-openwrt `${{ env.SOURCE_REF }}` @ `${{ env.SOURCE_HASH }}`
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
-            同批 packages 见 `packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
+            同批 packages 见 `PT1570-R10-4GE-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
             ⚠️ 刷机前必须已完成新 U-Boot（rtk_boot / 读 fit 卷）确认、factory 导入与卷表重建，详见方案文档。
             ⚠️ 刷机前 U-Boot env 应保持编译默认（pt1570.env 无 bootargs）；清空动作执行一次即可。
             ⚠️ 本固件 bootargs 不含 root=，挂根由内核 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV 完成。

@@ -44,7 +44,13 @@
 # Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3。
 # 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
 
-name: Build PonWRT PT1500-H10 FIT
+# 统一命名 ID: PT1500-H10-2P5G-CT-sysupgrade
+#   规则 <型号>-<网口>-<运营商>-<产物类型>（uboot / sysupgrade）。
+#   仅作用于展示层：workflow / job / artifact / release / packages / BUILD_INFO。
+#   机器层 PROFILE / BOARD_NAME / DTS / SUPPORTED_DEVICES / Config target 符号
+#   一律不动（uci-defaults 门控与 sysupgrade 白名单依赖它们），workflow 文件名
+#   也保留，避免 GitHub 按路径重建 workflow、丢失 run 历史。
+name: PT1500-H10-2P5G-CT-sysupgrade
 
 on:
   workflow_dispatch:
@@ -89,7 +95,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pt1500-h10-${{ github.ref }}
+  group: pt1500-h10-2p5g-ct-sysupgrade-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -98,7 +104,7 @@ env:
 
 jobs:
   build:
-    name: FIT / rtl9617c / PT1500-H10 2.5G
+    name: PT1500-H10-2P5G-CT-sysupgrade / build
     runs-on: ubuntu-24.04
     timeout-minutes: 480
     strategy:
@@ -501,7 +507,7 @@ jobs:
         if: ${{ inputs.test_only }}
         uses: actions/upload-artifact@v6
         with:
-          name: pt1500-h10-config-${{ github.run_number }}
+          name: PT1500-H10-2P5G-CT-sysupgrade-config-${{ github.run_number }}
           path: Config-final.txt
           retention-days: 14
 
@@ -715,7 +721,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: pt1500-h10-build-log-${{ github.run_number }}
+          name: PT1500-H10-2P5G-CT-sysupgrade-build-log-${{ github.run_number }}
           path: |
             build.log
             step-feeds.log
@@ -753,6 +759,8 @@ jobs:
           echo "$SOURCE_HASH" > "$OUT/source-commit.txt"
           {
             echo "board=$MODEL ($BOARD_NAME)"
+            echo "release_id=PT1500-H10-2P5G-CT-sysupgrade"
+            echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
             echo "dts=$DTS (upstream @ $SOURCE_HASH, unmodified)"
             echo "source_ref=$SOURCE_REF"
@@ -812,9 +820,9 @@ jobs:
             } > "$ROOT/BUILD_INFO.txt"
 
             cd "$GITHUB_WORKSPACE"
-            tar --zstd -cf "artifact/packages-h10-${{ github.run_number }}.tar.zst" \
+            tar --zstd -cf "artifact/PT1500-H10-2P5G-CT-sysupgrade-packages-${{ github.run_number }}.tar.zst" \
                 -C "$ROOT" .
-            ls -lh "artifact/packages-h10-${{ github.run_number }}.tar.zst"
+            ls -lh "artifact/PT1500-H10-2P5G-CT-sysupgrade-packages-${{ github.run_number }}.tar.zst"
           fi
 
           cd "$OUT"
@@ -827,7 +835,7 @@ jobs:
         if: ${{ !inputs.test_only }}
         uses: actions/upload-artifact@v6
         with:
-          name: pt1500-h10-fit-${{ github.run_number }}
+          name: PT1500-H10-2P5G-CT-sysupgrade-${{ github.run_number }}
           path: artifact/*
           if-no-files-found: error
           retention-days: 30
@@ -836,15 +844,16 @@ jobs:
         if: ${{ !inputs.test_only && inputs.create_release }}
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: pt1500-h10-fit-${{ github.run_number }}
-          name: PonWRT PT1500-H10 2.5G FIT (${{ github.run_number }})
+          tag_name: PT1500-H10-2P5G-CT-sysupgrade-${{ github.run_number }}
+          name: PT1500-H10-2P5G-CT-sysupgrade (${{ github.run_number }})
           files: artifact/*
           body: |
+            Release ID `PT1500-H10-2P5G-CT-sysupgrade`
             源码 lyq1996/rtl9617c-openwrt `${{ env.SOURCE_REF }}` @ `${{ env.SOURCE_HASH }}`
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`（上游原生，未改动）
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
-            同批 packages 见 `packages-h10-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
+            同批 packages 见 `PT1500-H10-2P5G-CT-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
 
             ⚠️ 仅适用于 PT1500-H10 2.5G（youhua,pt1500-h10-2p5g），无 WiFi。
             ⚠️ 刷机前必须已完成：U-Boot Web failsafe 里「重建 UBI」+ 导入 8 MiB factory 镜像。
