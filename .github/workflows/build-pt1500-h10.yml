@@ -1,0 +1,835 @@
+# SPDX-License-Identifier: MIT
+# PonWRT / PT1500-H10 2.5G（youhua,pt1500-h10-2p5g）/ 统一 UBI 方案云编译
+#
+# 这是与 build-pt1570-fit.yml（PT1570-R10）完全隔离的独立 workflow：
+#   * 不改动 R10 的任何文件、不共用 matrix、不共用 concurrency group；
+#   * 后期两机型合并时，把公共段抽成可复用 composite action 即可。
+#
+# 机型事实（2026-11-14 实机核对，全部以设备实测为准）：
+#   * U-Boot：lyq1996/rtl9617c-uboot @ 3a709714e551（2026-11-10 版，
+#     pt1500-h10-2p5g_defconfig），不是 main 分支的 a9d26b0f。
+#   * /api/info 的 board_data 明确写 factory size = 8388608（8 MiB static）。
+#     恢复页「镜像大小必须与定义完全一致」的硬校验只认 8 MiB；
+#     64 KiB 是新版 U-Boot 的布局，不适用于本机，别拿 64K 产物来刷。
+#   * factory 卷已重建并写入，从设备读回 8 MiB 与本地
+#     p1500-h10-factory.bin 逐字节一致（sha256 08cf837e...），
+#     base MAC fc:34:e2:69:1b:7a / PON SN YHTCE2691B7A 均在。
+#   * DTS 的 fpga-image@10000（0x10000+0x7e0000=0x800000）正好对齐 8 MiB，
+#     所以上游 DTS 无需 patch（早期按 64 KiB 推断的「要删 fpga 节点」作废）。
+#
+# 布局：factory(8 MiB static) + fit + rootfs_data，产物 sysupgrade.itb
+#       （FIT external-static-with-rootfs）。
+# 上游 lyq1996/rtl9617c-openwrt@20b4cf4 已自带完整 H10 2p5g profile / DTS /
+#       platform.sh 白名单 / 95-96-97 首启脚本，本 workflow 不注入任何 Device/DTS，
+#       只做三件机型相关的事（见 scripts/apply-board-h10.sh）：
+#         1. 编译期移除上游 pt1500-fip.sh（写不存在的 fip 卷、覆盖 platform.sh）；
+#         2. 修 tyfza1-factory 的 factory_blob 目标参数（PON 平台公共缺陷）；
+#         3. 断言上游机型定义齐全。
+#
+# 与 R10 的关键差异（2.5G 版无 WiFi）：
+#   * 不带 kmod-rtl-ax-ap / wpad-* / wireless-regdb / WiFi AP 固件 / RFE54 参数表；
+#   * 不跑 patch-wifi-diag.sh / overlay-wifi-driver.sh / patch-upstream.sh；
+#   * 不带 R10 的 99-pt1570-fit（网口/MAC 兜底）与 95-pt1570-wan-default：
+#     网口、LED、br-lan MAC 由上游 95/96/97-pt1500 系列处理，
+#     默认 WAN 用上游 90-tyfza1-pon-wan（EPON PPPoE on pon0.3961）；
+#   * 只复用机型无关的通用修复：apk 源/公钥/首启脚本、argon rpcd 插件、
+#     zz-pt1570-sysupgrade.sh（fitblk 释放 FIT 子镜像）、verify-fit-boot.py。
+#
+# 默认 LAN IP 192.168.2.1（不是 R10 的 .1.1）：用户两台设备同时在线，
+# WLAN 网关 192.168.1.1 是 R10，有线 192.168.2.1 是本机，避免撞 IP。
+#
+# Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3。
+# 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
+
+name: Build PonWRT PT1500-H10 FIT
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认锁定已实机核对的完整 SHA）'
+        required: false
+        default: '20b4cf4490ca55cc406d07e391691efa8cd8a087'
+        type: string
+      test_only:
+        description: '只生成并上传 .config / 校验报告，不编译'
+        required: false
+        default: false
+        type: boolean
+      create_release:
+        description: '发布到 GitHub Release'
+        required: false
+        default: false
+        type: boolean
+      publish_packages:
+        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）'
+        required: false
+        default: true
+        type: boolean
+      packages_repo_url:
+        description: '可选：自建 packages 静态源根 URL，随固件写入 customfeeds.list'
+        required: false
+        default: ''
+        type: string
+      apk_mirror_base:
+        description: '可选：覆盖内置 apk 源（默认北大镜像 immortalwrt 25.12-SNAPSHOT 的 aarch64_cortex-a53 目录，公钥随镜像）。留空即用内置地址'
+        required: false
+        default: ''
+        type: string
+      apk_repo_key_url:
+        description: '可选：外部 apk 源公钥 URL'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pt1500-h10-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  FORCE_UNSAFE_CONFIGURE: 1
+
+jobs:
+  build:
+    name: FIT / rtl9617c / PT1500-H10 2.5G
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      matrix:
+        # 独立 workflow：只编 H10。R10 在另一个 workflow 里，互不干扰。
+        board: [h10]
+
+    steps:
+      - name: Checkout build assets
+        uses: actions/checkout@v5
+
+      # 防呆：任何把 R10 或第二个机型加回 matrix 的改动都会在这里失败。
+      - name: Guard H10-only
+        env:
+          BOARD: ${{ matrix.board }}
+        run: |
+          [ "$BOARD" = "h10" ] || {
+            echo "ERROR: 本 workflow 只编 H10，收到 board=$BOARD" >&2; exit 1; }
+          WF="$GITHUB_WORKSPACE/.github/workflows/build-pt1500-h10.yml"
+          LINE=$(grep -E '^[[:space:]]*board: \[' "$WF" | tr -d '[:space:]')
+          [ "$LINE" = "board:[h10]" ] || {
+            echo "ERROR: matrix board 行不是 [h10]：'$LINE'" >&2; exit 1; }
+          echo "H10_ONLY_GUARD_OK=True board=$BOARD matrix=$LINE"
+
+      - name: Resolve board parameters
+        env:
+          BOARD: ${{ matrix.board }}
+        run: |
+          case "$BOARD" in
+            h10)
+              echo "PROFILE=youhua_pt1500_h10_2p5g"      >> "$GITHUB_ENV"
+              echo "BOARD_NAME=youhua,pt1500-h10-2p5g"  >> "$GITHUB_ENV"
+              echo "DTS=rtl9617c-pt1500-h10-2p5g"       >> "$GITHUB_ENV"
+              echo "MODEL=PT1500-H10-2p5G"              >> "$GITHUB_ENV"
+              ;;
+            *) echo "ERROR: H10 workflow 不接受 board=$BOARD" >&2; exit 1 ;;
+          esac
+          echo "board=$BOARD profile=youhua_pt1500_h10_2p5g dts=rtl9617c-pt1500-h10-2p5g"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift
+          sudo apt-get clean
+          df -h /
+          sudo mkdir -p /mnt/build_wrt
+          sudo chown "$USER:$USER" /mnt/build_wrt
+          ln -s /mnt/build_wrt "$GITHUB_WORKSPACE/wrt"
+          df -h /mnt
+
+      - name: Install build dependencies
+        # 与 R10 相同：包含 clang-18 / ld.lld-18 / llvm-objcopy-18，
+        # target/linux/rtl9617c/pe/Makefile 硬编码它们编译 MIPS32 裸机 PE 程序。
+        # tyfza1-pon-control（Rust）需要 host rustup 补 aarch64-unknown-linux-musl std。
+        run: |
+          sudo apt-get update -yqq
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang clang-18 cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld lld-18 llvm llvm-18 ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+          if command -v rustup >/dev/null 2>&1; then
+            rustup target add aarch64-unknown-linux-musl
+            rustup target list --installed
+          else
+            echo "::error::runner 缺 rustup，无法补 aarch64-unknown-linux-musl std" >&2
+            exit 1
+          fi
+
+      - name: Clone rtl9617c-openwrt source
+        run: |
+          set -e
+          REF="${{ inputs.source_ref || '20b4cf4490ca55cc406d07e391691efa8cd8a087' }}"
+          cd /mnt/build_wrt
+          git init -q
+          git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
+          if ! git fetch -q --depth=1 origin "$REF"; then
+            echo "WARN: 按 commit 拉取失败，回退到 h10 fixes 分支" >&2
+            git fetch -q --depth=1 origin feature/pt1500-h10-openwrt-fixes
+          fi
+          git checkout -q FETCH_HEAD
+          echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
+          echo "--- target ---"
+          test -f target/linux/rtl9617c/image/Makefile
+          test -f target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi
+          test -f target/linux/rtl9617c/dts/rtl9617c-pt1500-h10-2p5g.dts
+          test -f package/utils/fitblk/files/fit.sh
+          echo "source: $(git rev-parse HEAD)"
+
+      - name: Build PE firmware (pe-tx-code.h)
+        # H10 2.5G 版无 WiFi，但内核 files-6.18 里 rtl_ax_ap 目录仍随源码树展开，
+        # 且该头文件被上游 .gitignore 排除、OpenWrt 不会自动生成。缺它会在
+        # target/linux/compile 阶段报 "pe-tx-code.h is missing" 而整树编译失败
+        # （R10 run #7 的根因）。生成它是几分钟的保险，不会把 WiFi 驱动带进镜像。
+        working-directory: wrt
+        run: |
+          set -eo pipefail
+          echo "=== PE toolchain ==="
+          for t in clang-18 ld.lld-18 llvm-objcopy-18 python3; do
+            if ! command -v "$t" >/dev/null 2>&1; then
+              echo "::error::PE 构建缺少工具 $t" >&2
+              exit 1
+            fi
+            printf '  OK   %-20s %s\n' "$t" "$(command -v "$t")"
+          done
+          if ! make -C target/linux/rtl9617c/pe 2>&1 | tee /tmp/pe-build.log; then
+            echo "::group::PE BUILD FAILED - last 60 lines"
+            tail -n 60 /tmp/pe-build.log
+            echo "::endgroup::"
+            echo "::error::make -C target/linux/rtl9617c/pe 失败，pe-tx-code.h 未生成"
+            exit 1
+          fi
+          HDR=target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap/pe-tx-code.h
+          test -s "$HDR" || { echo "::error::pe-tx-code.h 未生成或为空"; exit 1; }
+          grep -q 'static const u32 pe_tx_program\[\]' "$HDR" \
+            || { echo "::error::pe-tx-code.h 内容不符"; exit 1; }
+          echo "PE_HEADER_OK=True bytes=$(wc -c < "$HDR")"
+
+      - name: Pin APK signing key (optional)
+        working-directory: wrt
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          if [ -n "$APK_SIGNING_KEY" ]; then
+            umask 077
+            printf '%s\n' "$APK_SIGNING_KEY" > private-key.pem
+            openssl ec -in private-key.pem -pubout -out public-key.pem
+            echo "APK build key pinned:"; sha256sum public-key.pem
+          else
+            echo "no APK_SIGNING_KEY: ephemeral key; firmware + packages of THIS run trust each other only"
+          fi
+
+      - name: Update and install feeds
+        working-directory: wrt
+        run: |
+          LOG="$GITHUB_WORKSPACE/step-feeds.log"
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+          trap '
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              sleep 1
+              echo "::group::FEEDS STEP FAILED (exit $rc) - last 80 lines"
+              tail -n 80 "$LOG"
+              echo "::endgroup::"
+              last_step=$(grep "^STEP:" "$LOG" | tail -n 1)
+              echo "::error::失败前最后进度: ${last_step:-未知}"
+              grep -E "fatal:|error:|Error [0-9]|ERROR|No such file|not found|Failed|failed|denied|timed out|refusing" "$LOG" \
+                | grep -v "::error::" | tail -n 6 | tr -d "\r" | while IFS= read -r l; do
+                    echo "::error::${l//%/%25}"
+                  done
+              echo "::error::Update and install feeds 失败 (exit $rc)"
+            fi
+          ' EXIT
+
+          echo "STEP: feeds update -a"
+          ./scripts/feeds update -a
+          echo "STEP: feeds install -a"
+          ./scripts/feeds install -a
+          echo "STEP: fix feed file permissions"
+          # rpcd 会拒绝 world-writable 的 ucode handler
+          chmod -R go-w feeds/luci feeds/packages 2>/dev/null || true
+          find feeds/luci -path '*/root/usr/share/rpcd/ucode/*' -type f -exec chmod 0755 {} + 2>/dev/null || true
+          find feeds/luci -path '*/root/usr/share/rpcd/acl.d/*.json' -type f -exec chmod 0644 {} + 2>/dev/null || true
+          # luci-app-argon-config / luci-theme-argon 带的是 CRLF（#!/bin/sh\r）+ 0644，
+          # rpcd exec 插件一个都加载不了 → 主题设置页 luci.argon/avail -32000。
+          # feed 源码先归一化一次，最终由 files-h10 overlay + 产物断言兜底。
+          find feeds -path '*/root/usr/libexec/rpcd/*' -type f -print 2>/dev/null | while IFS= read -r f; do
+            [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ] || continue
+            tr -d '\r' < "$f" > "$f.lf" && cat "$f.lf" > "$f" && rm -f "$f.lf"
+            chmod 0755 "$f"
+          done || true
+          echo "  OK   rpcd exec 插件：CRLF 归一化 + 0755"
+
+      - name: Apply H10 board fixes (no DTS/Device injection)
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/scripts/apply-board-h10.sh"
+
+      - name: Apply custom rootfs files (files-h10)
+        env:
+          PACKAGES_REPO_URL: ${{ inputs.packages_repo_url }}
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/wrt/files"
+          if [ -d "$GITHUB_WORKSPACE/files-h10" ]; then
+            cp -a "$GITHUB_WORKSPACE/files-h10/." "$GITHUB_WORKSPACE/wrt/files/"
+            chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
+            # rpcd exec 插件必须可执行，否则 rpcd 不加载，luci.argon* 对象不注册
+            chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
+            echo "H10 custom rootfs files injected:"
+            find "$GITHUB_WORKSPACE/files-h10" -type f -printf '  %P\n'
+          fi
+          if [ -n "$PACKAGES_REPO_URL" ]; then
+            URL="${PACKAGES_REPO_URL%/}"
+            mkdir -p "$GITHUB_WORKSPACE/wrt/files/etc/apk/repositories.d"
+            {
+              echo '# 本次固件同批编译的 packages 源（由 workflow 注入）'
+              echo "$URL/targets/rtl9617c/generic/packages/packages.adb"
+            } > "$GITHUB_WORKSPACE/wrt/files/etc/apk/repositories.d/customfeeds.list"
+            echo "custom packages repo: $URL/targets/rtl9617c/generic/packages/packages.adb"
+          fi
+
+      - name: Configure
+        working-directory: wrt
+        env:
+          ASSETS: ${{ github.workspace }}
+          APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
+          APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
+        run: |
+          set -e
+          # ⚠️ 顺序敏感（R10 run #10 根因，同样适用于本 target）：
+          #   绝不能在空 .config 上先跑 make defconfig。上游 target-metadata.pl
+          #   把 Target System choice 硬编码为 default TARGET_mediatek，空配置
+          #   defconfig 会选中 mediatek/filogic 默认机型 openwrt_one，把它的包集
+          #   写成显式用户选择；切到 rtl9617c 后残留的 kmod-mac80211/cfg80211
+          #   会与平台自带的 cfg80211.ko 互相覆盖（package/install Error 1）。
+          #   正确顺序：先写最小配置（target + 机型 + 包断言），再 defconfig。
+          rm -f .config
+          cat "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" >> .config
+          bash "$GITHUB_WORKSPACE/customize-h10.sh"
+
+          # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
+          sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
+
+          make defconfig
+          cat "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" >> .config
+          make defconfig
+
+          # defconfig 会静默丢掉未被 profile 点名的包，重新断言后再次 defconfig
+          for sym in tyfza1-pon-control luci-app-tyfza1-pon luci-ssl uhttpd fitblk \
+                     luci-theme-argon; do
+            if ! grep -q "^CONFIG_PACKAGE_${sym}=y$" .config; then
+              sed -i "/^# CONFIG_PACKAGE_${sym} is not set$/d; /^CONFIG_PACKAGE_${sym}=/d" .config
+              echo "CONFIG_PACKAGE_${sym}=y" >> .config
+              echo "  re-asserted $sym"
+            fi
+          done
+          make defconfig
+
+          # 用户软件包基线（沿用 R10：tailscale 三件套），由 Config-PT1500-H10.txt
+          # 直接写入；两次 defconfig 可能降级，这里统一重新断言再检查。
+          echo "===== user-requested packages (tailscale baseline) ====="
+          USER_PKGS="tailscale luci-app-tailscale-community \
+                     luci-i18n-tailscale-community-zh-cn"
+          for p in $USER_PKGS; do
+            if ! grep -q "^CONFIG_PACKAGE_${p}=y$" .config; then
+              sed -i "/^# CONFIG_PACKAGE_${p} is not set$/d; /^CONFIG_PACKAGE_${p}=/d" .config
+              echo "CONFIG_PACKAGE_${p}=y" >> .config
+              echo "  re-asserted $p"
+            fi
+          done
+          make defconfig
+          for p in $USER_PKGS; do
+            grep -q "^CONFIG_PACKAGE_${p}=y$" .config \
+              || { echo "ERROR: $p 未启用（feed 里找不到该包，或依赖不满足被降级）" >&2; exit 1; }
+            echo "  OK   $p"
+          done
+
+          echo "===== hard assertions ====="
+          grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config \
+            || { echo "ERROR: profile $PROFILE 未启用" >&2; exit 1; }
+          for sym in tyfza1-pon-control luci-app-tyfza1-pon luci-ssl uhttpd fitblk \
+                     luci-theme-argon; do
+            grep -q "^CONFIG_PACKAGE_${sym}=y$" .config \
+              || { echo "ERROR: $sym 二次 defconfig 后仍被丢弃" >&2; exit 1; }
+            echo "  OK   $sym"
+          done
+          grep -q '^# CONFIG_PACKAGE_uboot-envtools is not set$' .config \
+            || { echo "ERROR: uboot-envtools 必须关闭" >&2; exit 1; }
+          echo "  OK   uboot-envtools disabled"
+
+          # FIT rootfs 挂根依赖两个内核符号（不能写顶层 .config，会被 defconfig 丢弃）
+          grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' target/linux/rtl9617c/config-6.18 \
+            || { echo "ERROR: target config-6.18 缺少 CONFIG_UIMAGE_FIT_BLK=y" >&2; exit 1; }
+          echo "  OK   CONFIG_UIMAGE_FIT_BLK (target config)"
+          grep -q '^CONFIG_MTD_ROOTFS_ROOT_DEV=y$' target/linux/generic/config-6.18 \
+            || { echo "ERROR: generic config-6.18 缺少 CONFIG_MTD_ROOTFS_ROOT_DEV=y" >&2; exit 1; }
+          echo "  OK   CONFIG_MTD_ROOTFS_ROOT_DEV (generic config)"
+
+          # H10 沿用上游 90-tyfza1-pon-wan：EPON PPPoE on pon0.3961。
+          # 不覆盖、不注入 R10 的 95-pt1570-wan-default（那是 GPON VLAN 1101）。
+          UCI_SRC=target/linux/rtl9617c/base-files/etc/uci-defaults
+          test -f "$UCI_SRC/90-tyfza1-pon-wan" \
+            || { echo "ERROR: 上游默认 WAN 脚本 90-tyfza1-pon-wan 缺失" >&2; exit 1; }
+          grep -q 'wan_vlan=3961' "$UCI_SRC/90-tyfza1-pon-wan" \
+            || { echo "ERROR: 上游默认 WAN VLAN 不是 3961（上游改版？）" >&2; exit 1; }
+          echo "  OK   default WAN -> pon0.3961 (pppoe, upstream)"
+
+          grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
+            || { echo "ERROR: image/Makefile 缺少 SUPPORTED_DEVICES" >&2; exit 1; }
+          grep -q "$BOARD_NAME" target/linux/rtl9617c/base-files/lib/upgrade/platform.sh \
+            || { echo "ERROR: platform.sh 白名单缺少 $BOARD_NAME" >&2; exit 1; }
+          grep -q 'CI_KERNPART=fit' target/linux/rtl9617c/base-files/lib/upgrade/platform.sh \
+            || { echo "ERROR: platform.sh 升级目标卷不是 fit" >&2; exit 1; }
+          test -f "target/linux/rtl9617c/dts/${DTS}.dts" \
+            || { echo "ERROR: DTS 缺失" >&2; exit 1; }
+          # factory 卷 8 MiB 与 fpga-image@10000 (0x10000+0x7e0000=0x800000) 对齐
+          grep -q 'fpga-image@10000' "target/linux/rtl9617c/dts/${DTS}.dts" \
+            || { echo "ERROR: DTS 缺少 fpga-image@10000（factory 8 MiB 布局基线）" >&2; exit 1; }
+          echo "  OK   DTS=$DTS board_name=$BOARD_NAME factory=8MiB"
+
+          # 上游首启脚本必须齐全（LED / lan5(2.5G) / br-lan MAC），
+          # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default。
+          for s in 95-pt1500-storage 96-pt1500-leds 96-tyfza1-lan-mac 97-pt1500-lan5; do
+            test -f "$UCI_SRC/$s" \
+              || { echo "ERROR: 上游首启脚本缺失：$s" >&2; exit 1; }
+          done
+          [ ! -e "$UCI_SRC/99-pt1570-fit" ] \
+            || { echo "ERROR: 上游树混入 R10 的 99-pt1570-fit" >&2; exit 1; }
+          [ ! -e "$UCI_SRC/95-pt1570-wan-default" ] \
+            || { echo "ERROR: 上游树混入 R10 的 95-pt1570-wan-default" >&2; exit 1; }
+          echo "  OK   上游首启脚本齐全，无 R10 资产串入"
+
+          echo "===== config sanity（防回归 / 机型隔离）====="
+          # 反向：空配置 defconfig 会把 mediatek/filogic/openwrt_one 的包集写成显式 =y
+          for bad in kmod-mac80211 kmod-cfg80211 kmod-mt7915e kmod-mt76-core \
+                     wpad-basic-mbedtls mt7981-wo-firmware eip197-mini-firmware \
+                     airoha-en8811h-firmware kmod-phy-airoha-en8811h kmod-rtc-pcf8563; do
+            if grep -qE "^CONFIG_PACKAGE_${bad}=(y|m)$" .config; then
+              echo "ERROR: 检测到污染包 ${bad}（默认 target 包残留），检查 .config 初始化顺序" >&2
+              exit 1
+            fi
+          done
+          echo "  OK   无 mediatek/openwrt_one 残留包"
+          # H10 2.5G 无 WiFi：R10 的 AP 驱动绝不能进本镜像
+          for bad in kmod-rtl-ax-ap wpad-mbedtls wireless-regdb; do
+            if grep -qE "^CONFIG_PACKAGE_${bad}=(y|m)$" .config; then
+              echo "ERROR: H10 镜像混入了 R10 的 WiFi 包 ${bad}" >&2
+              exit 1
+            fi
+          done
+          echo "  OK   无 R10 WiFi 专属包"
+          # 正向：H10 上游 profile 自带、且 Config 里显式点名的中文 LuCI / argon
+          for good in luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn; do
+            grep -q "^CONFIG_PACKAGE_${good}=y$" .config \
+              || { echo "ERROR: 中文 LuCI 包 ${good} 未启用" >&2; exit 1; }
+            echo "  OK   ${good}"
+          done
+
+          echo "===== key config ====="
+          grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET)=' .config || true
+          echo "  =m packages: $(grep -c '^CONFIG_PACKAGE_.*=m$' .config || true)"
+          echo "--- files/etc/apk/repositories.d/distfeeds.list ---"
+          cat files/etc/apk/repositories.d/distfeeds.list
+          cp .config "$GITHUB_WORKSPACE/Config-final.txt"
+
+      - name: Run static preflight (H10)
+        if: ${{ inputs.test_only }}
+        run: |
+          set -e
+          WF="$GITHUB_WORKSPACE/.github/workflows/build-pt1500-h10.yml"
+          echo "=== 1. H10 资产齐全 ==="
+          for f in "$WF" \
+                   "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" \
+                   "$GITHUB_WORKSPACE/customize-h10.sh" \
+                   "$GITHUB_WORKSPACE/scripts/apply-board-h10.sh" \
+                   "$GITHUB_WORKSPACE/scripts/verify-fit-boot.py" \
+                   "$GITHUB_WORKSPACE/files-h10/etc/apk/keys/immortalwrt-25.12.pem" \
+                   "$GITHUB_WORKSPACE/files-h10/lib/upgrade/zz-pt1570-sysupgrade.sh"; do
+            [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
+          done
+          echo "  OK   H10 资产齐全"
+          echo "=== 2. H10-only 结构 ==="
+          LINE=$(grep -E '^[[:space:]]*board: \[' "$WF" | tr -d '[:space:]')
+          [ "$LINE" = "board:[h10]" ] || { echo "ERROR: matrix 不是 [h10]: '$LINE'" >&2; exit 1; }
+          grep -q 'Guard H10-only' "$WF" || { echo "ERROR: 缺 H10-only 防呆步骤" >&2; exit 1; }
+          echo "  OK   matrix=[h10] + guard"
+          echo "=== 3. 与 R10 资产隔离 ==="
+          ! grep -qE 'scripts/(patch-upstream|patch-wifi-diag|overlay-wifi-driver|apply-board)\.sh|customize\.sh|Config-PT1570-FIT\.txt|Config-EXTRA\.txt|Config-DIAG\.txt' "$WF" \
+            || { echo "ERROR: H10 workflow 仍引用 R10 专属脚本 / 配置" >&2; exit 1; }
+          echo "  OK   无 R10 板级注入 / WiFi 资产引用"
+          echo "=== 4. Config 基线关键符号 ==="
+          C="$GITHUB_WORKSPACE/Config-PT1500-H10.txt"
+          for sym in CONFIG_PACKAGE_fitblk CONFIG_PACKAGE_tyfza1-pon-control \
+                     CONFIG_PACKAGE_luci-theme-argon CONFIG_PACKAGE_tailscale; do
+            grep -q "^${sym}=y$" "$C" || { echo "ERROR: $sym 缺失" >&2; exit 1; }
+          done
+          echo "  OK   Config 关键符号"
+          echo "H10_PREFLIGHT_OK=True"
+
+      - name: Upload config (test_only)
+        if: ${{ inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pt1500-h10-config-${{ github.run_number }}
+          path: Config-final.txt
+          retention-days: 14
+
+      - name: Download sources
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          make package/base-files/clean >/dev/null 2>&1 || true
+          make download -j"$(nproc)"
+
+      - name: Compile
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          set -o pipefail
+          LOG="$GITHUB_WORKSPACE/build.log"
+          : > "$LOG"
+          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+            echo "PARALLEL_BUILD_OK=True"
+          else
+            echo "::warning::并行编译失败，改用 -j1 V=s 重试并显示详细日志"
+            if make -j1 V=s 2>&1 | tee -a "$LOG"; then
+              echo "SERIAL_BUILD_OK=True"
+            else
+              echo "::group::BUILD FAILED - last 120 lines"
+              tail -n 120 "$LOG"
+              echo "::endgroup::"
+              grep -E 'Error [0-9]|^make(\[[0-9]+\])?: \*\*\*|error:|No such file|not found|No space left|Killed|undefined reference|FATAL|FAIL' "$LOG" \
+                | tail -n 8 | tr -d '\r' | while IFS= read -r l; do
+                    echo "::error::${l//%/%25}"
+                  done
+              echo "BUILD_FAILED=True" >> "$GITHUB_ENV"
+              exit 1
+            fi
+          fi
+
+      - name: Verify image payload (H10)
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        env:
+          ASSETS: ${{ github.workspace }}
+          APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
+        run: |
+          set -e
+          ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
+          [ -n "$ROOT" ] || { echo "::error::找不到 rootfs 目录 build_dir/target-*/root-rtl9617c*"; exit 1; }
+          echo "rootfs dir: $ROOT"
+
+          # ---- apk 源与索引公钥（缺公钥会 UNTRUSTED signature）----
+          KEY_SRC="$ASSETS/files-h10/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
+          [ -f "$KEY_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 immortalwrt-25.12.pem"; exit 1; }
+          cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::镜像内 apk 公钥与资产不一致"; exit 1; }
+          echo "  OK   apk key: immortalwrt-25.12.pem ($(stat -c %s "$KEY_DST") B)"
+
+          DF="$ROOT/etc/apk/repositories.d/distfeeds.list"
+          [ -f "$DF" ] || { echo "::error::镜像缺少 distfeeds.list"; exit 1; }
+          nfeed=$(grep -vc '^[[:space:]]*#' "$DF" || true)
+          [ "$nfeed" -ge 1 ] || { echo "::error::distfeeds.list 无有效源行"; exit 1; }
+          if [ -n "${APK_MIRROR_BASE:-}" ]; then
+            # 自定义 apk 源：只要求有有效源行，不校验北大镜像条数 / a53 目录
+            echo "  OK   distfeeds: 自定义 apk 源，有效行 $nfeed（跳过北大镜像计数）"
+          else
+            npku=$(grep -c 'mirrors\.pku\.edu\.cn/immortalwrt/releases/25\.12-SNAPSHOT/packages/aarch64_cortex-a53/' "$DF" || true)
+            [ "$npku" = 5 ] || { echo "::error::distfeeds 里北大 25.12 源 $npku 条 != 5（base/luci/packages/routing/telephony）"; exit 1; }
+            grep -v '^[[:space:]]*#' "$DF" | grep -q 'aarch64_cortex-a55' \
+              && { echo "::error::distfeeds 有效源指向了镜像不存在的 aarch64_cortex-a55 目录"; exit 1; }
+            echo "  OK   distfeeds: 北大镜像 25.12-SNAPSHOT ×$npku（aarch64_cortex-a53）"
+          fi
+
+          # /etc/apk/arch 在 ROM 里只有 a55，首启由 91-pt1570-apk-arch 补 a53
+          if [ -f "$ROOT/etc/apk/arch" ]; then
+            grep -q 'aarch64_cortex-a55' "$ROOT/etc/apk/arch" \
+              || { echo "::error::/etc/apk/arch 缺本机架构 aarch64_cortex-a55"; exit 1; }
+            echo "  OK   /etc/apk/arch 本机架构 a55（a53 由首启脚本追加）"
+          else
+            echo "::error::镜像缺少 /etc/apk/arch"; exit 1
+          fi
+          [ -f "$ROOT/etc/uci-defaults/91-pt1570-apk-arch" ] \
+            || { echo "::error::镜像缺少 91-pt1570-apk-arch（a53 不会被允许安装）"; exit 1; }
+          grep -q 'aarch64_cortex-a53' "$ROOT/etc/uci-defaults/91-pt1570-apk-arch" \
+            || { echo "::error::91-pt1570-apk-arch 没写 aarch64_cortex-a53"; exit 1; }
+          echo "APK_SOURCE_OK=True feeds=$nfeed"
+
+          # ---- sysupgrade 机型校验 ----
+          # 上游 pt1500-fip.sh 按字母序排在 platform.sh 之后被 source，会覆盖
+          # platform_check_image/do_upgrade 并写不存在的 fip 卷。编译期已移除，
+          # 这里复核产物。
+          UPG="$ROOT/lib/upgrade"
+          [ -d "$UPG" ] || { echo "::error::镜像缺少 /lib/upgrade"; exit 1; }
+          [ ! -e "$UPG/pt1500-fip.sh" ] \
+            || { echo "::error::镜像仍含 pt1500-fip.sh（sysupgrade 会写不存在的 fip 卷）"; exit 1; }
+          ! grep -rl 'this image is for youhua,pt1500-h10' "$UPG" 2>/dev/null | grep -q . \
+            || { echo "::error::镜像 /lib/upgrade 残留 H10 老机型检查"; exit 1; }
+          grep -q 'youhua,pt1500-h10-2p5g' "$UPG/platform.sh" \
+            || { echo "::error::platform.sh 白名单缺少 youhua,pt1500-h10-2p5g"; exit 1; }
+          grep -q 'CI_KERNPART=fit' "$UPG/platform.sh" \
+            || { echo "::error::platform.sh 升级目标卷不是 fit"; exit 1; }
+          echo "SYSUPGRADE_BOARD_OK=True"
+
+          # ---- rpcd exec 插件 / argon 主题设置 ----
+          # CRLF（#!/bin/sh\r）+ 0644 会让 5 个 luci.argon* ubus 对象全不注册。
+          RPCD="$ROOT/usr/libexec/rpcd"
+          [ -d "$RPCD" ] || { echo "::error::镜像缺少 /usr/libexec/rpcd"; exit 1; }
+          n=0
+          for f in "$ASSETS"/files-h10/usr/libexec/rpcd/luci.argon*; do
+            base=${f##*/}
+            tgt="$RPCD/$base"
+            [ -f "$tgt" ] || { echo "::error::镜像缺少 rpcd 插件 $base"; exit 1; }
+            [ -x "$tgt" ] || { echo "::error::rpcd 插件 $base 不可执行（rpcd 不会加载）"; exit 1; }
+            if grep -q "$(printf '\r')" "$tgt"; then
+              echo "::error::rpcd 插件 $base 仍是 CRLF（shebang 会变成 /bin/sh\r）"; exit 1
+            fi
+            cmp -s "$f" "$tgt" || { echo "::error::镜像内 $base 与 assets 的 LF 版本不一致"; exit 1; }
+            n=$((n+1))
+          done
+          [ "$n" = 5 ] || { echo "::error::argon rpcd 插件数量 $n != 5"; exit 1; }
+          [ -f "$ROOT/etc/uci-defaults/92-pt1570-rpcd-eol" ] \
+            || { echo "::error::镜像缺少 92-pt1570-rpcd-eol 兜底脚本"; exit 1; }
+          echo "RPCD_ARGON_OK=True plugins=$n"
+
+          # ---- sysupgrade 不保留配置 + fitblk 释放 FIT 子镜像 ----
+          # H10 与 R10 同样靠 FIT 子镜像块设备挂根（ubi0_1(fit) -> ubiblock ->
+          # /dev/fit0），platform.sh 直接 nand_do_upgrade() 绕过 fit.sh 的释放，
+          # ubirmvol 会 EBUSY → 升级静默失败。zz- 脚本按字母序最后被 source 覆盖。
+          ZZ="$ROOT/lib/upgrade/zz-pt1570-sysupgrade.sh"
+          [ -f "$ZZ" ] || { echo "::error::镜像缺少 zz-pt1570-sysupgrade.sh"; exit 1; }
+          grep -q 'UPGRADE_BACKUP' "$ZZ" \
+            || { echo "::error::zz 脚本未按 UPGRADE_BACKUP 限制配置恢复"; exit 1; }
+          grep -q 'umount -l /overlay' "$ZZ" \
+            || { echo "::error::zz 脚本未卸载 overlay（ubirmvol 会失败）"; exit 1; }
+          grep -q 'CI_KERNPART=fit' "$ZZ" \
+            || { echo "::error::zz 脚本升级目标卷不是 fit"; exit 1; }
+          LAST_SH=$(ls -1 "$ROOT"/lib/upgrade/*.sh 2>/dev/null | sed 's|.*/||' | sort | tail -1)
+          [ "$LAST_SH" = "zz-pt1570-sysupgrade.sh" ] \
+            || { echo "::error::zz 脚本不是 /lib/upgrade 里最后的 .sh（覆盖不生效）"; exit 1; }
+          echo "SYSUPGRADE_KEEP_OK=True order=$LAST_SH"
+
+          [ -f "$ROOT/usr/sbin/fitblk" ] && [ -s "$ROOT/usr/sbin/fitblk" ] \
+            || { echo "::error::镜像缺少 /usr/sbin/fitblk（无法释放 /dev/fit0）"; exit 1; }
+          grep -q 'RAMFS_COPY_BIN=.*fitblk' "$ZZ" \
+            || { echo "::error::zz 脚本未把 fitblk 加进 RAMFS_COPY_BIN（stage2 找不到工具）"; exit 1; }
+          grep -q '/usr/sbin/fitblk /dev/fit0' "$ZZ" \
+            || { echo "::error::zz 脚本未释放 /dev/fit0"; exit 1; }
+          grep -q '/usr/sbin/fitblk /dev/fitrw' "$ZZ" \
+            || { echo "::error::zz 脚本未释放 /dev/fitrw"; exit 1; }
+          F_LINE=$(grep -n '/usr/sbin/fitblk /dev/fit0' "$ZZ" | head -1 | cut -d: -f1)
+          U_LINE=$(grep -n 'nand_do_upgrade "\$1"' "$ZZ" | head -1 | cut -d: -f1)
+          [ -n "$F_LINE" ] && [ -n "$U_LINE" ] && [ "$F_LINE" -lt "$U_LINE" ] \
+            || { echo "::error::fitblk 释放顺序不在 nand_do_upgrade 之前"; exit 1; }
+          echo "FITBLK_RELEASE_OK=True fitblk_line=$F_LINE nand_line=$U_LINE"
+
+          # ---- 上游首启脚本（LED / 2.5G lan5 / br-lan MAC / 默认 WAN）----
+          UCI="$ROOT/etc/uci-defaults"
+          for s in 90-tyfza1-pon-wan 95-pt1500-storage 96-pt1500-leds \
+                   96-tyfza1-lan-mac 97-pt1500-lan5; do
+            [ -f "$UCI/$s" ] || { echo "::error::镜像缺少上游首启脚本 $s"; exit 1; }
+          done
+          # br-lan MAC 固定由上游 96-tyfza1-lan-mac 从 factory lan_mac 读取
+          grep -q 'network.lan.macaddr' "$UCI/96-tyfza1-lan-mac" \
+            || { echo "::error::96-tyfza1-lan-mac 未固定 br-lan MAC"; exit 1; }
+          # 绝不能把 R10 的网口/MAC 兜底与 WAN 覆盖带进 H10
+          [ ! -e "$UCI/99-pt1570-fit" ] \
+            || { echo "::error::镜像混入 R10 的 99-pt1570-fit"; exit 1; }
+          [ ! -e "$UCI/95-pt1570-wan-default" ] \
+            || { echo "::error::镜像混入 R10 的 95-pt1570-wan-default"; exit 1; }
+          echo "UCI_DEFAULTS_OK=True"
+
+          # ---- factory 提取脚本修补 + 校准软链接 ----
+          grep -q 'mv "\$tmp" "\$3"' "$ROOT/etc/init.d/tyfza1-factory" \
+            || { echo "::error::镜像里的 tyfza1-factory 未应用 factory_blob 修补"; exit 1; }
+          echo "FACTORY_PATCH_OK=True"
+          for l in \
+            lib/firmware/realtek/rtl9617c/bosa-calibration.bin \
+            lib/firmware/realtek/rtl9617c/a2h.bin; do
+            [ -L "$ROOT/$l" ] || echo "::warning::缺少校准软链接 $l"
+          done
+
+          # ---- FIT rootfs 自洽性 ----
+          # bootargs 不写 root=，由 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV。
+          KCFG=$(ls -d build_dir/target-*/linux-rtl9617c/linux-*/.config 2>/dev/null | head -1)
+          [ -n "$KCFG" ] || KCFG=$(find build_dir -maxdepth 6 -path '*linux-rtl9617c*' \
+              -name auto.conf 2>/dev/null | head -1)
+          if [ -n "$KCFG" ]; then
+            for sym in CONFIG_UIMAGE_FIT_BLK CONFIG_MTD_ROOTFS_ROOT_DEV CONFIG_SQUASHFS; do
+              grep -q "^${sym}=y$" "$KCFG" \
+                || { echo "::error::内核 $KCFG 里 ${sym} 不是 y，FIT rootfs 挂不上"; exit 1; }
+            done
+            echo "KERNEL_FIT_ROOTFS_OK=True ($KCFG)"
+          else
+            echo "::warning::找不到内核编译后的 .config，跳过 KERNEL_FIT_ROOTFS_OK"
+          fi
+
+          # 直接解析产出的 sysupgrade.itb：bootargs 不含 root=/rootwait/ubi.*、
+          # rootdisk 指向 volname=fit 的卷、分区带 linux,ubi、model 不含 ABI。
+          ITB=$(ls bin/targets/rtl9617c/generic/*sysupgrade.itb 2>/dev/null | head -1)
+          [ -n "$ITB" ] || { echo "::error::找不到 sysupgrade.itb"; exit 1; }
+          python3 "$ASSETS/scripts/verify-fit-boot.py" "$ITB"
+
+          echo "IMAGE_PAYLOAD_OK=True"
+
+      - name: Upload build log (always)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pt1500-h10-build-log-${{ github.run_number }}
+          path: |
+            build.log
+            step-feeds.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Refresh package index
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          make package/index
+          find bin/targets/rtl9617c/generic/packages bin/packages \
+            -name packages.adb -printf '%p %s bytes\n' 2>/dev/null | sort || true
+
+      - name: Collect firmware + matching packages
+        if: ${{ !inputs.test_only }}
+        env:
+          PUBLISH_PACKAGES: ${{ inputs.publish_packages }}
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/artifact"
+          mkdir -p "$OUT"
+          cd "$GITHUB_WORKSPACE/wrt"
+          echo "===== bin/targets/rtl9617c/generic ====="
+          ls -lh bin/targets/rtl9617c/generic/ | head -40
+
+          find bin/targets/rtl9617c/generic -maxdepth 1 -type f \
+            -name "*${PROFILE}*" ! -name "*.json" \
+            -exec cp -v {} "$OUT/" \;
+
+          ls "$OUT/"*sysupgrade.itb >/dev/null 2>&1 || {
+            echo "ERROR: 没有产出 ${PROFILE} 的 sysupgrade.itb" >&2; exit 1; }
+
+          cp .config "$OUT/Config-final.txt"
+          echo "$SOURCE_HASH" > "$OUT/source-commit.txt"
+          {
+            echo "board=$MODEL ($BOARD_NAME)"
+            echo "profile=$PROFILE"
+            echo "dts=$DTS (upstream @ $SOURCE_HASH, unmodified)"
+            echo "source_ref=$SOURCE_REF"
+            echo "source_commit=$SOURCE_HASH"
+            echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
+            echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs)"
+            echo "bootloader=lyq1996/rtl9617c-uboot@3a709714e551 (2026-11-10, pt1500-h10-2p5g_defconfig)"
+            echo "bootloader_factory_size=8388608 (8 MiB static, /api/info board_data)"
+            echo "factory_image=p1500-h10-factory.bin sha256=08cf837e... (device readback byte-identical)"
+            echo "factory_base_mac=fc:34:e2:69:1b:7a"
+            echo "factory_pon_sn=YHTCE2691B7A"
+            echo "lan_ip=192.168.2.1 (avoid collision with R10 on 192.168.1.1)"
+            echo "default_wan=pon0.3961 pppoe (upstream 90-tyfza1-pon-wan, EPON)"
+            echo "wifi=none (2.5G variant)"
+          } > "$OUT/BUILD_INFO.txt"
+
+          case "$PUBLISH_PACKAGES" in
+            false) DO_PACKAGES=0 ;;
+            *)     DO_PACKAGES=1 ;;
+          esac
+          if [ "$DO_PACKAGES" = "1" ]; then
+            ROOT="$GITHUB_WORKSPACE/pkgroot"
+            rm -rf "$ROOT"
+            mkdir -p "$ROOT/targets/rtl9617c/generic/packages" "$ROOT/packages"
+            cp -a bin/targets/rtl9617c/generic/packages/. \
+                  "$ROOT/targets/rtl9617c/generic/packages/" 2>/dev/null || true
+            if [ -d bin/packages ]; then cp -a bin/packages/. "$ROOT/packages/"; fi
+
+            KMOD_N=$(find "$ROOT" -type f -name 'kmod-*.apk' | wc -l)
+            APK_N=$(find "$ROOT" -type f -name '*.apk' | wc -l)
+            IDX_N=$(find "$ROOT" -type f -name 'packages.adb' | wc -l)
+            echo "===== matching packages: kmod=$KMOD_N apk=$APK_N index=$IDX_N ====="
+            test "$KMOD_N" -gt 0 || { echo "ERROR: 没有 kmod-*.apk" >&2; exit 1; }
+            test "$APK_N"  -gt 0 || { echo "ERROR: 没有 .apk" >&2; exit 1; }
+            test "$IDX_N"  -gt 0 || { echo "ERROR: 没有 packages.adb" >&2; exit 1; }
+
+            if [ -f public-key.pem ]; then
+              cp public-key.pem "$ROOT/public-key.pem"
+            else
+              echo "WARN: public-key.pem 缺失，跨批次装包需自行导公钥" >&2
+            fi
+            {
+              echo "# 同批 packages（源码 $SOURCE_REF @ $SOURCE_HASH，架构 aarch64_cortex-a55）"
+              echo "# 解包到静态站点根 BASE 后按需写入 /etc/apk/repositories.d/customfeeds.list"
+              echo "BASE/targets/rtl9617c/generic/packages/packages.adb"
+              find "$ROOT/packages" -name packages.adb -printf '%P\n' 2>/dev/null \
+                | sort | sed 's|^|BASE/packages/|' || true
+            } > "$ROOT/apk-repos.txt"
+            {
+              echo "source_ref=$SOURCE_REF"
+              echo "source_commit=$SOURCE_HASH"
+              echo "target=rtl9617c/generic"
+              echo "profile=$PROFILE"
+              echo "arch_packages=aarch64_cortex-a55"
+              echo "linux=$(grep -m1 '^CONFIG_LINUX_VERSION=' .config || echo unknown)"
+              echo "kmods=$KMOD_N apks=$APK_N indexes=$IDX_N"
+            } > "$ROOT/BUILD_INFO.txt"
+
+            cd "$GITHUB_WORKSPACE"
+            tar --zstd -cf "artifact/packages-h10-${{ github.run_number }}.tar.zst" \
+                -C "$ROOT" .
+            ls -lh "artifact/packages-h10-${{ github.run_number }}.tar.zst"
+          fi
+
+          cd "$OUT"
+          find . -maxdepth 1 -type f ! -name sha256sums.txt -printf '%f\n' \
+            | sort | xargs sha256sum > sha256sums.txt
+          echo "===== artifact ====="
+          ls -lh
+
+      - name: Upload firmware
+        if: ${{ !inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pt1500-h10-fit-${{ github.run_number }}
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: ${{ !inputs.test_only && inputs.create_release }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: pt1500-h10-fit-${{ github.run_number }}
+          name: PonWRT PT1500-H10 2.5G FIT (${{ github.run_number }})
+          files: artifact/*
+          body: |
+            源码 lyq1996/rtl9617c-openwrt `${{ env.SOURCE_REF }}` @ `${{ env.SOURCE_HASH }}`
+            机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`（上游原生，未改动）
+            布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
+            配置见 Config-final.txt；校验见 sha256sums.txt
+            同批 packages 见 `packages-h10-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
+
+            ⚠️ 仅适用于 PT1500-H10 2.5G（youhua,pt1500-h10-2p5g），无 WiFi。
+            ⚠️ 刷机前必须已完成：U-Boot Web failsafe 里「重建 UBI」+ 导入 8 MiB factory 镜像。
+               本机 U-Boot 为 2026-11-10 版（`3a70971`），factory 卷定义是 8 MiB；
+               64 KiB 产物是新版 U-Boot 布局，刷进去会被恢复页拒绝。
+            ⚠️ factory 卷已实机写入并读回逐字节校验通过，刷机时无需再动 factory。
+            ⚠️ 本固件 bootargs 不含 root=，挂根由内核 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV 完成。
+            ⚠️ 默认 LAN 192.168.2.1，默认 WAN 为上游 EPON pon0.3961 PPPoE（宽带账号需自行填写）。
