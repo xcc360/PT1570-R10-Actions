@@ -612,6 +612,33 @@ grep -q 'SYSUPGRADE_KEEP_OK=True' "$WF" \
 grep -q 'LAN_MAC_OK=True' "$WF" \
   && ok "镜像校验有 LAN_MAC_OK 断言" || bad "缺 LAN_MAC_OK 断言"
 
+echo "=== 20. fitblk 释放 FIT 子镜像（2026-11-14 run31 真机根因） ==="
+# run31 内升级 run31（不保留配置）重启后密码仍在，U-Boot 刷入才有效。
+# 真机 /sys/devices/platform/fitblk/lower_dev -> .../ubi0_1/ubiblock0_1：
+# /dev/fit0 持有 ubiblock0_1，platform.sh 直接 nand_do_upgrade() 绕过了
+# 上游 fit.sh 的 fit_do_upgrade()（它先 fitblk /dev/fit0 再写卷）。
+# 结果 nand_remove_ubiblock() 的 `ubiblock -r` 失败 -> return 1，或
+# ubirmvol EBUSY 被 || : 吞掉后 ubimkvol 同名卷冲突 -> return 1，
+# nand_do_upgrade_failed() 只 reboot -f，FIT 卷与 rootfs_data 原封不动。
+# 同时 stage2 的 switch_to_ramfs() 默认不带 fitblk，必须加进 RAMFS_COPY_BIN。
+grep -q 'RAMFS_COPY_BIN=.*fitblk' "$ZZ" \
+  && ok "RAMFS_COPY_BIN 追加 fitblk（stage2 ramfs 才有此工具）" \
+  || bad "RAMFS_COPY_BIN 未追加 fitblk"
+grep -q '/usr/sbin/fitblk /dev/fit0' "$ZZ" \
+  && ok "写卷前释放 /dev/fit0（绝对路径，不依赖 ramfs PATH）" \
+  || bad "未释放 /dev/fit0"
+grep -q '/usr/sbin/fitblk /dev/fitrw' "$ZZ" \
+  && ok "写卷前释放 /dev/fitrw" || bad "未释放 /dev/fitrw"
+F_LINE=$(grep -n '/usr/sbin/fitblk /dev/fit0' "$ZZ" | head -1 | cut -d: -f1)
+U_LINE=$(grep -n 'nand_do_upgrade "\$1"' "$ZZ" | head -1 | cut -d: -f1)
+if [ -n "$F_LINE" ] && [ -n "$U_LINE" ] && [ "$F_LINE" -lt "$U_LINE" ]; then
+  ok "fitblk 释放发生在 nand_do_upgrade 之前（$F_LINE < $U_LINE）"
+else
+  bad "fitblk 释放顺序不对或未找到 nand_do_upgrade"
+fi
+grep -q 'FITBLK_RELEASE_OK=True' "$WF" \
+  && ok "镜像校验有 FITBLK_RELEASE_OK 断言" || bad "缺 FITBLK_RELEASE_OK 断言"
+
 echo "=== RESULT ==="
 if [ "$FAIL" = "0" ]; then
   echo "PREFLIGHT_OK=True"

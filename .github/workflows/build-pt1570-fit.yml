@@ -689,10 +689,15 @@ jobs:
           # --- sysupgrade 不保留配置 + br-lan MAC 固定（2026-11-14 真机） ---
           # 现象：系统内更新无论是否勾选「保留配置」，配置都会保留；
           # 只有 U-Boot 刷入（ubiformat 整盘重建卷表）才清空。
-          # 原因：nand_do_restore_config() 只看 /tmp/sysupgrade.tgz，不看
-          # UPGRADE_BACKUP；且 stage2 里 /overlay 挂载残留会让 ubirmvol
-          # rootfs_data 失败（错误被 || : 吞掉），ubimkvol 同名卷冲突导致
-          # 升级失败而旧 overlay 原封不动。zz- 前缀保证最后 source 覆盖上游。
+          # 原因（run31 真机实证）：R10 靠 FIT 子镜像块设备挂根，
+          # /sys/devices/platform/fitblk/lower_dev -> .../ubi0_1/ubiblock0_1，
+          # 即 /dev/fit0 持有 ubiblock0_1。platform.sh 直接 nand_do_upgrade()
+          # 绕过上游 fit.sh 的 fit_do_upgrade()（它先 fitblk /dev/fit0 释放），
+          # 于是 nand_remove_ubiblock() 失败或 ubirmvol EBUSY 被 || : 吞掉、
+          # ubimkvol 同名卷冲突 -> return 1 -> nand_do_upgrade_failed() 只
+          # reboot -f，FIT 卷与 rootfs_data 原封不动。
+          # 另外 nand_do_restore_config() 只看 /tmp/sysupgrade.tgz，不看
+          # UPGRADE_BACKUP，也必须在 zz- 脚本里限制。
           ZZ="$ROOT/lib/upgrade/zz-pt1570-sysupgrade.sh"
           [ -f "$ZZ" ] || { echo "::error::镜像缺少 zz-pt1570-sysupgrade.sh"; exit 1; }
           grep -q 'UPGRADE_BACKUP' "$ZZ" \
@@ -705,6 +710,22 @@ jobs:
           [ "$LAST_SH" = "zz-pt1570-sysupgrade.sh" ] \
             || { echo "::error::zz-pt1570-sysupgrade.sh 不是 /lib/upgrade 里最后的 .sh（覆盖不生效）"; exit 1; }
           echo "SYSUPGRADE_KEEP_OK=True order=$LAST_SH"
+
+          # fitblk 释放 FIT 子镜像：二进制必须在镜像里、必须进 ramfs、
+          # 且必须在 nand_do_upgrade 之前调用。
+          [ -f "$ROOT/usr/sbin/fitblk" ] && [ -s "$ROOT/usr/sbin/fitblk" ] \
+            || { echo "::error::镜像缺少 /usr/sbin/fitblk（无法释放 /dev/fit0）"; exit 1; }
+          grep -q 'RAMFS_COPY_BIN=.*fitblk' "$ZZ" \
+            || { echo "::error::zz-pt1570-sysupgrade.sh 未把 fitblk 加进 RAMFS_COPY_BIN（stage2 找不到工具）"; exit 1; }
+          grep -q '/usr/sbin/fitblk /dev/fit0' "$ZZ" \
+            || { echo "::error::zz-pt1570-sysupgrade.sh 未释放 /dev/fit0"; exit 1; }
+          grep -q '/usr/sbin/fitblk /dev/fitrw' "$ZZ" \
+            || { echo "::error::zz-pt1570-sysupgrade.sh 未释放 /dev/fitrw"; exit 1; }
+          F_LINE=$(grep -n '/usr/sbin/fitblk /dev/fit0' "$ZZ" | head -1 | cut -d: -f1)
+          U_LINE=$(grep -n 'nand_do_upgrade "\$1"' "$ZZ" | head -1 | cut -d: -f1)
+          [ -n "$F_LINE" ] && [ -n "$U_LINE" ] && [ "$F_LINE" -lt "$U_LINE" ] \
+            || { echo "::error::fitblk 释放顺序不在 nand_do_upgrade 之前"; exit 1; }
+          echo "FITBLK_RELEASE_OK=True fitblk_line=$F_LINE nand_line=$U_LINE"
 
           # br-lan 默认从第一个桥成员 lan0 继承内核随机 MAC（Windows 每次
           # 重启报「新网络」）。99-pt1570-fit 必须显式给 @device[0] 写 factory MAC。
