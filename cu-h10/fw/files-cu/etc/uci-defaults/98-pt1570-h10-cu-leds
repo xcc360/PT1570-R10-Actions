@@ -1,0 +1,62 @@
+#!/bin/sh
+# PT1570-H10-CU（联通版）：固件态面板灯 netdev 绑定 + 电源灯兜底。
+#
+# /etc/config/system 由 board.d/01_leds + 94-tyfza1-leds 生成一次后就留在
+# overlay；sysupgrade 保留配置时，旧映射不会随 DTS 修正自动更新。这里按
+# board_name 做一次幂等校正，保证「灯的 netdev」与「面板丝印」一致。
+#
+# 原厂 mtd4 内嵌 DTB 的 rtk_gpio_led 节点给出真实 GPIO/极性，已写入 CU DTS；
+# U-Boot run#5 用同一套表，灯在 U-Boot 与固件里都能用。
+#
+# 面板左→右（用户实测）：
+#   电源 注册 光信号 [5G] [2.4G] 千兆口4 千兆口3 千兆口2 2.5G口 电话 宽带 [WPS] USB
+#       LED_EPHY3(gpio0 0) -> 千兆口4 -> lan4
+#       LED_EPHY2(gpio0 1) -> 千兆口3 -> lan3
+#       LED_EPHY1(gpio0 3) -> 千兆口2 -> lan2
+#       LED_EPHY0(gpio0 4) -> 2.5G口  -> lan1（PHY 硬件驱动，可能长灭）
+#   5G / 2.4G 由 PCIe WiFi 卡驱动，WPS 是按钮灯，U-Boot/固件都不强行接管。
+#
+# 电源灯：DTS power 节点 default-state = on；这里额外写一次 brightness，
+# 兜住旧 overlay 里可能把 LED_PWR_G 关掉的配置（第二版实测「电源灯始终不亮」）。
+# 排序在 94/96/97 之后，是最后一个 uci-defaults。
+
+[ "$(board_name)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+changed=0
+
+# ---- 1. 四个网口灯的 netdev 绑定 ----
+# 上游 94-tyfza1-leds 对 CU（默认分支）生成 lan_devs="lan1 lan2 lan3 lan4"，
+# 即 EPHY0->lan1、EPHY1->lan2、EPHY2->lan3、EPHY3->lan4，正是面板左→右顺序。
+# 这里只校正偏差，不新建 section（新建交给 94）。
+i=0
+for dev in lan1 lan2 lan3 lan4; do
+	sec="led_lan$i"
+	if uci -q get "system.$sec" >/dev/null; then
+		cur=$(uci -q get "system.$sec.dev")
+		if [ "$cur" != "$dev" ]; then
+			uci -q set "system.$sec.dev=$dev"
+			changed=1
+			logger -t pt1570-h10-cu-leds "$sec.dev $cur -> $dev"
+		fi
+		uci -q set "system.$sec.sysfs=LED_EPHY$i"
+	fi
+	i=$((i + 1))
+done
+
+# ---- 2. USB 灯：电信 2p5g 用 LED_USB1，联通机是 LED_USB0 ----
+sysfs=$(uci -q get system.led_usb.sysfs)
+if [ "$sysfs" = "LED_USB1" ]; then
+	uci -q set system.led_usb.sysfs='LED_USB0'
+	changed=1
+	logger -t pt1570-h10-cu-leds "led_usb.sysfs LED_USB1 -> LED_USB0"
+fi
+
+# ---- 3. 电源灯兜底 ----
+if [ -e /sys/class/leds/LED_PWR_G/brightness ]; then
+	max=$(cat /sys/class/leds/LED_PWR_G/max_brightness 2>/dev/null)
+	[ -n "$max" ] || max=1
+	echo "$max" > /sys/class/leds/LED_PWR_G/brightness 2>/dev/null || true
+fi
+
+[ "$changed" = "1" ] && uci -q commit system
+exit 0

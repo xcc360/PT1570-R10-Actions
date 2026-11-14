@@ -6,7 +6,8 @@
 #     必须带 R10 那套 AP 驱动 / 固件 / RFE54 参数表 / 无线配置；
 #     DORMANT 资产里「H10 无 WiFi」的判断只对 PT1500-H10 2.5G 成立，已推翻。
 #   * DTS 基于上游 rtl9617c-tyfza1-2p5g.dts：它才有 &ni0/&mdio 的
-#     外置 2.5G PHY 覆盖；4ge 是空壳，用了 2.5G 口不 link。
+#     外置 2.5G PHY 覆盖；4ge 是空壳，用了 2.5G 口不 link。但 2p5g 是
+#     电信板定义，LED GPIO 与 2.5G PHY 地址都与联通机不符，CU DTS 里逐项覆盖。
 #   * 上游没有 CU profile / DTS / sysupgrade 白名单，由
 #     cu-h10/fw/scripts/apply-board-h10-cu.sh 编译期注入。
 #   * 默认 LAN 192.168.18.1/24（沿用原厂联通管理地址；显式带掩码，
@@ -39,6 +40,22 @@
 #      cu-h10/fw/scripts/overlay-wifi-driver.sh 整套替换成已验证的单 PE1
 #      引擎版（60 文件，含 pe-tx-code.h 4076 words）。首版只带了 PE 固件构建
 #      和 51 个 WiFi 固件/RFE54 参数表，漏了驱动 overlay。
+#  15. 固件态面板灯（2026-11-15 第二版 sysupgrade 实机反馈）：上游 2p5g 用
+#      电信板高号 GPIO 70/71/139/140，联通机电源灯是 gpio0 11 高有效、
+#      网口灯是 gpio0 0/1/3/4 低有效 —— 不覆盖则「电源灯始终不亮、网口灯
+#      错位」。CU DTS 按原厂 mtd4 内嵌 DTB 的 rtk_gpio_led 逐脚覆盖回低号表，
+#      与实机确认的 U-Boot run#5 灯表同源；98-pt1570-h10-cu-leds 负责校正
+#      sysupgrade 保留旧 /etc/config/system 时的 netdev 绑定 + 电源灯兜底。
+#  16. 2.5G 口 / 网口4 不可用（同上）：上游 2p5g 在 MDIO addr7 挂 C45
+#      HSGMII PHY，本机 addr7 空（"MDIO device at address 7 is missing"），
+#      真实 RTL8221B 在 addr6 且是 C22；旧 lan-phys 的 port3 为空导致
+#      lan4 不注册、port4 指向不存在的 phy4 报 -19，实测只剩 lan2/lan3。
+#      CU DTS 改为 phy@6 C22 + realtek,p6-phy +
+#      lan-phys=<&phy0 &phy1 &phy2 &phy3>，netdev 为
+#      lan1(2.5G) + lan2/lan3/lan4(GE)；96-pt1570-h10-cu-lan5 按真实形态
+#      校正 br-lan（剔除 phantom lan0/lan5）。
+#  以上 15/16 由 cu-h10/fw/scripts/verify-h10-cu-board.py 统一静态护栏，
+#  apply-board-h10-cu.sh 与 workflow preflight 都会调用。
 #
 # factory 卷 8 MiB（与 DTS 的 fpga-image@10000 / 0x800000 对齐），
 # 由配套 build-uboot-pt1570-h10-cu.yml 编译的 U-Boot 定义，两者必须成对使用。
@@ -447,6 +464,18 @@ jobs:
             || { echo "ERROR: CU DTS 的覆盖块没有指向 ubi_device(partition@340000)" >&2; exit 1; }
           echo "  OK   ubi_device 可写（刷入态 overlay 可建）"
 
+          # 固件态 有线网口 + 面板灯回归护栏（本地与 CI 同一个脚本）
+          python3 "$ASSETS/cu-h10/fw/scripts/verify-h10-cu-board.py" \
+            || { echo "ERROR: H10-CU 板级护栏未通过（LED / 有线 / 首启脚本）" >&2; exit 1; }
+          INJ="target/linux/rtl9617c/dts/${DTS}.dts"
+          grep -q 'realtek,p6-phy = <&phy_2p5g>' "$INJ" \
+            || { echo "ERROR: 注入的 DTS 缺 realtek,p6-phy（2.5G 口不会注册）" >&2; exit 1; }
+          grep -q 'phy_2p5g: ethernet-phy@6' "$INJ" \
+            || { echo "ERROR: 注入的 DTS 缺 phy@6 C22 RTL8221B" >&2; exit 1; }
+          grep -q 'gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>' "$INJ" \
+            || { echo "ERROR: 注入的 DTS 电源灯 GPIO 不是 gpio0 11 高有效" >&2; exit 1; }
+          echo "  OK   注入 DTS：OEM 低号 LED GPIO + phy@6/P6 + lan-phys 四项"
+
           # 上游首启脚本必须齐全（LED / LAN / br-lan MAC），
           # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default
           #（H10 自有 95-pt1570-h10-cu-wan-default，同名不同前缀，不冲突）。
@@ -511,8 +540,10 @@ jobs:
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/lib/upgrade/zz-pt1570-sysupgrade.sh" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/95-pt1570-h10-cu-wan-default" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/96-pt1570-h10-cu-lan5" \
+                   "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/98-pt1570-h10-cu-leds" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/board/dts/rtl9617c-pt1570-h10-cu.dts" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/overlay-wifi-driver.sh" \
+                   "$GITHUB_WORKSPACE/cu-h10/fw/scripts/verify-h10-cu-board.py" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap/pe-tx-code.h"; do
             [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
           done
@@ -544,6 +575,10 @@ jobs:
           [ "$(md5sum "$DRV/pe-tx-code.h" | cut -d' ' -f1)" = "7eb49893f43b897bf03fa82ae2323984" ] \
             || { echo "ERROR: pe-tx-code.h 不是已验证的单 PE1 参考版" >&2; exit 1; }
           echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件"
+          echo "=== 3d. 固件态 有线 + 面板灯回归护栏 ==="
+          python3 "$GITHUB_WORKSPACE/cu-h10/fw/scripts/verify-h10-cu-board.py" \
+            || { echo "ERROR: H10-CU 板级护栏未通过" >&2; exit 1; }
+          echo "  OK   OEM 低号 LED GPIO + phy@6/P6 + lan-phys + CU 首启脚本"
           echo "=== 4. Config 基线关键符号 ==="
           C="$GITHUB_WORKSPACE/cu-h10/fw/Config-PT1570-H10-CU.txt"
           for sym in CONFIG_PACKAGE_fitblk CONFIG_PACKAGE_tyfza1-pon-control \
@@ -714,9 +749,18 @@ jobs:
           UCI="$ROOT/etc/uci-defaults"
           for s in 90-tyfza1-pon-wan 95-pt1500-storage 96-pt1500-leds \
                    96-tyfza1-lan-mac 97-pt1500-lan5 \
-                   95-pt1570-h10-cu-wan-default; do
+                   95-pt1570-h10-cu-wan-default 96-pt1570-h10-cu-lan5 \
+                   98-pt1570-h10-cu-leds; do
             [ -f "$UCI/$s" ] || { echo "::error::镜像缺少首启脚本 $s"; exit 1; }
           done
+          # 固件态 有线 + 面板灯修复必须真的进了镜像
+          grep -q 'lan4' "$UCI/96-pt1570-h10-cu-lan5" \
+            || { echo "::error::镜像里 CU bridge 脚本未按 lan1..lan4 校正"; exit 1; }
+          grep -q 'LED_PWR_G' "$UCI/98-pt1570-h10-cu-leds" \
+            || { echo "::error::镜像里 CU LED 脚本缺电源灯兜底"; exit 1; }
+          grep -q 'LED_EPHY' "$UCI/98-pt1570-h10-cu-leds" \
+            || { echo "::error::镜像里 CU LED 脚本缺网口灯绑定"; exit 1; }
+          echo "CU_LAN_LED_FIX_OK=True"
           # br-lan MAC 固定由上游 96-tyfza1-lan-mac 从 factory lan_mac 读取
           grep -q 'network.lan.macaddr' "$UCI/96-tyfza1-lan-mac" \
             || { echo "::error::96-tyfza1-lan-mac 未固定 br-lan MAC"; exit 1; }
@@ -827,6 +871,8 @@ jobs:
             echo "wifi=rtl_ax_ap (2x PCIe WiFi6: 10ec:c852 / 10ec:0192)"
             echo "brickfix=ubi_device writable (CU DTS &qspi /delete-property/ read-only)"
             echo "wififix=PT1570 PE1 single-engine driver overlay (60 files, pe-tx-code.h 4076 words)"
+            echo "lanfix=phy@6 C22 RTL8221B + realtek,p6-phy; lan1=2.5G, lan2/lan3/lan4=GE; addr7 C45 disabled"
+            echo "ledfix=OEM低号GPIO (电源 gpio0 11H / 网口 0,1,3,4L) + 98-pt1570-h10-cu-leds; U-Boot run#5 同源"
           } > "$OUT/BUILD_INFO.txt"
 
           case "$PUBLISH_PACKAGES" in
@@ -905,7 +951,8 @@ jobs:
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`（2p5g 基线注入）
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
-            本版修复：① ubi_device 被标 read-only → UBI 只读 attach、rootfs_data 建不出 overlay，刷入态黑砖（CU DTS 放开该分区写）；② 上游 rtl_ax_ap PE 引擎坏版 → 两张 WiFi6 卡 probe -110、完全无 WiFi（整套替换为 PT1570 已验证单 PE1 驱动）。
+            本版修复：① ubi_device 被标 read-only → UBI 只读 attach、rootfs_data 建不出 overlay，刷入态黑砖（CU DTS 放开该分区写）；② 上游 rtl_ax_ap PE 引擎坏版 → 两张 WiFi6 卡 probe -110、完全无 WiFi（整套替换为 PT1570 已验证单 PE1 驱动）；③ 固件态面板灯按原厂 mtd4 DTB 覆盖回低号 GPIO（电源灯 gpio0 11 高有效、网口灯 0/1/3/4 低有效），与 U-Boot run#5 同源，并由 98 脚本校正 netdev 绑定 + 电源灯兜底；④ 2.5G 口与网口4 修复：MDIO phy@6 C22 RTL8221B + realtek,p6-phy + lan-phys 四项，禁用电信 C45 addr7，netdev 为 lan1(2.5G)+lan2..lan4(GE)，96 脚本按真实形态校正 br-lan。
+            WiFi 性能调优仍等 PT1570-R10 的实机结果再定方案，本版只保证有线可用与面板灯正确。
             同批 packages 见 `PT1570-H10-2P5G-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
 
             ⚠️ 仅适用于 PT1570-H10-CU（1x2.5GE + 3xGE + WiFi6，youhua,pt1570-h10-cu）。

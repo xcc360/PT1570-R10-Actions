@@ -11,6 +11,13 @@
 #   4. 删除上游 pt1500-fip.sh（老 fip 卷布局，会覆盖 platform.sh 并写错卷）
 #   5. 修 tyfza1-factory 的 factory_blob 目标参数（$2 -> $3，校准软链接悬空）
 #
+# 2026-11-15 第二版 sysupgrade 实机反馈后新增板级护栏（都在 CU DTS 内）：
+#   6. 固件态面板灯 GPIO 覆盖回联通原厂低号脚（电信 2p5g 高号 70/71/139/140
+#      会让电源灯常灭、网口灯错位）
+#   7. 2.5G PHY 从 C45 addr7 改为 C22 addr6 + realtek,p6-phy，
+#      lan-phys 补齐 index 0..3（否则只注册 lan2/lan3，2.5G 和网口4 不可用）
+# 由 cu-h10/fw/scripts/verify-h10-cu-board.py 统一校验，本地与 CI 共用。
+#
 # env: ASSETS=<资产仓库根>  WRT=<源码树>
 
 set -euo pipefail
@@ -65,6 +72,14 @@ grep -q '/delete-property/ read-only' "$DTS_SRC" \
 grep -q 'partition@340000' "$DTS_SRC" \
   || fail "CU DTS 的 &qspi 覆盖块没有指向 ubi_device(partition@340000)"
 echo "  OK   2p5g 基线 / 统一 UBI / fpga-image@10000 / ubi_device 可写"
+
+# ---- 0b. 固件态 有线网口 + 面板灯 静态护栏 ----
+# 第二版 sysupgrade 实机反馈：电源灯不亮 / 网口灯错位 / 只有网口2、3可用。
+# 根因都在 DTS（电信 2p5g 高号 LED GPIO + C45 addr7 PHY + lan-phys 缺项），
+# 由 verify-h10-cu-board.py 逐项断言，避免后续改 DTS 时悄悄回退。
+python3 "$CU/scripts/verify-h10-cu-board.py" \
+  || fail "H10-CU 板级护栏未通过（LED / 有线 / 黑砖修复）"
+echo "  OK   H10-CU 板级护栏（12 盏灯 + phy@6/P6 + lan-phys + 首启脚本）"
 
 # ---- 1. DTS ----
 cp -f "$DTS_SRC" "$DTS_FILE"
