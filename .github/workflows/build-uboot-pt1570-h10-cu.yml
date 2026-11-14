@@ -19,10 +19,14 @@
 #     OpenWrt DTS 的 fpga-image@10000 越界），与 PT1500-H10 电信版实践一致；
 #   * 本机联网口为 1x2.5GE + 3xGE，BL33 沿用 CT-2P5G 板级描述；
 #     已失效的 CONFIG_TARGET_..._4GE 符号会让编译直接失败；
-#   * 上游 desc-2p5g.c 按设计只定义 4 个 LAN 灯（pin 0/1/3/4），注释明确
-#     其它灯 "stays with the OS"。所以 U-Boot Web failsafe 下大部分面板灯不亮、
-#     只有网口灯流水是正常现象，不是启动故障。注入步骤把 .name 从 CT 改成 CU，
-#     避免恢复页 / 控制台仍显示电信版机型（等长字符串，不影响 bl33_budget）。
+#   * 上游 desc-2p5g.c 只列 4 个 LAN 灯（pin 0/1/3/4 全低有效），那其实是
+#     4GE 板的映射（对照 tianyi/tyfza1/desc-4ge.c）；2p5g 板正确映射见
+#     tianyi/tyfza1/desc-2p5g.c（pin 11/12 高有效 + 3/4 低有效）。本机实机
+#     只看到 3 个千兆灯在动，正是旧映射造成的。cu-h10/uboot/board/desc-2p5g.c
+#     取两套映射的并集（极性逐项一致，全在 GPIO bank 0、避开 reset 键 pin 8），
+#     列出 10 盏状态灯：上电扫灯 / 恢复页流水 / 刷机进度条都能看全，
+#     一眼区分「U-Boot 活着」和「内核卡住」。compile 前由
+#     cu-h10/uboot/tools/verify_cu_leds.py 静态护栏拦住任何越界 / 占 reset 的改法。
 #   * 固件由 build-ponwrt-pt1570-h10-cu.yml 产出，两者配套使用。
 #
 # ⚠️ stock 与这台设备绑定（GPT GUID 每机唯一）。换机需重新备份 mtd0 并更新
@@ -80,7 +84,9 @@ jobs:
           for f in boards/youhua-pt1570-h10-cu-2p5g.json \
                    defconfig/youhua-pt1570-h10-cu-2p5g_defconfig \
                    stocks/youhua-pt1570-h10-cu-2p5g/stock-mtd0.bin.b64 \
-                   tools/verify_cu_boot.py; do
+                   board/desc-2p5g.c \
+                   tools/verify_cu_boot.py \
+                   tools/verify_cu_leds.py; do
             [ -f "$A/$f" ] || { echo "::error::缺 CU U-Boot 资产 $f"; exit 1; }
           done
           python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["board"]=="youhua-pt1570-h10-cu-2p5g"; assert d["defconfig"]=="youhua-pt1570-h10-cu-2p5g_defconfig"; assert d["stock_sha256"]=="2c07fb9e3271b885eff0c2d9a708cfa321ff8262c8d733ae0636f1346669b42f"; print("  OK   board.json")' "$A/boards/youhua-pt1570-h10-cu-2p5g.json"
@@ -102,6 +108,8 @@ jobs:
           assert d[0x200:0x208]==b"EFI PART", "GPT 头不对"
           print("  OK   双 FIP 槽 + GPT 头（联通 stock 结构正确）")
           ' "$RUNNER_TEMP/cu/stock-mtd0.bin"
+          # 编译前灯表护栏：任一 pin 跨 bank / 占用 reset 键，面板会重新变哑
+          python3 "$A/tools/verify_cu_leds.py" "$A/board/desc-2p5g.c"
 
       - name: Install build dependencies
         if: ${{ !inputs.test_only }}
@@ -155,11 +163,12 @@ jobs:
                    tools/release/tf-a/tools/cert_create/Makefile; do
             [ -f "$U/$f" ] || { echo "::error::上游缺 $f（版本不兼容？）"; exit 1; }
           done
-          # 下一步会把 desc 的机型名从 CT 改成 CU，先断言锚点唯一，
-          # 上游改版时直接失败而不是静默留下电信版标识。
+          # 下一步会用 CU 专用 desc 整体覆盖这个文件（含 10 盏状态灯），
+          # 先断言上游锚点唯一且仍是旧的 4GE 映射，上游改版时直接失败。
+          # 覆盖前后的灯表与极性由 verify_cu_leds.py 逐项校验。
           DESC="$U/board/youhua/pt1570-h10-ct/desc-2p5g.c"
           [ "$(grep -cF '.name = "Youhua PT1570-H10-CT",' "$DESC")" = "1" ] \
-            || { echo "::error::desc-2p5g.c 的 CT 名称锚点变了，CU 标识注入需复核"; exit 1; }
+            || { echo "::error::上游 CT desc 的锚点变了，CU 整体覆盖需复核"; exit 1; }
           grep -q 'CONFIG_RTK_FACTORY_SIZE=0x10000' "$U/configs/youhua-pt1570-h10-ct-2p5g_defconfig" \
             || echo "::warning::上游 CT-2P5G defconfig 的 factory 尺寸已变，CU defconfig 请复核"
           grep -q 'nt_fw' "$U/tools/release/boards/youhua-pt1570-h10-ct-2p5g.json" \
@@ -189,19 +198,19 @@ jobs:
           assert cu['stock_sha256'] != ct['stock_sha256'], 'stock 摘要不能与电信版相同'
           print('  OK   FIP 几何/UUID 与上游一致，stock 为联通专用')
           PY
-          # 上游 CT-2P5G 板级描述复用在联通机上：只改展示字符串（等长，
-          # 不改 LED / reset / variant，BL33 体积与 bl33_budget 不变）。
-          python3 - "$U/board/youhua/pt1570-h10-ct/desc-2p5g.c" <<'PY'
-          import pathlib, sys
-          p = pathlib.Path(sys.argv[1])
-          t = p.read_text(encoding='utf-8')
-          old = '.name = "Youhua PT1570-H10-CT",'
-          new = '.name = "Youhua PT1570-H10-CU",'
-          if t.count(old) != 1:
-              raise SystemExit('ERROR: CT 名称锚点不是唯一一处')
-          p.write_text(t.replace(old, new, 1), encoding='utf-8', newline='\n')
-          print('  OK   board desc -> Youhua PT1570-H10-CU')
-          PY
+          # ---- 整体替换板级描述：10 盏状态灯 + CU 机型标识 ----
+          # 上游 CT-2P5G 的 desc 用的是 4GE 灯映射（pin 0/1/3/4 全低有效），
+          # 实机只亮 3 个千兆灯；不能用「只改 name」的方式沿用。
+          UDESC="$U/board/youhua/pt1570-h10-ct/desc-2p5g.c"
+          cp "$UDESC" "$RUNNER_TEMP/cu/desc-2p5g.c.ct-original"
+          cp "$A/board/desc-2p5g.c" "$UDESC"
+          python3 "$A/tools/verify_cu_leds.py" "$UDESC" \
+            "$RUNNER_TEMP/cu/desc-2p5g.c.ct-original"
+          grep -q 'Youhua PT1570-H10-CU' "$UDESC" \
+            || { echo "::error::CU desc 未生效"; exit 1; }
+          ! grep -q 'Youhua PT1570-H10-CT' "$UDESC" \
+            || { echo "::error::CU desc 仍残留 CT 标识"; exit 1; }
+          echo "  OK   board desc -> CU（10 lamps, 2p5g 并集, bank 0）"
           echo "  OK   CU 资产注入完成"
 
       - name: Static dry-run (test_only)
@@ -213,7 +222,9 @@ jobs:
           bash -n "$U/build.sh"
           bash -n "$U/tools/release/build_bl33.sh"
           python3 -m py_compile "$U/tools/release/pack_boot.py" \
-            "$GITHUB_WORKSPACE/cu-h10/uboot/tools/verify_cu_boot.py"
+            "$GITHUB_WORKSPACE/cu-h10/uboot/tools/verify_cu_boot.py" \
+            "$GITHUB_WORKSPACE/cu-h10/uboot/tools/verify_cu_leds.py"
+          test -f "$U/board/youhua/pt1570-h10-ct/desc-2p5g.c"
           echo "  TEST_ONLY_OK=True（未编译 BL33）"
 
       - name: Build BL33 (open-source U-Boot)
@@ -225,7 +236,14 @@ jobs:
           ./build.sh "$BOARD" bl33
           BL33="$RUNNER_TEMP/uboot/output/$BOARD/bl33.bin"
           [ -s "$BL33" ] || { echo "::error::bl33.bin 未生成"; exit 1; }
-          echo "  OK   bl33.bin $(stat -c%s "$BL33") B"
+          # 灯表从 4 盏扩到 10 盏会略增 BL33 体积；pack_boot.py 也会查，
+          # 这里提前断言，避免到打包阶段才失败。
+          BUDGET=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bl33_budget"])' \
+            "$RUNNER_TEMP/uboot/tools/release/boards/$BOARD.json")
+          SZ=$(stat -c%s "$BL33")
+          [ "$SZ" -le "$BUDGET" ] \
+            || { echo "::error::bl33.bin $SZ B 超过预算 $BUDGET B（10 盏灯把 BL33 挤爆了）"; exit 1; }
+          echo "  OK   bl33.bin $SZ B <= budget $BUDGET B"
 
       - name: Pack signed boot image (CU stock)
         if: ${{ !inputs.test_only }}
