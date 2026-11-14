@@ -1,0 +1,122 @@
+#!/bin/sh
+# PT1500-H10 2.5G：出厂默认 WAN = XGPON VLAN 1101 + PPPoE，并打开 PON 转发引擎。
+#
+# 2026-11-14 真机（云编译 run#1 刷入态，root/admin，192.168.2.1）实证：
+#   上游 90-tyfza1-pon-wan 照抄原厂 PT1500 EPON 布局，导致两个致命问题：
+#     1) pon.pon.offload=0（PON FE 关闭）—— PPPoE 发现阶段 PADI/PADO/PADR/PADS
+#        都正常（广播走 GEM 4095），PADS 之后全单播上行帧被静默丢弃，pppd 连发
+#        LCP ConfReq 零回应，每 30s "Modem hangup" / NEGOTIATION_FAILED。
+#        这与 PT1570-R10 2026-11-11 首次定位的坑完全同构。
+#        把 offload=1 + flow_offloading=1 + flow_offloading_hw=1 后执行
+#        /etc/init.d/pon offload（fe enabled=1 prepared=1），同一份配置 6s 内
+#        PAP authentication succeeded、IPCP 拿到 100.125.x.x、IPv6 PD /60 下发。
+#     2) wan_vlan=3961 / wan.device=pon0.3961 —— 与本机 XGPON 线路 VLAN 1101 不符，
+#        且残留的 8021q 设备定义会让 netifd 建出错误的子接口。
+#   另：wan.mtu=1492 被压到 VLAN 子设备上，pppd 反复告警
+#   "has MTU of 1492 -- should be at least 1500"，底层口必须 1500。
+#
+# 本脚本在 90/91 之后（uci-defaults 按文件名排序）覆盖为 H10 实际布局：
+#   * wan_vlan 3961 -> 1101（只在仍是上游默认值时）
+#   * 删除上游残留的 pon0.3961 设备，显式建 pon0.1101（8021q / mtu 1500）
+#   * wan 绑 pon0.1101，pppoe / mtu 1492 / ipv6 1（凭据留空，用户自填）
+#   * pon.pon.offload=1 + flow_offloading=1 + flow_offloading_hw=1
+#
+# 光口 mode 沿用上游默认（实机 xgpon，ACTP 0->3 注册成功）；仅当为空时补 xgpon，
+# 不覆盖既有值，兼容「驱动默认 / xgpon」两种形态。
+#
+# 边界：只在相关项仍是上游默认值或明显非法时动手；用户自定义的 VLAN / WAN
+# 设备名 / PON 凭据一律不碰。脚本跑完由 rc 删除，不会重复生效。
+# 执行顺序：90 -> 91 -> 95(本脚本) -> 96 -> 97 -> 99。
+
+[ "$(board_name)" = "youhua,pt1500-h10-2p5g" ] || exit 0
+
+changed=0
+
+# ---- 1. 上网 VLAN：上游默认 3961（EPON）-> H10 实测 1101（XGPON）----
+wan_vlan=$(uci -q get pon.pon.wan_vlan)
+case "$wan_vlan" in
+  ''|3961)
+    wan_vlan=1101
+    uci -q set pon.pon.wan_vlan="$wan_vlan"
+    changed=1
+    ;;
+esac
+
+# 光口模式：上游默认已是 xgpon 且实机注册成功；只在为空时补，不覆盖既有值
+[ -n "$(uci -q get pon.pon.mode)" ] || {
+  uci -q set pon.pon.mode='xgpon'; changed=1; }
+
+vlan_dev="pon0.$wan_vlan"
+
+# ---- 2. 删除上游按 3961 建的残留 VLAN 设备（仅当实际 VLAN 不是 3961）----
+if [ "$wan_vlan" != "3961" ]; then
+  while :; do
+    i=0; hit=
+    while uci -q get "network.@device[$i]" >/dev/null; do
+      if [ "$(uci -q get "network.@device[$i].name")" = "pon0.3961" ]; then
+        uci -q delete "network.@device[$i]"
+        hit=1; changed=1
+        break
+      fi
+      i=$((i+1))
+    done
+    [ -n "$hit" ] || break
+  done
+fi
+
+# ---- 3. 8021q 设备（mtu 1500：PPPoE 底层口必须 >=1500）----
+i=0; found=0
+while uci -q get "network.@device[$i]" >/dev/null; do
+  if [ "$(uci -q get "network.@device[$i].name")" = "$vlan_dev" ]; then
+    found=1; break
+  fi
+  i=$((i+1))
+done
+if [ "$found" = "0" ]; then
+  uci -q add network device >/dev/null
+  changed=1
+fi
+# 注意：这些值不能带单引号，外层双引号内的单引号会被 uci 存成字面量，
+# netifd 认不出设备类型，VLAN 子设备就建不出来（R10 run17 踩过）。
+uci -q set "network.@device[$i].type=8021q"
+uci -q set "network.@device[$i].ifname=pon0"
+uci -q set "network.@device[$i].vid=$wan_vlan"
+uci -q set "network.@device[$i].name=$vlan_dev"
+# 强制 1500：wan.mtu=1492 若被压到底层口，pppd 会持续告警并可能引发分片问题
+[ "$(uci -q get "network.@device[$i].mtu")" = "1500" ] || {
+  uci -q set "network.@device[$i].mtu=1500"; changed=1; }
+
+# ---- 4. WAN 接口：设备名 / 协议 / MTU ----
+wan_dev=$(uci -q get network.wan.device)
+[ -n "$wan_dev" ] || wan_dev=$(uci -q get network.wan.ifname)
+case "$wan_dev" in
+  ''|pon0|pon0.3961|"$vlan_dev")
+    uci -q get network.wan >/dev/null || uci -q set network.wan='interface'
+    uci -q set network.wan.device="$vlan_dev"
+    uci -q delete network.wan.ifname
+    uci -q set network.wan.proto='pppoe'
+    uci -q set network.wan.mtu='1492'
+    uci -q set network.wan.ipv6='1'
+    changed=1
+    ;;
+esac
+
+# ---- 5. PON 转发引擎：单播上行必需（FE 关则拨号必失败）----
+# /etc/init.d/pon offload() 要求以下三项同时为 1 才会把 fe 置 1。
+# 91-tyfza1-pon-offload 只在 offload=1 时才设 firewall，但 90 刚把它写成 0，
+# 所以这里三项都必须显式写，且开机 pon 服务会自动调用 offload()。
+[ "$(uci -q get pon.pon.offload)" = "1" ] || {
+  uci -q set pon.pon.offload='1'; changed=1; }
+[ "$(uci -q get firewall.@defaults[0].flow_offloading)" = "1" ] || {
+  uci -q set firewall.@defaults[0].flow_offloading='1'; changed=1; }
+[ "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" = "1" ] || {
+  uci -q set firewall.@defaults[0].flow_offloading_hw='1'; changed=1; }
+
+if [ "$changed" = "1" ]; then
+  uci -q commit network
+  uci -q commit pon
+  uci -q commit firewall
+  logger -t pt1500-h10-wan "default WAN -> $vlan_dev (pppoe), PON FE on"
+fi
+
+exit 0

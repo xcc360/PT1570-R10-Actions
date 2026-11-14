@@ -10,9 +10,13 @@
 #   3. 生成 files/etc/apk/repositories.d/distfeeds.list（北大镜像）
 #   4. 可选注入外部 apk 源公钥
 #
-# 不做：SSID/密码（本机无 WiFi）、WAN VLAN 覆盖（H10 是 EPON，沿用上游
-#       90-tyfza1-pon-wan 的 pon0.3961）、root 密码、PON SN/MAC/LOID
+# 不做：SSID/密码（本机无 WiFi）、root 密码、PON SN/MAC/LOID
 #       （这些来自 factory 卷，由 tyfza1-factory 运行时导出）。
+# WAN 默认值不在这里改：由 files-h10/etc/uci-defaults/95-pt1500-h10-wan-default
+#       在 90/91 之后覆盖。上游 90-tyfza1-pon-wan 的 EPON 默认
+#       （pon0.3961 + offload=0）在本机 XGPON/1101 线路上拨不上号：
+#       PON FE 关闭时 PADS 之后的单播上行帧被静默丢弃，pppd LCP 无回应。
+#       与 PT1570-R10 2026-11-11 定位的是同一个坑。
 #
 # ⚠️ 默认 LAN IP 用 192.168.2.1，不是 R10 的 192.168.1.1：
 #    用户两台设备同时在线，WLAN 网关 192.168.1.1 是 PT1570-R10，
