@@ -1,60 +1,67 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * Youhua PT1570-H10-CU (Unicom) 2.5G board description — full status lamps.
+ * Youhua PT1570-H10-CU (Unicom) 2.5G board description — status lamps in
+ * FRONT-PANEL PHYSICAL ORDER (left -> right).
  *
- * Why this file exists
- * --------------------
- * The upstream board/youhua/pt1570-h10-ct/desc-2p5g.c lists only four LAN
- * lamps on pins 0/1/3/4, all active-low — that is the *4GE* lamp map
- * (compare board/tianyi/tyfza1/desc-4ge.c: pins 4/3/1/0, active-low).
- * The real 2.5G lamp map is board/tianyi/tyfza1/desc-2p5g.c:
- *     pins 11/12 active-high, pins 3/4 active-low,
- * which matches the OpenWrt DTS override in
- * target/linux/rtl9617c/dts/rtl9617c-tyfza1-2p5g.dts:
- *     lan0 = <&gpio0 11 GPIO_ACTIVE_HIGH>, lan1 = <&gpio0 12 ...HIGH>,
- *     lan2 = <&gpio0 3  GPIO_ACTIVE_LOW>,  lan3 = <&gpio0 4  ...LOW>.
+ * Panel map (verified on the real unit, 2026-11-14, 13 lamp positions):
  *
- * On this Unicom unit the CT desc produced exactly three lit GE lamps
- * (reported 2026-11-14), i.e. pins 0/1/3 are real LAN lamps and pin 4 is not
- * — the panel wiring follows the Youhua PT15x0-H10 family (same as
- * PT1500-H10-CT), whose already-verified desc is
- * board/youhua/pt1500-h10-ct/desc-2p5g.c with ten lamps:
- *     power 11, pon 9, los 10, ppp 2, fxs 12, usb0 7, lan 0/1/3, usb1 6.
+ *   #   lamp        LED label     GPIO  active  driven by
+ *   --  ----------  ------------  ----  ------  --------------------------
+ *    1  电源        LED_PWR_G     11    high    SoC GPIO  [U-Boot]
+ *    2  注册        LED_PON        9    low     SoC GPIO  [U-Boot]
+ *    3  光信号      LED_LOS       10    low     SoC GPIO  [U-Boot]
+ *    4  5G          5G WiFi       --    --      PCIe WiFi card  (off in U-Boot)
+ *    5  2.4G        2.4G WiFi     --    --      PCIe WiFi card  (off in U-Boot)
+ *    6  千兆口4     LED_EPHY3      0    low     SoC GPIO  [U-Boot]
+ *    7  千兆口3     LED_EPHY2      1    low     SoC GPIO  [U-Boot]
+ *    8  千兆口2     LED_EPHY1      3    low     SoC GPIO  [U-Boot]
+ *    9  2.5G口      LED_EPHY0      4    low     RTL8221B PHY  (long off)
+ *   10  电话        LED_FXS       12    high    SoC GPIO  [U-Boot]
+ *   11  宽带        LED_PPP_G      2    low     SoC GPIO  [U-Boot]
+ *   12  WPS         LED_WPS_G      5    high    WPS button / OS  (long off)
+ *   13  USB         LED_USB0       7    high    SoC GPIO  [U-Boot]
  *
- * Rather than guess which of the two maps this particular panel uses, this
- * desc lists the UNION of both, in PT1500 panel order. Every shared pin has
- * the SAME polarity in both maps (verified pairwise below), so no lamp can be
- * driven inverted regardless of which wiring is on the board:
+ * The user reports #4/#5 (5G, 2.4G), #9 (2.5G jack) and #12 (WPS) are
+ * "permanently dark". Two different reasons, handled differently:
+ *   - #4/#5 (5G / 2.4G) and #12 (WPS) have NO SoC status GPIO driving them:
+ *     the two WiFi lamps hang off the PCIe radio cards (dead in U-Boot), and
+ *     WPS (pin 5) is a button/OS lamp. Claiming them would only insert dark
+ *     frames into the runner and could steal a button pin, so they are left
+ *     out entirely. pin 5 (WPS), pin 6 (usb1) stay with the OS; pin 8 is the
+ *     reset key and must never be claimed.
+ *   - #9 (2.5G jack) is different: a real SoC GPIO (pin 4, LED_EPHY0) DOES
+ *     sit at that panel position, so it is kept in the array at its physical
+ *     index (right after the three GE lamps) so the runner passes over it in
+ *     order. On this board the jack LED is wired to the external RTL8221B PHY,
+ *     so that one step may read dark — which is exactly what the panel shows.
+ *     It is NOT dropped: removing it would make the runner skip a physical
+ *     lamp position and look gapped. All other nine lamps are true SoC GPIO
+ *     status lamps (verified lit by run #4).
+ * Net effect: 10 lamps = 9 always-lit + 1 PHY-wired may-dark, in exact panel
+ * order. The 4 "permanently dark" positions are therefore a hardware fact,
+ * not something this U-Boot build can or should try to light.
  *
- *   pin  PT1500/4GE dtsi          2p5g DTS override        polarity
- *   ---  -----------------------  -----------------------  ---------
- *     0  lan3 LED_EPHY3 (low)     unused                   low
- *     1  lan2 LED_EPHY2 (low)     unused                   low
- *     2  ppp  LED_PPP_G (low)     usb1 LED_USB1 (low)      low   (both)
- *     3  lan1 LED_EPHY1 (low)     lan2 (low)               low   (both)
- *     4  lan0 LED_EPHY0 (low)     lan3 (low)               low   (both)
- *     7  usb0 LED_USB0 (high)     node deleted             high
- *     9  pon  LED_PON   (low)     pon  (low)               low   (both)
- *    10  los  LED_LOS   (low)     los  (low)               low   (both)
- *    11  power LED_PWR_G (high)   lan0 (high)              high  (both)
- *    12  fxs   LED_FXS   (high)   lan1 (high)              high  (both)
+ * Why the order matters (failsafe/led.c, do NOT "simplify" this):
+ *   rtk_board_boot_leds() sweeps lamp[0..n] once at power-on;
+ *   RTK_LEDS_IDLE runs lamp_runner() along the array (one lamp + its trailing
+ *   neighbour, 150 ms/step); RTK_LEDS_BUSY fills lamp_bar() from index 0;
+ *   DONE holds all on for 2 s; FAILED alternates odd/even indices.
+ *   => the array order IS the on-panel left-to-right sweep order. The run #4
+ *   build reused the PT1500 panel order (power, pon, los, ppp, fxs, usb,
+ *   then the four LAN lamps), which put USB/phone/internet BEFORE the GE
+ *   lamps — the exact opposite of this Unicom panel (GE lamps sit at #6-8,
+ *   phone/internet/USB at #10-13). That is why the runner looked "out of
+ *   order" on the device even though more lamps lit up. This file puts every
+ *   lamp at its true physical index.
  *
- * Constraints from the failsafe framework (do not "simplify" this):
- *   * struct rtk_led.pin is a GLOBAL GPIO number (u8), not a bank bit.
- *   * rtl9617c_gpio_group_select() rejects a lamp set that spans more than
- *     one 32-pin bank; all ten pins here live in bank 0 (pin < 32).
- *   * Pin 8 is the reset key (active low) and MUST NOT be claimed as a lamp.
- *     Pin 5 (WPS) has no failsafe state upstream and stays with the OS;
- *     pin 6 (usb1) was commented out in the verified PT1500 desc. Both are
- *     deliberately left out.
- *   * Lamps are listed in front-panel order: rtk_board_boot_leds() sweeps
- *     them once at power-on, RTK_LEDS_IDLE runs a runner along them while the
- *     web failsafe waits, BUSY shows a progress bar, DONE holds all on for
- *     two seconds, FAILED alternates odd/even. Ten lamps make each state
- *     legible from across the room — which is the whole point: with the old
- *     four-lamp CT desc you could not tell "U-Boot alive" from "kernel hung".
- *   * The 2.5G jack's lamp is driven by its PHY, not by a GPIO, so it is not
- *     listed (upstream PT1500 desc says the same).
+ * Polarity / bank constraints:
+ *   * struct rtk_led.pin is a GLOBAL GPIO number (u8) and active_low is the
+ *     electrical polarity (DTSI: &gpio0 <N> <1=low/0=high>).
+ *   * rtl9617c_gpio_group_select() rejects a lamp set spanning more than one
+ *     32-pin bank; all ten pins here live in bank 0 (pin < 32).
+ *   * The pin set and polarities are UNCHANGED from run #4 (already proven to
+ *     light the panel); only the ORDER is fixed. Zero regression risk on the
+ *     BL33 size, geometry, FIP UUIDs or the CU stock GPT.
  *
  * Only this board description is replaced at build time; geometry, FIP UUIDs,
  * BL2/BL31 and the CU stock GPT are untouched by the lamp change.
@@ -64,16 +71,18 @@
 #include <failsafe/desc.h>
 
 static const struct rtk_led pt1570_h10_cu_2p5g_lamps[] = {
-	{ .pin = 11 },				/* power  LED_PWR_G / 2p5g lan0 */
-	{ .pin = 9,  .active_low = true },	/* pon    LED_PON */
-	{ .pin = 10, .active_low = true },	/* los    LED_LOS */
-	{ .pin = 2,  .active_low = true },	/* ppp    LED_PPP_G / 2p5g usb1 */
-	{ .pin = 12 },				/* fxs    LED_FXS / 2p5g lan1 */
-	{ .pin = 7 },				/* usb0   LED_USB0 */
-	{ .pin = 0,  .active_low = true },	/* lan    LED_EPHY3 */
-	{ .pin = 1,  .active_low = true },	/* lan    LED_EPHY2 */
-	{ .pin = 3,  .active_low = true },	/* lan    LED_EPHY1 / 2p5g lan2 */
-	{ .pin = 4,  .active_low = true },	/* lan    LED_EPHY0 / 2p5g lan3 */
+	{ .pin = 11 },				/*  1 电源    LED_PWR_G  (high) */
+	{ .pin = 9,  .active_low = true },	/*  2 注册    LED_PON    (low)  */
+	{ .pin = 10, .active_low = true },	/*  3 光信号  LED_LOS    (low)  */
+	/*  4 5G / 5 2.4G: PCIe WiFi 卡驱动，U-Boot 阶段长灭，不占位 */
+	{ .pin = 0,  .active_low = true },	/*  6 千兆口4 LED_EPHY3  (low)  */
+	{ .pin = 1,  .active_low = true },	/*  7 千兆口3 LED_EPHY2  (low)  */
+	{ .pin = 3,  .active_low = true },	/*  8 千兆口2 LED_EPHY1  (low)  */
+	{ .pin = 4,  .active_low = true },	/*  9 2.5G口  LED_EPHY0  (PHY, 长灭) */
+	{ .pin = 12 },				/* 10 电话    LED_FXS    (high) */
+	{ .pin = 2,  .active_low = true },	/* 11 宽带    LED_PPP_G  (low)  */
+	/* 12 WPS: 按钮灯 pin 5，无 failsafe 状态，留给 OS */
+	{ .pin = 7 },				/* 13 USB     LED_USB0   (high) */
 };
 
 static const struct rtk_board_variant pt1570_h10_cu_2p5g_variant = {
