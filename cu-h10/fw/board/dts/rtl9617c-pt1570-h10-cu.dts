@@ -40,3 +40,34 @@
 	model = "Youhua PT1570-H10-CU (RTL9617C UBI, 1x2.5GE + 3xGE + WiFi6)";
 	compatible = "youhua,pt1570-h10-cu", "tianyi,tyfza1-2p5g", "realtek,rtl9617c";
 };
+
+/*
+ * ubi_device 分区必须可写 —— 2026-11-14 联通 H10-CU 真机刷砖定位（关键）。
+ *
+ * 症状：CU 首版固件 sysupgrade 刷入 fit 卷后上电黑砖（灯全灭），但 U-Boot
+ *   下内存启动 initramfs-recovery.itb 完全正常（可配置、可 PPPoE 拨号）。
+ *   fit 卷本身没问题：fitblk 正确识别 config-1、映射 /dev/fit0，
+ *   factory/fit/rootfs_data 三卷都在。
+ *
+ * 根因：上游 rtl9617c-tyfza1.dtsi 给 partition@340000(ubi_device) 也标了
+ *   read-only；110-spinand-readonly.patch 在 spinand_probe 里据此清掉
+ *   MTD_WRITEABLE。真机 dmesg 实证：
+ *     "ubi0: MTD device 4 is write-protected, attach in read-only mode"
+ *   UBI 以只读方式 attach，刷机后 rootfs_data 整卷 0xFF 无法被 mount_root
+ *   格式化成 ubifs，overlay 建不出来，刷入态必然起不来。initramfs 的 rootfs
+ *   在内存里、不依赖 rootfs_data，所以内存启动不受影响 —— 这正是「能拨号、
+ *   刷入却黑砖」的分界。
+ *
+ * R10 DTS 早有同样的 &qspi 覆盖块（2026-11-12 真机定位）；CU 从 PT1500-H10
+ *   派生时漏掉了它。这里只放开 ubi_device；boot/env/env2/static_conf 保持只读。
+ * 绝不能删除本覆盖块，apply-board-h10-cu.sh 里有对应断言。
+ */
+&qspi {
+	flash@0 {
+		partitions {
+			partition@340000 {
+				/delete-property/ read-only;
+			};
+		};
+	};
+};

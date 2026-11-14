@@ -56,7 +56,15 @@ grep -q 'fpga-image@10000' "$DTSI" \
   || fail "dtsi 缺少 fpga-image@10000（factory 8 MiB 布局基线）"
 grep -q 'UNVERIFIED' "$DTS_SRC" \
   && fail "CU DTS 仍带 UNVERIFIED 标记"
-echo "  OK   2p5g 基线 / 统一 UBI / fpga-image@10000"
+# 黑砖回归护栏（2026-11-14 真机定位）：ubi_device 分区必须可写。
+# 上游 dtsi 给所有分区标了 read-only，CU DTS 必须带 &qspi 覆盖块删掉
+# ubi_device 那一处，否则 UBI 只读 attach、rootfs_data 建不出 overlay，
+# sysupgrade 刷入后黑砖（内存启动 initramfs 却正常）。详见 DTS 内注释。
+grep -q '/delete-property/ read-only' "$DTS_SRC" \
+  || fail "CU DTS 缺 &qspi /delete-property/ read-only（刷入态会黑砖）"
+grep -q 'partition@340000' "$DTS_SRC" \
+  || fail "CU DTS 的 &qspi 覆盖块没有指向 ubi_device(partition@340000)"
+echo "  OK   2p5g 基线 / 统一 UBI / fpga-image@10000 / ubi_device 可写"
 
 # ---- 1. DTS ----
 cp -f "$DTS_SRC" "$DTS_FILE"

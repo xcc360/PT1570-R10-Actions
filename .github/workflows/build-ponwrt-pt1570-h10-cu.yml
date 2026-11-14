@@ -27,6 +27,18 @@
 #  11. 2p5g 基线而非 4GE 空壳（联通机 1x2.5GE + 3xGE 实机确认）；
 #  12. 2.5G 口补齐进 LAN 桥：board.d/02_network 默认只加 lan1..lan4，
 #      且 97-pt1500-lan5 只认 youhua,pt1500-h10 compatible，对 CU 不生效。
+#  13. 刷入态黑砖（2026-11-14 真机定位）：上游 dtsi 给 ubi_device 标了
+#      read-only，110-spinand-readonly.patch 据此清掉 MTD_WRITEABLE，内核
+#      "ubi0: MTD device 4 is write-protected, attach in read-only mode"；
+#      rootfs_data 整卷 0xFF 无法格式化成 ubifs，mount_root 建不出 overlay。
+#      initramfs 的 rootfs 在内存里、不依赖 overlay，所以「内存启动能拨号、
+#      刷入就黑砖」。CU DTS 用 &qspi 覆盖块只放开这一个分区（R10 run20 同款）。
+#  14. 无 WiFi（2026-11-14 真机 initramfs 复现）：上游 20b4cf4 的 rtl_ax_ap
+#      PE 引擎是 PT1570 实测坏掉并 revert 的 IRAM/物理 CP3 方案，两张 WiFi6
+#      卡都等不到 PEWD mailbox -> -ETIMEDOUT -> probe -110。编译期用
+#      cu-h10/fw/scripts/overlay-wifi-driver.sh 整套替换成已验证的单 PE1
+#      引擎版（60 文件，含 pe-tx-code.h 4076 words）。首版只带了 PE 固件构建
+#      和 51 个 WiFi 固件/RFE54 参数表，漏了驱动 overlay。
 #
 # factory 卷 8 MiB（与 DTS 的 fpga-image@10000 / 0x800000 对齐），
 # 由配套 build-uboot-pt1570-h10-cu.yml 编译的 U-Boot 定义，两者必须成对使用。
@@ -218,6 +230,22 @@ jobs:
           grep -q 'static const u32 pe_tx_program\[\]' "$HDR" \
             || { echo "::error::pe-tx-code.h 内容不符"; exit 1; }
           echo "PE_HEADER_OK=True bytes=$(wc -c < "$HDR")"
+
+      - name: Overlay known-good PT1570 WiFi driver (PE IRAM revert)
+        # 上游 20b4cf4 的 rtl_ax_ap PE 引擎正是 PT1570 实测坏掉并 revert 的
+        # IRAM/物理 CP3 方案：两张卡 probe 都等不到 PEWD mailbox -> -ETIMEDOUT
+        # -> error -110 -> 完全没有 WiFi。2026-11-14 CU 真机 initramfs 复现：
+        #   rtl_ax_ap: AP startup: powered=1 prepared=1 firmware=0 ...
+        #   rtl_ax_ap: error -ETIMEDOUT: AP identity or firmware startup failed
+        # 两张卡 PCIe 都 link up、驱动也绑定，就是 PE 程序跳不对地址。
+        # 用 R10 已实机验证的整套 PT1570 驱动（60 文件，含配套 pe-tx-code.h）
+        # 覆盖上面 PE 步骤现场编出的坏版。必须在 Build PE 之后、Configure 之前。
+        # CU 首版固件只带了 PE 固件构建 + 51 个 WiFi 固件/RFE54 文件，漏了本步骤，
+        # 这就是「内存启动能拨号、却没有 WiFi」的根因。
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/cu-h10/fw/scripts/overlay-wifi-driver.sh"
 
       - name: Pin APK signing key (optional)
         working-directory: wrt
@@ -411,6 +439,14 @@ jobs:
             || { echo "ERROR: dtsi 缺少 fpga-image@10000（factory 8 MiB 布局基线）" >&2; exit 1; }
           echo "  OK   DTS=$DTS board_name=$BOARD_NAME factory=8MiB"
 
+          # 黑砖回归护栏：ubi_device 必须可写，否则 UBI 只读 attach、
+          # rootfs_data 建不出 overlay，sysupgrade 刷入后灯全灭。
+          grep -q '/delete-property/ read-only' "target/linux/rtl9617c/dts/${DTS}.dts" \
+            || { echo "ERROR: 注入的 CU DTS 缺 &qspi /delete-property/ read-only" >&2; exit 1; }
+          grep -q 'partition@340000' "target/linux/rtl9617c/dts/${DTS}.dts" \
+            || { echo "ERROR: CU DTS 的覆盖块没有指向 ubi_device(partition@340000)" >&2; exit 1; }
+          echo "  OK   ubi_device 可写（刷入态 overlay 可建）"
+
           # 上游首启脚本必须齐全（LED / LAN / br-lan MAC），
           # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default
           #（H10 自有 95-pt1570-h10-cu-wan-default，同名不同前缀，不冲突）。
@@ -474,7 +510,10 @@ jobs:
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/apk/keys/immortalwrt-25.12.pem" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/lib/upgrade/zz-pt1570-sysupgrade.sh" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/95-pt1570-h10-cu-wan-default" \
-                   "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/96-pt1570-h10-cu-lan5"; do
+                   "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/96-pt1570-h10-cu-lan5" \
+                   "$GITHUB_WORKSPACE/cu-h10/fw/board/dts/rtl9617c-pt1570-h10-cu.dts" \
+                   "$GITHUB_WORKSPACE/cu-h10/fw/scripts/overlay-wifi-driver.sh" \
+                   "$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap/pe-tx-code.h"; do
             [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
           done
           echo "  OK   H10-CU 资产齐全"
@@ -484,9 +523,27 @@ jobs:
           grep -q 'Guard H10-CU-only' "$WF" || { echo "ERROR: 缺 H10-only 防呆步骤" >&2; exit 1; }
           echo "  OK   matrix=[h10cu] + guard"
           echo "=== 3. 与 R10 资产隔离 ==="
-          ! grep -qE 'scripts/(patch-upstream|patch-wifi-diag|overlay-wifi-driver|apply-board)\.sh|customize\.sh|Config-PT1570-FIT\.txt|Config-EXTRA\.txt|Config-DIAG\.txt' "$WF" \
+          # 注意：CU 现在必须自带 WiFi 驱动 overlay（cu-h10/fw/scripts/），
+          # 与 R10 的 scripts/ 资产隔离是「不引用 R10 专属脚本」，不是「不许有 WiFi 修复」。
+          ! grep -qE 'scripts/(patch-upstream|patch-wifi-diag|apply-board)\.sh|[^ ]customize\.sh|Config-PT1570-FIT\.txt|Config-EXTRA\.txt|Config-DIAG\.txt' "$WF" \
             || { echo "ERROR: H10 workflow 仍引用 R10 专属脚本 / 配置" >&2; exit 1; }
-          echo "  OK   无 R10 板级注入 / WiFi 资产引用"
+          echo "  OK   无 R10 板级注入脚本引用"
+          echo "=== 3b. WiFi 驱动 overlay 必须存在（否则刷入后无 WiFi）==="
+          grep -q 'Overlay known-good PT1570 WiFi driver' "$WF" \
+            || { echo "ERROR: 缺 WiFi 驱动 overlay 步骤（双 PCIe WiFi6 会 probe -110）" >&2; exit 1; }
+          grep -q 'cu-h10/fw/scripts/overlay-wifi-driver.sh' "$WF" \
+            || { echo "ERROR: overlay 步骤未调用 CU 自己的驱动脚本" >&2; exit 1; }
+          echo "  OK   WiFi 驱动 overlay 已接线"
+          echo "=== 3c. 黑砖 / 无 WiFi 回归护栏 ==="
+          CUDTS="$GITHUB_WORKSPACE/cu-h10/fw/board/dts/rtl9617c-pt1570-h10-cu.dts"
+          grep -q '/delete-property/ read-only' "$CUDTS" \
+            || { echo "ERROR: CU DTS 缺 ubi_device 可写覆盖块（刷入态会黑砖）" >&2; exit 1; }
+          DRV="$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap"
+          [ "$(find "$DRV" -maxdepth 1 -type f | wc -l)" -ge 60 ] \
+            || { echo "ERROR: PT1570 参考驱动文件不足 60" >&2; exit 1; }
+          [ "$(md5sum "$DRV/pe-tx-code.h" | cut -d' ' -f1)" = "7eb49893f43b897bf03fa82ae2323984" ] \
+            || { echo "ERROR: pe-tx-code.h 不是已验证的单 PE1 参考版" >&2; exit 1; }
+          echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件"
           echo "=== 4. Config 基线关键符号 ==="
           C="$GITHUB_WORKSPACE/cu-h10/fw/Config-PT1570-H10-CU.txt"
           for sym in CONFIG_PACKAGE_fitblk CONFIG_PACKAGE_tyfza1-pon-control \
@@ -768,6 +825,8 @@ jobs:
             echo "lan_ip=192.168.18.1/24 (原厂联通管理地址；显式掩码，DHCPv4 必需)"
             echo "default_wan=pon0.1101 pppoe (XGPON VLAN 1101, PON FE on, 95-pt1570-h10-cu-wan-default)"
             echo "wifi=rtl_ax_ap (2x PCIe WiFi6: 10ec:c852 / 10ec:0192)"
+            echo "brickfix=ubi_device writable (CU DTS &qspi /delete-property/ read-only)"
+            echo "wififix=PT1570 PE1 single-engine driver overlay (60 files, pe-tx-code.h 4076 words)"
           } > "$OUT/BUILD_INFO.txt"
 
           case "$PUBLISH_PACKAGES" in
@@ -846,6 +905,7 @@ jobs:
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`（2p5g 基线注入）
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
+            本版修复：① ubi_device 被标 read-only → UBI 只读 attach、rootfs_data 建不出 overlay，刷入态黑砖（CU DTS 放开该分区写）；② 上游 rtl_ax_ap PE 引擎坏版 → 两张 WiFi6 卡 probe -110、完全无 WiFi（整套替换为 PT1570 已验证单 PE1 驱动）。
             同批 packages 见 `PT1570-H10-2P5G-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
 
             ⚠️ 仅适用于 PT1570-H10-CU（1x2.5GE + 3xGE + WiFi6，youhua,pt1570-h10-cu）。

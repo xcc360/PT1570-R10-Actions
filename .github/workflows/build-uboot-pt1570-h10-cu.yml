@@ -19,6 +19,10 @@
 #     OpenWrt DTS 的 fpga-image@10000 越界），与 PT1500-H10 电信版实践一致；
 #   * 本机联网口为 1x2.5GE + 3xGE，BL33 沿用 CT-2P5G 板级描述；
 #     已失效的 CONFIG_TARGET_..._4GE 符号会让编译直接失败；
+#   * 上游 desc-2p5g.c 按设计只定义 4 个 LAN 灯（pin 0/1/3/4），注释明确
+#     其它灯 "stays with the OS"。所以 U-Boot Web failsafe 下大部分面板灯不亮、
+#     只有网口灯流水是正常现象，不是启动故障。注入步骤把 .name 从 CT 改成 CU，
+#     避免恢复页 / 控制台仍显示电信版机型（等长字符串，不影响 bl33_budget）。
 #   * 固件由 build-ponwrt-pt1570-h10-cu.yml 产出，两者配套使用。
 #
 # ⚠️ stock 与这台设备绑定（GPT GUID 每机唯一）。换机需重新备份 mtd0 并更新
@@ -151,6 +155,11 @@ jobs:
                    tools/release/tf-a/tools/cert_create/Makefile; do
             [ -f "$U/$f" ] || { echo "::error::上游缺 $f（版本不兼容？）"; exit 1; }
           done
+          # 下一步会把 desc 的机型名从 CT 改成 CU，先断言锚点唯一，
+          # 上游改版时直接失败而不是静默留下电信版标识。
+          DESC="$U/board/youhua/pt1570-h10-ct/desc-2p5g.c"
+          [ "$(grep -cF '.name = "Youhua PT1570-H10-CT",' "$DESC")" = "1" ] \
+            || { echo "::error::desc-2p5g.c 的 CT 名称锚点变了，CU 标识注入需复核"; exit 1; }
           grep -q 'CONFIG_RTK_FACTORY_SIZE=0x10000' "$U/configs/youhua-pt1570-h10-ct-2p5g_defconfig" \
             || echo "::warning::上游 CT-2P5G defconfig 的 factory 尺寸已变，CU defconfig 请复核"
           grep -q 'nt_fw' "$U/tools/release/boards/youhua-pt1570-h10-ct-2p5g.json" \
@@ -179,6 +188,19 @@ jobs:
           assert ct['bl33_budget'] == cu['bl33_budget']
           assert cu['stock_sha256'] != ct['stock_sha256'], 'stock 摘要不能与电信版相同'
           print('  OK   FIP 几何/UUID 与上游一致，stock 为联通专用')
+          PY
+          # 上游 CT-2P5G 板级描述复用在联通机上：只改展示字符串（等长，
+          # 不改 LED / reset / variant，BL33 体积与 bl33_budget 不变）。
+          python3 - "$U/board/youhua/pt1570-h10-ct/desc-2p5g.c" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          t = p.read_text(encoding='utf-8')
+          old = '.name = "Youhua PT1570-H10-CT",'
+          new = '.name = "Youhua PT1570-H10-CU",'
+          if t.count(old) != 1:
+              raise SystemExit('ERROR: CT 名称锚点不是唯一一处')
+          p.write_text(t.replace(old, new, 1), encoding='utf-8', newline='\n')
+          print('  OK   board desc -> Youhua PT1570-H10-CU')
           PY
           echo "  OK   CU 资产注入完成"
 
