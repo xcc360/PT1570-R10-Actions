@@ -8,6 +8,13 @@
 #
 # 默认开放式（无密码），刷入后请到 LuCI「网络 → 无线」自行设置 WPA2/WPA3 密码。
 # 这是 conffile，sysupgrade 会保留，不会被固件升级覆盖。
+#
+# 2026-11-14：下面的 LDPC / STBC / beamforming 选项取自联通原厂
+# /etc/conf/hostapd-backports.conf 与 config.xml（WLAN*_LDPC_ENABLED=1、
+# WLAN*_STBC_ENABLED=1、he_su/mu_beamformer=1）。这些选项在 schema 内，
+# hostapd.uc 会按驱动上报的 HE/VHT capability 自动回退，不支持时不会强开。
+# 老机器 sysupgrade 保留旧配置时由 96-pt1570-wifi-tuning 补同样的默认值。
+# country 保持 CN（原厂写 US 功率更宽，但改 regdomain 有合规风险，不跟随）。
 
 config wifi-device 'radio0'
 	option type 'mac80211'
@@ -17,6 +24,18 @@ config wifi-device 'radio0'
 	option htmode 'HE80'
 	option country 'CN'
 	option disabled '0'
+	option ldpc '1'
+	option rxldpc '1'
+	option tx_stbc '1'
+	option rx_stbc '1'
+	option su_beamformer '1'
+	option su_beamformee '1'
+	option mu_beamformer '1'
+	option beamformer_antennas '2'
+	option beamformee_antennas '2'
+	option he_su_beamformer '1'
+	option he_su_beamformee '1'
+	option he_mu_beamformer '1'
 
 config wifi-iface 'default_radio0'
 	option device 'radio0'
@@ -33,6 +52,18 @@ config wifi-device 'radio1'
 	option htmode 'HE20'
 	option country 'CN'
 	option disabled '0'
+	option ldpc '1'
+	option rxldpc '1'
+	option tx_stbc '1'
+	option rx_stbc '1'
+	option su_beamformer '1'
+	option su_beamformee '1'
+	option mu_beamformer '1'
+	option beamformer_antennas '2'
+	option beamformee_antennas '2'
+	option he_su_beamformer '1'
+	option he_su_beamformee '1'
+	option he_mu_beamformer '1'
 
 config wifi-iface 'default_radio1'
 	option device 'radio1'

@@ -20,6 +20,29 @@
 # Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3（Node 24）。
 # 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
 
+# 2026-11-14 原厂 WiFi 整合（本机备份 D:\ONT\PT1570-R10\BackUp-原厂 解包对比）：
+#   * 原厂 rtk_wifi6.ko（4.4.140，10.8 MB Realtek SDK）里只出现一个 FEM 名
+#     RTK66587_BPF_YH1570；/etc/conf/rtl8852ce/RFE54/RTK66587_BPF_YH1570/
+#     PHY_REG_GAIN.txt 头注释 "version = 52-for 17C"，是专为 RTL9617C +
+#     PT1570 板标定的 RF 增益（5G LOW/MID/HIGH 各 path A/B 全表不同，
+#     204 行差异），MCS8~11 的 TXPWR_ByRate 也从 17/17/18/19 调成 14/15/17/19。
+#   * 上游 PonWRT 带的是通用 RTK66587_BPF（version = 51）；开源 rtl_ax_ap
+#     在 phy.c / limits.c / power-tables.c 里硬编码读这个目录。所以把该目录
+#     3 个差异表替换成原厂 YH1570 版即可无改驱动生效。通用版另存
+#     RTK66587_BPF_GENERIC/ 可回滚，原名 RTK66587_BPF_YH1570/ 留作溯源。
+#   * 2.4G 默认表 RTK66287 与原厂逐字节一致，保持不动；另打包原厂备选
+#     RTC7646/ 供实机对比。
+#   * 原厂 hostapd 开了 he_su/mu_beamformer、LDPC、STBC、WMM，MIB 里
+#     WLAN*_LDPC_ENABLED / WLAN*_STBC_ENABLED 也都是 1；本版把这些映射成
+#     /etc/config/wireless 的 schema 内选项，并由 96-pt1570-wifi-tuning
+#     在默认配置被 sysupgrade 保留时幂等补齐。hostapd.uc 会按驱动上报的
+#     HE/VHT cap 自动回退，不支持时不会强开。country 保持 CN（原厂写 US，
+#     功率上限更宽，但改 regdomain 有合规风险，不跟随）。
+#   * 护栏：scripts/verify-stock-wifi-assets.py（23 项 sha256 / 内容断言）
+#     + Verify 段镜像内断言，防止原厂表被误改回通用版。
+#   说明：原厂是 10.8 MB 完整私有驱动，开源 rtl_ax_ap.ko 只有 353 KB，
+#   功能集差距是上限，参数表与 hostapd 配置能明显改善但不能完全追平。
+#
 # 统一命名 ID: PT1570-R10-4GE-CU-sysupgrade
 #   规则 <型号>-<网口>-<运营商>-<产物类型>（uboot / sysupgrade）。
 #   仅作用于展示层：workflow / job / artifact / release / packages / BUILD_INFO。
@@ -73,9 +96,9 @@ on:
         default: ''
         type: string
       wifi_diag:
-        description: 'WiFi 诊断模式：给 rtl_ax_ap 驱动注入只读寄存器打点，并打开 CONFIG_DEVMEM + busybox devmem。定位完请关掉'
+        description: 'WiFi 诊断模式：注入只读寄存器打点 + CONFIG_DEVMEM/devmem，并保留上游驱动。默认关闭（正式性能版：overlay 已验证好驱动）；仅排查 WiFi 时手动打开'
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -781,6 +804,33 @@ jobs:
             || { echo "::error::默认 wireless 配置的 radio 数不是 2 或未启用"; exit 1; }
           echo "WIFI_DEFAULT_CFG_OK=True"
 
+          # ---- 原厂 PT1570 专用 FEM 表 + hostapd 高级参数（2026-11-14）----
+          # 资产层：sha256 / 版本注释 / 回滚目录 / 溯源目录 / uci-defaults 全查
+          python3 "$ASSETS/scripts/verify-stock-wifi-assets.py"
+          WFW="$ROOT/lib/firmware/realtek/tyfza1"
+          # 镜像内默认表必须是 RTL9617C v52 标定，不能是上游通用 v51
+          grep -q 'version = 52-for 17C' \
+            "$WFW/rtl8852ce/RFE54/RTK66587_BPF/PHY_REG_GAIN.txt" \
+            || { echo "::error::镜像内 5G FEM 表不是原厂 PT1570/17C v52 版"; exit 1; }
+          for f in PHY_REG.txt PHY_REG_GAIN.txt TXPWR_ByRate.txt; do
+            cmp -s "$ASSETS/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54/RTK66587_BPF/$f" \
+                  "$WFW/rtl8852ce/RFE54/RTK66587_BPF/$f" \
+              || { echo "::error::镜像内 5G FEM 表 $f 与原厂资产不一致"; exit 1; }
+          done
+          for d in RTK66587_BPF_YH1570 RTK66587_BPF_GENERIC; do
+            [ "$(find "$WFW/rtl8852ce/RFE54/$d" -name '*.txt' 2>/dev/null | wc -l)" = 12 ] \
+              || { echo "::error::镜像缺少原厂 FEM 溯源/回滚目录 $d"; exit 1; }
+          done
+          [ "$(find "$WFW/rtl8192xbe/RFE54/RTC7646" -name '*.txt' 2>/dev/null | wc -l)" = 8 ] \
+            || { echo "::error::镜像缺少 2.4G 备选 FEM 表 RTC7646"; exit 1; }
+          echo "STOCK_WIFI_FEM_OK=True (YH1570 17C v52 default, generic kept for rollback)"
+
+          [ -x "$ROOT/etc/uci-defaults/96-pt1570-wifi-tuning" ] \
+            || { echo "::error::96-pt1570-wifi-tuning 未进镜像或丢了可执行位"; exit 1; }
+          [ "$(grep -c "option he_su_beamformer '1'" "$ROOT/etc/config/wireless")" = 2 ] \
+            || { echo "::error::/etc/config/wireless 未带原厂 HE beamforming 参数"; exit 1; }
+          echo "STOCK_WIFI_CFG_OK=True (LDPC/STBC/beamforming on both radios, country=CN)"
+
           # 校验打包的是修补后的 factory 提取脚本，且校准软链接存在（目标在 /tmp，属于正常）
           grep -q 'mv "\$tmp" "\$3"' "$ROOT/etc/init.d/tyfza1-factory" \
             || { echo "::error::镜像里的 tyfza1-factory 未应用 factory_blob 修补"; exit 1; }
@@ -883,6 +933,10 @@ jobs:
             echo "bootloader=lyq1996/rtl9617c-uboot@refactor 2026.07-g9abafc0572b2 (pt1500-h10-2p5g_defconfig)"
             echo "bootloader_fit_abi=yes (firmware_volume=fit, overlay_volume=rootfs_data, factory=8MiB static)"
             echo "bootcmd_default=bootmenu -> menu_0 rtk_boot / menu_1 rtk_recovery"
+            echo "stock_wifi_fem=RTK66587_BPF_YH1570 (RTL9617C v52, replaces upstream generic v51)"
+            echo "stock_wifi_rollback=RTK66587_BPF_GENERIC/ (12 tables) + YH1570/ + 2.4G RTC7646/"
+            echo "stock_wifi_cfg=LDPC/STBC/VHT+HE beamforming (hostapd.uc capability-gated), country=CN"
+            echo "stock_wifi_cal=TYFC0003 per-board calibration from factory 0x2000/0x3000 via S09 tyfza1-factory"
           } > "$OUT/BUILD_INFO.txt"
 
           if [ "${DTS_STATUS:-experimental}" != "verified" ]; then
@@ -974,6 +1028,7 @@ jobs:
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
+            本版 WiFi 整合：5G FEM 表换成原厂 PT1570 专用 `RTK66587_BPF_YH1570`（RTL9617C v52 标定，通用 v51 另存 `RTK66587_BPF_GENERIC/` 可回滚）；补上原厂 hostapd/MIB 的 LDPC、STBC、VHT/HE beamforming 配置（hostapd 按驱动能力自动回退），country 保持 CN；2.4G 默认表未动，另带原厂 `RTC7646/` 备选。
             同批 packages 见 `PT1570-R10-4GE-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
             ⚠️ 刷机前必须已完成新 U-Boot（rtk_boot / 读 fit 卷）确认、factory 导入与卷表重建，详见方案文档。
             ⚠️ 刷机前 U-Boot env 应保持编译默认（pt1570.env 无 bootargs）；清空动作执行一次即可。
