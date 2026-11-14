@@ -43,6 +43,24 @@
 #   说明：原厂是 10.8 MB 完整私有驱动，开源 rtl_ax_ap.ko 只有 353 KB，
 #   功能集差距是上限，参数表与 hostapd 配置能明显改善但不能完全追平。
 #
+# 2026-11-15 PonWRT-TYFZA1 v0.8.5-beta WiFi 信号修复
+#   （run34 刷入后实机反馈「WiFi 信号还是不行」）：
+#   * 主根因：旧版 rtl_ax_ap/power-tables.c 把 SCC MAC0 的 0xd208 bit20/21
+#     与 0xd21c bit18 置 1，额外启用厂商 TXPWR_LMT / TXPWR_LMT_RU 限制表，
+#     把 TX 功率压到单板 by-rate 标定值以下。原厂 config.xml 的
+#     WLAN_RFPOWER_SCALE=0 / WLAN_FAKE_TX_POWER=0 / POWER_OPTIMIZATION_ENABLE=0
+#     与 PonWRT manifests/radio-stock-rf-dm.json 的
+#     "power_limit MIB defaults to 0" 都证明原厂不启用这层限制。
+#     0.8.5 把这些位清零；by-rate 值本身已含 Linux 信道/用户/regdb 上限，
+#     所以清零不放宽合规，只是不再重复限功率。
+#   * 0.8.5 是独立的 73 文件双 PE 驱动 + 36 个内核补丁，与本机 60 文件
+#     单 PE1 驱动不兼容，**不能整套替换**；只移植能独立生效的
+#     power-tables.c 与 wifi-scripts 的 txpower ucode 修复。
+#   * 0.8.5 sysupgrade.bin 解出的整套 5G RFE54 表（v51，26 文件）随镜像
+#     带在 RFE54_PONWRT085/，由 dispatch input fem_profile 一键切换；
+#     默认仍是原厂 YH1570 v52，便于 A/B 对照。
+#   * 护栏：scripts/verify-ponwrt085-wifi.py + Verify 段编译树/镜像断言。
+#
 # 统一命名 ID: PT1570-R10-4GE-CU-sysupgrade
 #   规则 <型号>-<网口>-<运营商>-<产物类型>（uboot / sysupgrade）。
 #   仅作用于展示层：workflow / job / artifact / release / packages / BUILD_INFO。
@@ -100,6 +118,12 @@ on:
         required: false
         default: false
         type: boolean
+      fem_profile:
+        description: '5G 射频参数表 profile：yh1570=原厂 PT1570 专用 v52（默认）；ponwrt085=PonWRT 0.8.5 实机验证的 v51 全套；generic=上游通用 v51 回滚'
+        required: false
+        default: 'yh1570'
+        type: choice
+        options: [yh1570, ponwrt085, generic]
 
 permissions:
   contents: write
@@ -356,6 +380,41 @@ jobs:
             echo "custom packages repo: $URL/targets/rtl9617c/generic/packages/packages.adb"
           fi
 
+      - name: Select WiFi RFE54 profile
+        env:
+          FEM_PROFILE: ${{ inputs.fem_profile }}
+          WRT: ${{ github.workspace }}/wrt
+          ASSETS: ${{ github.workspace }}
+        run: |
+          set -e
+          DST="$WRT/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54"
+          [ -d "$DST" ] || { echo "::error::rootfs overlay 缺 RFE54 目录"; exit 1; }
+          case "$FEM_PROFILE" in
+            yh1570)
+              echo "FEM_PROFILE=yh1570 (OEM PT1570 v52 default, no change)"
+              ;;
+            ponwrt085)
+              SRC="$ASSETS/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54_PONWRT085"
+              [ "$(find "$SRC" -name '*.txt' | wc -l)" = 26 ] \
+                || { echo "::error::RFE54_PONWRT085 profile 不完整"; exit 1; }
+              cp -a "$SRC"/. "$DST/"
+              grep -q 'version = 51' "$DST/RTK66587_BPF/PHY_REG_GAIN.txt" \
+                || { echo "::error::ponwrt085 profile 不是 v51 标定"; exit 1; }
+              echo "FEM_PROFILE=ponwrt085 (PonWRT 0.8.5 verified v51 full set, 26 tables)"
+              ;;
+            generic)
+              SRC="$ASSETS/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54/RTK66587_BPF_GENERIC"
+              [ "$(find "$SRC" -name '*.txt' | wc -l)" = 12 ] \
+                || { echo "::error::RTK66587_BPF_GENERIC 回滚目录不完整"; exit 1; }
+              cp -a "$SRC"/. "$DST/RTK66587_BPF/"
+              echo "FEM_PROFILE=generic (upstream v51 rollback, FEM subdir only)"
+              ;;
+            *)
+              echo "::error::未知 fem_profile=$FEM_PROFILE"; exit 1
+              ;;
+          esac
+          echo "FEM_PROFILE_SELECTED=$FEM_PROFILE"
+
       - name: Patch upstream packages (factory extraction)
         env:
           ASSETS: ${{ github.workspace }}
@@ -382,6 +441,28 @@ jobs:
           ASSETS: ${{ github.workspace }}
           WRT: ${{ github.workspace }}/wrt
         run: bash "$GITHUB_WORKSPACE/scripts/overlay-wifi-driver.sh"
+
+      # 2026-11-15：把 0.8.5 的功率限制位修复 + wifi-scripts txpower ucode
+      # 修复落到编译树。驱动由 overlay 步骤整套复制，这里再做一次源码级
+      # 断言，防止资产被误改回旧版（旧版会额外套厂商 TXPWR_LMT 表压功率）。
+      - name: Apply PonWRT 0.8.5 TX power fix (driver + wifi-scripts)
+        if: ${{ inputs.wifi_diag != true }}
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: |
+          set -e
+          bash "$ASSETS/scripts/apply-ponwrt-txpower-fixes.sh"
+          D="$WRT/target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap"
+          grep -q "TYFZA1's original power_limit MIB defaults to 0" "$D/power-tables.c" \
+            || { echo "::error::overlay 后的驱动缺 0.8.5 功率限制修复"; exit 1; }
+          grep -q 'rtl_ax_update32(io, 0xd208, 0x00300000, 0);' "$D/power-tables.c" \
+            || { echo "::error::0xd208 厂商限制位未清零"; exit 1; }
+          grep -q 'rtl_ax_update32(io, 0xd21c, 0x00040000, 0);' "$D/power-tables.c" \
+            || { echo "::error::0xd21c 厂商限制位未清零"; exit 1; }
+          ! grep -q '0x00300000, 0x00300000' "$D/power-tables.c" \
+            || { echo "::error::旧的 0xd208 置位逻辑残留"; exit 1; }
+          echo "PONWRT085_POWER_FIX_OK=True (power_limit MIB=0, TX no longer capped below by-rate)"
 
       - name: Configure
         working-directory: wrt
@@ -607,6 +688,7 @@ jobs:
         working-directory: wrt
         env:
           ASSETS: ${{ github.workspace }}
+          FEM_PROFILE: ${{ inputs.fem_profile }}
         run: |
           set -e
           ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
@@ -807,23 +889,61 @@ jobs:
           # ---- 原厂 PT1570 专用 FEM 表 + hostapd 高级参数（2026-11-14）----
           # 资产层：sha256 / 版本注释 / 回滚目录 / 溯源目录 / uci-defaults 全查
           python3 "$ASSETS/scripts/verify-stock-wifi-assets.py"
+          # ---- PonWRT 0.8.5 功率限制位修复 + 射频表 profile（2026-11-15）----
+          python3 "$ASSETS/scripts/verify-ponwrt085-wifi.py"
           WFW="$ROOT/lib/firmware/realtek/tyfza1"
-          # 镜像内默认表必须是 RTL9617C v52 标定，不能是上游通用 v51
-          grep -q 'version = 52-for 17C' \
-            "$WFW/rtl8852ce/RFE54/RTK66587_BPF/PHY_REG_GAIN.txt" \
-            || { echo "::error::镜像内 5G FEM 表不是原厂 PT1570/17C v52 版"; exit 1; }
-          for f in PHY_REG.txt PHY_REG_GAIN.txt TXPWR_ByRate.txt; do
-            cmp -s "$ASSETS/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54/RTK66587_BPF/$f" \
-                  "$WFW/rtl8852ce/RFE54/RTK66587_BPF/$f" \
-              || { echo "::error::镜像内 5G FEM 表 $f 与原厂资产不一致"; exit 1; }
-          done
+          # 0.8.5 驱动修复必须真的进了编译树（源码不进 rootfs，只能查 build tree）
+          PT="target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap/power-tables.c"
+          grep -q "TYFZA1's original power_limit MIB defaults to 0" "$PT" \
+            || { echo "::error::编译树驱动缺 0.8.5 功率限制修复（信号会被厂商表压低）"; exit 1; }
+          grep -q 'rtl_ax_update32(io, 0xd208, 0x00300000, 0);' "$PT" \
+            || { echo "::error::编译树驱动 0xd208 限制位未清零"; exit 1; }
+          ! grep -q '0x00300000, 0x00300000' "$PT" \
+            || { echo "::error::编译树驱动仍有旧置位逻辑"; exit 1; }
+          echo "PONWRT085_POWER_FIX_OK=True"
+          # 0.8.5 完整射频表随镜像带上，供实机 / 后续 profile 切换 A/B 对照
+          [ "$(find "$WFW/rtl8852ce/RFE54_PONWRT085" -name '*.txt' 2>/dev/null | wc -l)" = 26 ] \
+            || { echo "::error::镜像缺 PonWRT 0.8.5 RFE54 profile（26 表）"; exit 1; }
+          grep -q 'version = 51' "$WFW/rtl8852ce/RFE54_PONWRT085/RTK66587_BPF/PHY_REG_GAIN.txt" \
+            || { echo "::error::0.8.5 profile 不是 v51 通用标定"; exit 1; }
+          echo "PONWRT085_PROFILE_OK=True (26 tables)"
+          # 按 dispatch 的 fem_profile 校验镜像内生效的那套默认表
+          A5="$ASSETS/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54"
+          case "$FEM_PROFILE" in
+            yh1570)
+              grep -q 'version = 52-for 17C' \
+                "$WFW/rtl8852ce/RFE54/RTK66587_BPF/PHY_REG_GAIN.txt" \
+                || { echo "::error::yh1570: 镜像内 5G FEM 表不是原厂 17C v52"; exit 1; }
+              for f in PHY_REG.txt PHY_REG_GAIN.txt TXPWR_ByRate.txt; do
+                cmp -s "$A5/RTK66587_BPF/$f" "$WFW/rtl8852ce/RFE54/RTK66587_BPF/$f" \
+                  || { echo "::error::yh1570: 镜像内 5G FEM 表 $f 与原厂资产不一致"; exit 1; }
+              done
+              ;;
+            ponwrt085)
+              grep -q 'version = 51' \
+                "$WFW/rtl8852ce/RFE54/RTK66587_BPF/PHY_REG_GAIN.txt" \
+                || { echo "::error::ponwrt085: 镜像内默认 FEM 表未切到 v51"; exit 1; }
+              for f in PHY_REG.txt PHY_REG_GAIN.txt TXPWR_ByRate.txt; do
+                cmp -s "$A5/RFE54_PONWRT085/RTK66587_BPF/$f" \
+                      "$WFW/rtl8852ce/RFE54/RTK66587_BPF/$f" \
+                  || { echo "::error::ponwrt085: 镜像内 5G FEM 表 $f 与 0.8.5 资产不一致"; exit 1; }
+              done
+              ;;
+            generic)
+              for f in PHY_REG.txt PHY_REG_GAIN.txt TXPWR_ByRate.txt; do
+                cmp -s "$A5/RTK66587_BPF_GENERIC/$f" \
+                      "$WFW/rtl8852ce/RFE54/RTK66587_BPF/$f" \
+                  || { echo "::error::generic: 镜像内 5G FEM 表 $f 与通用回滚版不一致"; exit 1; }
+              done
+              ;;
+          esac
           for d in RTK66587_BPF_YH1570 RTK66587_BPF_GENERIC; do
             [ "$(find "$WFW/rtl8852ce/RFE54/$d" -name '*.txt' 2>/dev/null | wc -l)" = 12 ] \
               || { echo "::error::镜像缺少原厂 FEM 溯源/回滚目录 $d"; exit 1; }
           done
           [ "$(find "$WFW/rtl8192xbe/RFE54/RTC7646" -name '*.txt' 2>/dev/null | wc -l)" = 8 ] \
             || { echo "::error::镜像缺少 2.4G 备选 FEM 表 RTC7646"; exit 1; }
-          echo "STOCK_WIFI_FEM_OK=True (YH1570 17C v52 default, generic kept for rollback)"
+          echo "STOCK_WIFI_FEM_OK=True (profile=$FEM_PROFILE; YH1570/GENERIC/PONWRT085 all shipped)"
 
           [ -x "$ROOT/etc/uci-defaults/96-pt1570-wifi-tuning" ] \
             || { echo "::error::96-pt1570-wifi-tuning 未进镜像或丢了可执行位"; exit 1; }
@@ -902,6 +1022,7 @@ jobs:
         env:
           PUBLISH_PACKAGES: ${{ inputs.publish_packages }}
           DTS_STATUS: ${{ inputs.dts_status }}
+          FEM_PROFILE: ${{ inputs.fem_profile }}
         run: |
           set -e
           OUT="$GITHUB_WORKSPACE/artifact"
@@ -937,6 +1058,10 @@ jobs:
             echo "stock_wifi_rollback=RTK66587_BPF_GENERIC/ (12 tables) + YH1570/ + 2.4G RTC7646/"
             echo "stock_wifi_cfg=LDPC/STBC/VHT+HE beamforming (hostapd.uc capability-gated), country=CN"
             echo "stock_wifi_cal=TYFC0003 per-board calibration from factory 0x2000/0x3000 via S09 tyfza1-factory"
+            echo "fem_profile=$FEM_PROFILE (yh1570=oem v52 / ponwrt085=v0.8.5 v51 / generic=upstream v51)"
+            echo "ponwrt085_power_fix=power_limit MIB=0; 0xd208/0xd21c vendor limit bits cleared (was capping TX below by-rate)"
+            echo "ponwrt085_txpower_ucode=wifi-scripts mac80211.sh txpower!=null + setup_failed on iw failure"
+            echo "ponwrt085_profile=RFE54_PONWRT085/ (26 v51 tables from v0.8.5-beta sysupgrade.bin, dispatch fem_profile to switch)"
           } > "$OUT/BUILD_INFO.txt"
 
           if [ "${DTS_STATUS:-experimental}" != "verified" ]; then
@@ -1029,6 +1154,7 @@ jobs:
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
             本版 WiFi 整合：5G FEM 表换成原厂 PT1570 专用 `RTK66587_BPF_YH1570`（RTL9617C v52 标定，通用 v51 另存 `RTK66587_BPF_GENERIC/` 可回滚）；补上原厂 hostapd/MIB 的 LDPC、STBC、VHT/HE beamforming 配置（hostapd 按驱动能力自动回退），country 保持 CN；2.4G 默认表未动，另带原厂 `RTC7646/` 备选。
+            本版 PonWRT 0.8.5 信号修复（对齐原厂）：开源驱动旧版把 SCC MAC0 的 `0xd208`/`0xd21c` 置位，额外启用厂商 `TXPWR_LMT`/`TXPWR_LMT_RU` 限制表，把发射功率压到单板 by-rate 标定值以下 —— 这是「WiFi 信号明显弱于原厂」的总闸。现按 0.8.5 与原厂 `power_limit MIB=0` 把这些位清零；by-rate 值本身已含 Linux/regdb 上限，不放宽合规。同时移植 0.8.5 的 wifi-scripts `txpower!=null` / 设置失败上报修复。0.8.5 是独立双 PE 驱动 + 36 个内核补丁，与本机单 PE1 驱动不兼容，未整套替换；其 26 张实机 v51 射频表随镜像放在 `RFE54_PONWRT085/`，编译时用 `fem_profile` 选 `yh1570`（默认）/ `ponwrt085` / `generic` 做 A/B 对照。
             同批 packages 见 `PT1570-R10-4GE-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
             ⚠️ 刷机前必须已完成新 U-Boot（rtk_boot / 读 fit 卷）确认、factory 导入与卷表重建，详见方案文档。
             ⚠️ 刷机前 U-Boot env 应保持编译默认（pt1570.env 无 bootargs）；清空动作执行一次即可。
