@@ -1,0 +1,83 @@
+# PT1570-H10-CU 联通版（youhua,pt1570-h10-cu）独立云编译配置基线。
+#
+# 与 PT1500-H10 电信版 2.5G 的关键差异：本机多了双 PCIe WiFi6，
+# 网口同为 1x2.5GE + 3xGE（外置 RTL8221B），DTS 用上游 2p5g 基线。
+# （实机 PCIe 10ec:c852 / 10ec:0192，rtk_wifi6 + cfg80211，phy0/phy1），
+# 所以必须带 R10 那套 WiFi AP 驱动 / 固件 / 无线配置。
+# 之前 DORMANT 资产里「H10 无 WiFi」的判断只对 PT1500-H10 2.5G 成立，
+# 已按 2026-11-14 联通机真机实测推翻。
+#
+# 其余沿用 R10 / PT1500-H10 已验证基线：北大镜像 apk 源 / 公钥 / argon /
+# 中文 LuCI / tailscale 三件套；统一 UBI（factory 8 MiB + fit + rootfs_data）。
+#
+# 机型符号由 customize-cu.sh 写入，不在这里硬编码。
+
+# ---- target ----
+CONFIG_TARGET_rtl9617c=y
+CONFIG_TARGET_rtl9617c_generic=y
+CONFIG_TARGET_BOARD="rtl9617c"
+CONFIG_TARGET_SUBTARGET="generic"
+CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a55"
+
+# ---- 统一 UBI / FIT 方案必需 ----
+# fitblk 提供 /lib/upgrade/fit.sh；platform.sh 用 CI_KERNPART=fit + nand_do_upgrade。
+# uboot-envtools 在此 target 的 host fw_printenv 会挂，由 workflow 强制关闭。
+CONFIG_PACKAGE_fitblk=y
+
+# ---- PON / 平台 ----
+CONFIG_PACKAGE_tyfza1-pon-control=y
+CONFIG_PACKAGE_luci-app-tyfza1-pon=y
+CONFIG_PACKAGE_ubi-utils=y
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_block-mount=y
+
+
+# ---- WiFi6（本机有双 PCIe AP，必须带；PT1500-H10 2.5G 无此项）----
+# 固件 / RFE54 参数表由 cu-h10/fw/files-cu/lib/firmware/realtek/tyfza1/ 注入，
+# 由 R10 已验证的 overlay 逻辑复制到 rootfs。
+CONFIG_PACKAGE_kmod-rtl-ax-ap=y
+CONFIG_PACKAGE_wpad-mbedtls=y
+CONFIG_PACKAGE_wifi-scripts=y
+CONFIG_PACKAGE_wireless-regdb=y
+CONFIG_PACKAGE_iw=y
+# 注意：不显式写 CONFIG_PACKAGE_kmod-cfg80211 —— 空配置 defconfig 会把
+# mediatek 默认机型的 kmod-cfg80211 写成 =y，Configure 的反向断言专门查它；
+# 本平台自带 cfg80211.ko，由 kmod-rtl-ax-ap / wifi-scripts 依赖拉入即可。
+
+# ---- USB / 按键（沿用 R10 基线）----
+CONFIG_PACKAGE_kmod-gpio-button-hotplug=y
+CONFIG_PACKAGE_kmod-usb3=y
+CONFIG_PACKAGE_kmod-usb-storage=y
+CONFIG_PACKAGE_kmod-usb-storage-uas=y
+CONFIG_PACKAGE_kmod-fs-vfat=y
+CONFIG_PACKAGE_kmod-fs-ext4=y
+CONFIG_PACKAGE_kmod-nls-utf8=y
+
+# ---- LuCI / 网络（沿用 R10 基线）----
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_dnsmasq=y
+
+# ---- argon 主题 / 中文（上游 H10 profile 已带 luci-theme-argon + 两个 zh-cn i18n）----
+# luci-app-tyfza1-pon 的 LUCI_DEPENDS 会拉入 luci-theme-argon、
+# luci-i18n-argon-config-zh-cn、luci-mod-network / status / proto-ppp 等。
+# 显式写出便于产物断言与后期合并对照。
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_LUCI_LANG_zh_Hans=y
+
+# ---- 时区 UTC+8 ----
+CONFIG_PACKAGE_zoneinfo-core=y
+CONFIG_PACKAGE_zoneinfo-asia=y
+
+# ---- tailscale 三件套（沿用 R10 用户软件包基线）----
+CONFIG_PACKAGE_tailscale=y
+CONFIG_PACKAGE_luci-app-tailscale-community=y
+CONFIG_PACKAGE_luci-i18n-tailscale-community-zh-cn=y
+CONFIG_PACKAGE_kmod-tun=y

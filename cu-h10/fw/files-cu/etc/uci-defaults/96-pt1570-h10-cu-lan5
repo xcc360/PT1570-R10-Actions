@@ -1,0 +1,50 @@
+#!/bin/sh
+# PT1570-H10-CU（联通版）：把未被 br-lan 收纳的 LAN 口补进去。
+#
+# 本机是 1x2.5GE + 3xGE，2p5g DTS 的 &ni0 把外置 RTL8221B 挂在额外 lane，
+# 驱动可能把它注册成 lan5（上游 97-pt1500-lan5 的注释即如此），也可能按
+# 面板丝印命名成 lan1（02_network 的 2p5g 分支注释）。两种布局都要覆盖：
+#   * board.d/02_network 对 CU 的 board_name（youhua,pt1570-h10-cu）走默认
+#     分支，只把 lan1..lan4 放进 br-lan；
+#   * 97-pt1500-lan5 用 grep /proc/device-tree/compatible 里的
+#     "youhua,pt1500-h10" 门控，CU 的 compatible 不含该串，脚本不会执行。
+# 结果可能是 2.5G 口插线不进桥、拿不到地址。这里按 board_name 门控补一次。
+#
+# 做法：等驱动注册完 netdev，遍历实际存在的 lan[1-5]，把不在桥里的补进去。
+# 已带 lan1..lan4 的默认布局下最多补 lan5；若 2.5G 口就叫 lan1，则什么都不做。
+# 幂等、不覆盖用户自定义、不碰 WAN（pon0 不匹配 lan[0-9]）。
+
+[ "$(board_name)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+# 驱动可能晚于 uci-defaults 注册 netdev（等 PHY），最多等 15s
+i=0
+while [ "$i" -lt 15 ]; do
+	[ -e /sys/class/net/lan5 ] && break
+	i=$((i + 1))
+	sleep 1
+done
+
+# 找到真正的桥设备段（不假设 @device[0]，95 脚本可能已新增 pon0.1101）
+br=""
+j=0
+while uci -q get "network.@device[$j].type" >/dev/null; do
+	[ "$(uci -q get "network.@device[$j].type")" = "bridge" ] && { br="$j"; break; }
+	j=$((j + 1))
+done
+[ -n "$br" ] || exit 0
+
+ports=$(uci -q get "network.@device[$br].ports")
+changed=0
+for n in 1 2 3 4 5; do
+	dev="lan$n"
+	[ -e "/sys/class/net/$dev" ] || continue
+	case " $ports " in
+		*" $dev "*) continue ;;
+	esac
+	uci -q add_list "network.@device[$br].ports=$dev"
+	changed=1
+	logger -t pt1570-h10-cu-lan "added $dev to br-lan"
+	done
+
+[ "$changed" = "1" ] && uci -q commit network
+exit 0

@@ -1,0 +1,42 @@
+# PT1570-R10 默认无线配置（随固件出厂，disabled=0 直接可用）
+#
+# 两颗 Realtek 射频：
+#   radio0 = RTL8852CE（PCIe0，5GHz，HE80）
+#   radio1 = RTL8192XBE（PCIe1，2.4GHz，HE20）
+# path 与内核枚举顺序一致；换固件或换 U-Boot 版型后如果 phy 顺序变了，
+# 可以用 `wifi config` 重新生成，或按 `ls /sys/class/ieee80211/*/device` 核对。
+#
+# 默认开放式（无密码），刷入后请到 LuCI「网络 → 无线」自行设置 WPA2/WPA3 密码。
+# 这是 conffile，sysupgrade 会保留，不会被固件升级覆盖。
+
+config wifi-device 'radio0'
+	option type 'mac80211'
+	option path 'soc/f4325000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
+	option band '5g'
+	option channel '36'
+	option htmode 'HE80'
+	option country 'CN'
+	option disabled '0'
+
+config wifi-iface 'default_radio0'
+	option device 'radio0'
+	option network 'lan'
+	option mode 'ap'
+	option ssid 'PT1570-R10'
+	option encryption 'none'
+
+config wifi-device 'radio1'
+	option type 'mac80211'
+	option path 'soc/f4326000.pcie/pci0001:00/0001:00:00.0/0001:01:00.0'
+	option band '2g'
+	option channel '1'
+	option htmode 'HE20'
+	option country 'CN'
+	option disabled '0'
+
+config wifi-iface 'default_radio1'
+	option device 'radio1'
+	option network 'lan'
+	option mode 'ap'
+	option ssid 'PT1570-R10'
+	option encryption 'none'

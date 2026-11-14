@@ -1,0 +1,258 @@
+# 联通版 PT1570-H10-CU 专用 U-Boot（Realtek Taurus SPI-NAND loader 重打包）
+#
+# 为什么需要独立 workflow：
+#   上游 lyq1996/rtl9617c-uboot 的 PT1570-H10-CT 板级定义已是 2P5G
+#   （youhua-pt1570-h10-ct-2p5g + desc-2p5g.o，.ports="2.5GE + 3xGE"），
+#   其 release 产物基于电信版 stock-mtd0 打包。实测联通版与电信版的差异：
+#     * boot 分区 0x0-0x40000 是 GPT 分区表，磁盘/分区 GUID 每机唯一（57 字节不同）；
+#     * FIP 里的 BL2 差 111770 字节、BL31 差 12203 字节（不同编译版本，含 DDR 参数）；
+#     * pack_boot.py 的 verify 明确要求「GPT 区 / BL2 / BL31 必须与 stock 逐字节一致」。
+#   直接把电信版 .boot.bin 刷进联通机，这些区域全被覆盖 —— 这就是「刷不进去」的根因。
+#
+# 本 workflow 的做法：
+#   用本机备份的联通 mtd0-boot.bin 作 stock（cu-h10/uboot/stocks/...），
+#   上游 tools/release 会原样保留 GPT / BL2 / BL31，只把 BL33 换成开源 U-Boot
+#   并重新生成自洽的 TBBR 证书链，产出可直接刷 mtd0 的 2 MiB boot 镜像。
+#
+# 配套：
+#   * CU defconfig 把 factory 卷设为 8 MiB（上游 CT-2P5G 默认 64 KiB 会让
+#     OpenWrt DTS 的 fpga-image@10000 越界），与 PT1500-H10 电信版实践一致；
+#   * 本机联网口为 1x2.5GE + 3xGE，BL33 沿用 CT-2P5G 板级描述；
+#     已失效的 CONFIG_TARGET_..._4GE 符号会让编译直接失败；
+#   * 固件由 build-ponwrt-pt1570-h10-cu.yml 产出，两者配套使用。
+#
+# ⚠️ stock 与这台设备绑定（GPT GUID 每机唯一）。换机需重新备份 mtd0 并更新
+#    boards/*.json 的 stock_sha256 与 stocks/.../stock-mtd0.bin.b64。
+name: Build U-Boot PT1570-H10-CU (Unicom)
+
+on:
+  workflow_dispatch:
+    inputs:
+      uboot_ref:
+        description: 'lyq1996/rtl9617c-uboot 的 ref（默认锁定已核对的 CT-2P5G 树）'
+        required: false
+        default: '4a49540219dfbcd0edd3badb79f3a5a5bd363574'
+      test_only:
+        description: '只做注入与静态校验，不编译 BL33'
+        required: false
+        type: boolean
+        default: false
+      create_release:
+        description: '编译成功后创建 Release 附上 boot 镜像'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: uboot-pt1570-h10-cu-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BOARD: youhua-pt1570-h10-cu-2p5g
+  STOCK_SHA256: 2c07fb9e3271b885eff0c2d9a708cfa321ff8262c8d733ae0636f1346669b42f
+
+jobs:
+  build:
+    name: U-Boot / RTL9617C / PT1570-H10-CU
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout assets
+        uses: actions/checkout@v4
+
+      - name: Guard CU-only assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$GITHUB_WORKSPACE/cu-h10/uboot"
+          for f in boards/youhua-pt1570-h10-cu-2p5g.json \
+                   defconfig/youhua-pt1570-h10-cu-2p5g_defconfig \
+                   stocks/youhua-pt1570-h10-cu-2p5g/stock-mtd0.bin.b64 \
+                   tools/verify_cu_boot.py; do
+            [ -f "$A/$f" ] || { echo "::error::缺 CU U-Boot 资产 $f"; exit 1; }
+          done
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["board"]=="youhua-pt1570-h10-cu-2p5g"; assert d["defconfig"]=="youhua-pt1570-h10-cu-2p5g_defconfig"; assert d["stock_sha256"]=="2c07fb9e3271b885eff0c2d9a708cfa321ff8262c8d733ae0636f1346669b42f"; print("  OK   board.json")' "$A/boards/youhua-pt1570-h10-cu-2p5g.json"
+          grep -q 'CONFIG_RTK_FACTORY_SIZE=0x800000' "$A/defconfig/youhua-pt1570-h10-cu-2p5g_defconfig" \
+            || { echo "::error::CU defconfig 的 factory 卷不是 8 MiB"; exit 1; }
+          # stock 必须是这台联通机的原始 mtd0，不能误用电信版
+          mkdir -p "$RUNNER_TEMP/cu"
+          base64 -d "$A/stocks/youhua-pt1570-h10-cu-2p5g/stock-mtd0.bin.b64" > "$RUNNER_TEMP/cu/stock-mtd0.bin"
+          SZ=$(stat -c%s "$RUNNER_TEMP/cu/stock-mtd0.bin")
+          [ "$SZ" = 2097152 ] || { echo "::error::stock 不是 2 MiB，实为 $SZ"; exit 1; }
+          SHA=$(sha256sum "$RUNNER_TEMP/cu/stock-mtd0.bin" | cut -d' ' -f1)
+          [ "$SHA" = "$STOCK_SHA256" ] || { echo "::error::stock sha256 不符：$SHA"; exit 1; }
+          echo "  OK   stock-mtd0.bin 2097152 B sha256=$SHA（联通原厂备份）"
+          python3 -c '
+          import struct,sys
+          d=open(sys.argv[1],"rb").read()
+          assert d[0x40000:0x40008].hex()=="010064aa78563412", "FIP ToC magic 不对"
+          assert d[0x100000:0x100008].hex()=="010064aa78563412", "第二 FIP 槽 magic 不对"
+          assert d[0x200:0x208]==b"EFI PART", "GPT 头不对"
+          print("  OK   双 FIP 槽 + GPT 头（联通 stock 结构正确）")
+          ' "$RUNNER_TEMP/cu/stock-mtd0.bin"
+
+      - name: Install build dependencies
+        if: ${{ !inputs.test_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc make bc bison flex swig device-tree-compiler \
+            xz-utils gzip openssl libssl-dev \
+            python3 python3-cryptography python3-yaml cpio file
+          echo "  OK   toolchain: $(aarch64-linux-gnu-gcc --version | head -1)"
+
+      - name: Clone upstream U-Boot
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.uboot_ref || '4a49540219dfbcd0edd3badb79f3a5a5bd363574' }}"
+          U="$RUNNER_TEMP/uboot"
+          git init -q "$U"
+          git -C "$U" remote add origin https://github.com/lyq1996/rtl9617c-uboot.git
+          if ! git -C "$U" fetch -q --depth=1 origin "$REF"; then
+            echo "ERROR: 按 uboot_ref 拉取失败（CU 版不接受漂移的 main）" >&2
+            exit 1
+          fi
+          git -C "$U" checkout -q FETCH_HEAD
+          echo "UBOOT_DIR=$U" >> "$GITHUB_ENV"
+          echo "  HEAD = $(git -C "$U" rev-parse HEAD)"
+
+      - name: Verify upstream release toolchain shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          U="$RUNNER_TEMP/uboot"
+          for f in build.sh tools/release/pack_boot.py tools/release/build_bl33.sh \
+                   tools/release/boards/youhua-pt1570-h10-ct-2p5g.json \
+                   configs/youhua-pt1570-h10-ct-2p5g_defconfig \
+                   board/youhua/pt1570-h10-ct/pt1570-h10-ct.env \
+                   board/youhua/pt1570-h10-ct/desc-2p5g.c \
+                   arch/arm/dts/rtl9617c-youhua-pt1570-h10-ct-2p5g.dts \
+                   tools/release/tf-a/tools/fiptool/Makefile \
+                   tools/release/tf-a/tools/cert_create/Makefile; do
+            [ -f "$U/$f" ] || { echo "::error::上游缺 $f（版本不兼容？）"; exit 1; }
+          done
+          grep -q 'CONFIG_RTK_FACTORY_SIZE=0x10000' "$U/configs/youhua-pt1570-h10-ct-2p5g_defconfig" \
+            || echo "::warning::上游 CT-2P5G defconfig 的 factory 尺寸已变，CU defconfig 请复核"
+          grep -q 'nt_fw' "$U/tools/release/boards/youhua-pt1570-h10-ct-2p5g.json" \
+            || { echo "::error::上游 board JSON 缺 FIP UUID 定义"; exit 1; }
+          echo "  OK   上游 release 工具链与 CT-2P5G 板级定义齐全"
+
+      - name: Inject CU board definition / stock / defconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          U="$RUNNER_TEMP/uboot"
+          A="$GITHUB_WORKSPACE/cu-h10/uboot"
+          cp "$A/boards/youhua-pt1570-h10-cu-2p5g.json" "$U/tools/release/boards/"
+          cp "$A/defconfig/youhua-pt1570-h10-cu-2p5g_defconfig" "$U/configs/"
+          mkdir -p "$U/tools/release/stocks/youhua-pt1570-h10-cu-2p5g"
+          cp "$RUNNER_TEMP/cu/stock-mtd0.bin" \
+             "$U/tools/release/stocks/youhua-pt1570-h10-cu-2p5g/stock-mtd0.bin"
+          # 断言：CU 与 CT 的 FIP 几何 / UUID 完全一致，只有 stock 与 defconfig 不同
+          python3 - "$U" <<'PY'
+          import json, sys, pathlib
+          u = pathlib.Path(sys.argv[1]) / 'tools/release/boards'
+          ct = json.loads((u / 'youhua-pt1570-h10-ct-2p5g.json').read_text())
+          cu = json.loads((u / 'youhua-pt1570-h10-cu-2p5g.json').read_text())
+          assert ct['layout'] == cu['layout'], 'CU/CT FIP 几何不一致'
+          assert ct['fip_uuids'] == cu['fip_uuids'], 'CU/CT FIP UUID 不一致'
+          assert ct['bl33_budget'] == cu['bl33_budget']
+          assert cu['stock_sha256'] != ct['stock_sha256'], 'stock 摘要不能与电信版相同'
+          print('  OK   FIP 几何/UUID 与上游一致，stock 为联通专用')
+          PY
+          echo "  OK   CU 资产注入完成"
+
+      - name: Static dry-run (test_only)
+        if: ${{ inputs.test_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          U="$RUNNER_TEMP/uboot"
+          bash -n "$U/build.sh"
+          bash -n "$U/tools/release/build_bl33.sh"
+          python3 -m py_compile "$U/tools/release/pack_boot.py" \
+            "$GITHUB_WORKSPACE/cu-h10/uboot/tools/verify_cu_boot.py"
+          echo "  TEST_ONLY_OK=True（未编译 BL33）"
+
+      - name: Build BL33 (open-source U-Boot)
+        if: ${{ !inputs.test_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/uboot"
+          ./build.sh "$BOARD" bl33
+          BL33="$RUNNER_TEMP/uboot/output/$BOARD/bl33.bin"
+          [ -s "$BL33" ] || { echo "::error::bl33.bin 未生成"; exit 1; }
+          echo "  OK   bl33.bin $(stat -c%s "$BL33") B"
+
+      - name: Pack signed boot image (CU stock)
+        if: ${{ !inputs.test_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          U="$RUNNER_TEMP/uboot"
+          cd "$U"
+          ./build.sh "$BOARD" pack
+          ./build.sh "$BOARD" verify
+          echo "  OK   pack_boot.py 自带校验通过"
+
+      - name: Verify CU provenance
+        if: ${{ !inputs.test_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          U="$RUNNER_TEMP/uboot"
+          IMG="$U/output/$BOARD/$BOARD.boot.bin"
+          STK="$U/tools/release/stocks/$BOARD/stock-mtd0.bin"
+          python3 "$GITHUB_WORKSPACE/cu-h10/uboot/tools/verify_cu_boot.py" \
+            "$U/tools/release/boards/$BOARD.json" "$IMG" "$STK"
+          # 产物尺寸 / 双槽 / manifest 复核
+          [ "$(stat -c%s "$IMG")" = 2097152 ] || { echo "::error::boot.bin 尺寸不对"; exit 1; }
+          [ "$(stat -c%s "$U/output/$BOARD/$BOARD.fip.bin")" = 786432 ] \
+            || { echo "::error::fip.bin 不是 0xC0000"; exit 1; }
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("  OK   manifest stock=%s bl33=%s B"%(d["stock"]["sha256"][:12],d["bl33"]["size"]))' \
+            "$U/output/$BOARD/$BOARD.manifest.json"
+
+      - name: Collect artifacts
+        if: ${{ !inputs.test_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          U="$RUNNER_TEMP/uboot"
+          O="$GITHUB_WORKSPACE/output-cu-uboot"
+          mkdir -p "$O"
+          cp "$U/output/$BOARD/$BOARD.boot.bin" "$O/pt1570-h10-cu-uboot-boot.bin"
+          cp "$U/output/$BOARD/$BOARD.fip.bin"  "$O/pt1570-h10-cu-uboot-fip.bin"
+          cp "$U/output/$BOARD/$BOARD.manifest.json" "$O/pt1570-h10-cu-uboot-manifest.json"
+          sha256sum "$O"/* | tee "$O/SHA256SUMS"
+          echo "=== 刷机提示 ==="
+          echo "  1) boot.bin = 2 MiB，写 mtd0（boot 分区）"
+          echo "  2) fip.bin  = 0xC0000，BL2 Xmodem 'F' 串口救砖用"
+          echo "  3) 首次启动按住 RESET 进 Web 恢复页（默认 192.168.0.1 / DHCP）"
+          echo "  4) 恢复页依次：恢复默认 env → 重建 UBI → 导入 8 MiB factory → 刷 sysupgrade.itb"
+
+      - name: Upload artifacts
+        if: ${{ !inputs.test_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pt1570-h10-cu-uboot-${{ github.run_number }}
+          path: output-cu-uboot/
+          retention-days: 90
+
+      - name: Create release
+        if: ${{ !inputs.test_only && inputs.create_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="pt1570-h10-cu-uboot-run${{ github.run_number }}"
+          gh release create "$TAG" output-cu-uboot/* \
+            --title "PT1570-H10-CU U-Boot (run ${{ github.run_number }})" \
+            --notes "联通版专用（1x2.5GE + 3xGE）：stock 用本机联通 mtd0 备份，GPT/BL2/BL31 原样保留，仅替换 BL33；BL33 沿用 CT-2P5G 板级描述。factory 卷 8 MiB。"

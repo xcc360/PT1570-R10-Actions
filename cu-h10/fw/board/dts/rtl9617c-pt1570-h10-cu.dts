@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: GPL-2.0-only
+//
+// PT1570-H10-CU（联通版，机型串 PT1570-H10-C）板级 DTS。
+//
+// 硬件事实（2026-11-14 真机 telnet + su 只读采集 + 用户确认）：
+//   * RTL9617C / 256 MiB SPI-NAND / 512 MiB DDR4
+//   * 1x2.5GE + 3xGE LAN：外置 RTL8221B 2.5G PHY
+//     （lsmod: extGphy + rtl8221b；CFG_ID_XGE_PORT_BIT_MAP=0x40，
+//      CFG_ID_GE_PORT_BIT_MAP=0x1F；上游 02_network 的 2p5g 分支亦注明
+//      "NI port 6 is the 2.5G jack, lan2..lan4 = three wired GE jacks"）
+//   * 双 PCIe WiFi6：0000:01:00.0 10ec:c852 / 0001:01:00.0 10ec:0192
+//     （rtk_wifi6 + cfg80211，/sys/class/ieee80211/phy0 + phy1）
+//   * flash 分区与上游 2p5g 基线逐项一致：
+//       boot 2M@0x0 / env 256K@0x280000 / env2 256K@0x2C0000 /
+//       static_conf 256K@0x300000 / ubi_device 0xF5C0000@0x340000
+//   * XGPON（omci_app -ps xgpon1），WAN PPPoE VLAN 1101
+//
+// 统一 UBI 部分（chosen.rootdisk / volname=fit / factory nvmem-layout /
+// fpga-image@10000）全部由 rtl9617c-tyfza1.dtsi 提供；本文件只负责硬件差异。
+//
+// ⚠️ 必须 include 2p5g 板定义，不能用 4ge：
+//    rtl9617c-tyfza1-4ge.dts 只有一个空壳（model/compatible），外置 2.5G PHY
+//    完全没有 &ni0 / &mdio 覆盖，刷进去 2.5G 口不 link、Web 恢复页也可能没网。
+//    rtl9617c-tyfza1-2p5g.dts 提供：
+//      &ni0  realtek,lan-phys = <&phy0 &phy1 &phy2 0 &phy4>;
+//            phys = <&pcie_controls 5>; phy-names = "sgmii";
+//      &mdio phy4: ethernet-phy@7 { realtek,hsgmii; } + 复位/使能 GPIO
+//
+// ⛔ 不要写 /chosen 的 root= 覆盖块 —— R10 run15~run22 实证：显式写
+//    root=/dev/fitblk0 会让刷入态起不来（灯全灭、无 DHCP）。挂根由内核侧
+//    CONFIG_MTD_ROOTFS_ROOT_DEV + fitblk 完成，不需要 bootargs 的 root=。
+//
+// 注意：不要写 /dts-v1/；被 include 的 .dts 已经带了该标记。
+// LED GPIO 沿用上游 2p5g 板定义（天翼 TYFZA1），联通机面板灯序未逐脚核对，
+// 只影响指示灯，不影响网口；由 94-tyfza1-leds 运行时校正。
+
+#include "rtl9617c-tyfza1-2p5g.dts"
+
+/ {
+	model = "Youhua PT1570-H10-CU (RTL9617C UBI, 1x2.5GE + 3xGE + WiFi6)";
+	compatible = "youhua,pt1570-h10-cu", "tianyi,tyfza1-2p5g", "realtek,rtl9617c";
+};
