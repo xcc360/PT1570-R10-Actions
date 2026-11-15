@@ -13,6 +13,7 @@ struct rtl_ax_rx_packet;
 struct ieee80211_sta;
 struct net_device;
 extern bool rtl_ax_datapath_profile;
+extern bool rtl_ax_rfe50_8192xb;
 
 struct rtl_ax_tx *rtl_ax_tx_prepare(struct pci_dev *pdev, const struct rtl_ax_io *io);
 struct device *rtl_ax_tx_dma_device(struct rtl_ax_tx *tx);
