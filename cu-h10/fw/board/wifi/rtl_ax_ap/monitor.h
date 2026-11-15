@@ -569,7 +569,8 @@ static bool rtl_ax_ra_peer(struct rtl_ax_ap *radio, struct ieee80211_sta *sta,
 	if (nss == 1) ht &= 255;
 	/* Stock txsc_amsdu_sta_init permits 10896 bytes for an HE 11K peer. */
 	*caps = BIT(17) | min_t(unsigned int, sta->cur->max_amsdu_len,
-		link->he_cap.has_he && sta->cur->max_amsdu_len >= 11454 ? 10896 : 7935) << 18;
+		link->he_cap.has_he && sta->cur->max_amsdu_len >= 11454 ? 10896 :
+		sta->cur->max_amsdu_len >= 7935 ? 7433 : 3793) << 18;
 	if (link->he_cap.has_he) {
 		const struct ieee80211_sta_he_cap *he = &link->he_cap;
 		rtl_ax_ra_he(command, id, link->supp_rates[radio->band.band] << (band5g ? 4 : 0),
@@ -584,10 +585,21 @@ static bool rtl_ax_ra_peer(struct rtl_ax_ap *radio, struct ieee80211_sta *sta,
 		*rate = 0x100;
 		*caps |= ht | (sgi ? BIT(16) : 0);
 	} else if (link->ht_cap.ht_supported) {
-		rtl_ax_ra_ht20(command, id, link->supp_rates[radio->band.band], ht, sgi);
+		rtl_ax_ra_ht20(command, id,
+			link->supp_rates[radio->band.band] << (band5g ? 4 : 0), ht, sgi, band5g);
 		*rate = 0x80;
 		*caps |= ht | (sgi ? BIT(16) : 0);
-	} else return false;
+	} else {
+		/* Legacy (non-HT) 2.4G b/g peer: register RA instead of returning false. */
+		u16 legacy = link->supp_rates[radio->band.band] << (band5g ? 4 : 0);
+
+		if (!legacy) return false;
+		rtl_ax_ra_legacy(command, id, legacy, band5g);
+		*rate = __ffs(legacy);
+		*caps = BIT(17);
+		bandwidth = 0;
+		nss = 1;
+	}
 	rtl_ax_ra_limit(command, bandwidth, nss, update);
 	*rate |= bandwidth << 16;
 	/* A dynamic-SMPS receiver wakes its other chains after RTS/CTS. */

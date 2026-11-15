@@ -54,19 +54,38 @@ static inline int rtl_ax_ppdu_signal(const u8 *data, unsigned int bytes,
 	return count;
 }
 
-static inline void rtl_ax_ra_ht20(u8 command[16], u8 macid, u16 legacy, u16 ht, bool sgi)
+/* Ported from PonWRT-TYFZA1 0.8.5: a legacy-only (non-HT) 2.4G b/g peer
+ * needs its own RA H2C command. The stock rtl_ax_ra_peer() returned false for
+ * such peers, so firmware RA was never registered (registered=0, rate=0,
+ * ~60% retries). Self-contained: no PE-engine or mac80211-patch dependency. */
+static inline void rtl_ax_ra_legacy(u8 command[16], u8 macid, u16 legacy, bool band5g)
 {
-	u64 mask = (legacy & 0x15) | (u64)(ht & 255) << 12 |
+	u8 mode = band5g || !(legacy & 15) ? 4 : (legacy & 0xff0) ? 6 : 2;
+	u16 mask = legacy & (mode == 2 ? 15 : mode == 4 ? 0xff0 : 0xff5);
+
+	memset(command, 0, 16);
+	command[0] = mode;
+	command[1] = macid;
+	command[2] = 0x10;
+	put_unaligned_le64(mask | BIT_ULL(63), command + 4);
+	command[13] = 0x38;
+	command[15] = band5g ? 0x20 : 0x80;
+}
+
+static inline void rtl_ax_ra_ht20(u8 command[16], u8 macid, u16 legacy, u16 ht, bool sgi,
+	bool band5g)
+{
+	u64 mask = (legacy & (band5g ? 0x10 : 0x15)) | (u64)(ht & 255) << 12 |
 		(u64)(ht >> 8) << 24 | BIT_ULL(63);
 
 	memset(command, 0, 16);
-	command[0] = 0x0e; /* CCK/OFDM/HT, 20 MHz, firmware RA enabled. */
+	command[0] = band5g ? 0x0c : 0x0e; /* 5 GHz excludes CCK; BW updated by ra_limit. */
 	command[1] = macid;
 	command[2] = 0x10 | (sgi ? 0x20 : 0); /* Update all; RSSI unknown, init level0. */
 	command[3] = !!(ht >> 8);
 	put_unaligned_le64(mask, command + 4);
 	command[13] = 0x38; /* Original RFE54 fixed CSI GI/LTF. */
-	command[15] = 0x80; /* Original 8192XB RA debug-register format. */
+	command[15] = band5g ? 0x20 : 0x80; /* Original C/XB report formats. */
 }
 
 static inline void rtl_ax_ra_vht80(u8 command[16], u8 macid, u16 legacy, u16 mcs, bool sgi)

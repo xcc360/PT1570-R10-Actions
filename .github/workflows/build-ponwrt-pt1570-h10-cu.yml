@@ -783,7 +783,11 @@ jobs:
             || { echo "ERROR: PT1570 参考驱动文件不足 60" >&2; exit 1; }
           [ "$(md5sum "$DRV/pe-tx-code.h" | cut -d' ' -f1)" = "7eb49893f43b897bf03fa82ae2323984" ] \
             || { echo "ERROR: pe-tx-code.h 不是已验证的单 PE1 参考版" >&2; exit 1; }
-          echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件"
+          grep -q 'static inline void rtl_ax_ra_legacy' "$DRV/rate.h" \
+            || { echo "ERROR: 2.4G legacy RA 补丁缺失 (rate.h)" >&2; exit 1; }
+          grep -q 'rtl_ax_ra_legacy(command, id, legacy, band5g)' "$DRV/monitor.h" \
+            || { echo "ERROR: 2.4G legacy RA 未接入 rtl_ax_ra_peer (monitor.h)" >&2; exit 1; }
+          echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件 + 2.4G legacy RA 补丁"
           echo "=== 3d. 固件态 有线 + 面板灯回归护栏 ==="
           python3 "$GITHUB_WORKSPACE/cu-h10/fw/scripts/verify-h10-cu-board.py" \
             || { echo "ERROR: H10-CU 板级护栏未通过" >&2; exit 1; }
