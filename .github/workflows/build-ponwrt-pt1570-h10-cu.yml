@@ -449,7 +449,21 @@ jobs:
             || { echo "::error::FEM 表子目录创建失败"; exit 1; }
           case "${FEM_PROFILE:-yh1570}" in
             yh1570)
-              echo "FEM_PROFILE=yh1570 (CU 现有默认表，不改动)"
+              # 表已内联进 rootfs overlay：驱动硬编码读 RFE54/RTK66587_BPF（5G）和
+              # RFE54/RTK66287（2.4G），而 H10 专用表原先放在 RTK66587_BPF_YH1570/、
+              # RFE50_STOCK_2026H10/ 等目录，从未被读到 —— 这是 5G 不可用、2.4G
+              # 极弱的根因。
+              # 2026-11-15 实机：换表前 5G IQK failures=24/40、OFDM CRC_error=25368、
+              # handed_to_mac80211=0（客户端扫不到 SSID、连不上）；换 YH1570 表后
+              # failures=0、VHT/HE 帧正常解出、已能正常关联。
+              cmp -s "$DST/RTK66587_BPF/PHY_REG.txt" \
+                     "$DST/RTK66587_BPF_GENERIC/PHY_REG.txt" \
+                && { echo "::error::5G FEM 表退回通用 RTK66587_BPF（非 H10 专用）"; exit 1; }
+              grep -q '0x02.*0x0000D.*iFEM' "$D2/RadioA.txt" \
+                || { echo "::error::2.4G BASE 表不是 RFE50 iFEM 标定"; exit 1; }
+              grep -q '0xFD.*0x15027' "$D2/RTK66287/RadioA.txt" \
+                || { echo "::error::2.4G FEM 表不是 RFE50 PON_2G（缺 0xFD=0x15027）"; exit 1; }
+              echo "FEM_PROFILE=yh1570 (5G YH1570 BPF 表 + 2.4G RFE50 iFEM 表，内联并断言)"
               ;;
             ponwrt085)
               SRC="$ASSETS/cu-h10/fw/files-cu/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54_PONWRT085"

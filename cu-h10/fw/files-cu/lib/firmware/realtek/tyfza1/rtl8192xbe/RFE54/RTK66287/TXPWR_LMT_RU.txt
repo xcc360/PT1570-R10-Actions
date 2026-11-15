@@ -1,4 +1,4 @@
-//RTK66287_PON
+// PON_2G
 //
 // Format:
 //
