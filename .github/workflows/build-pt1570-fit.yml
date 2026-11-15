@@ -19,6 +19,9 @@
 #
 # Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3（Node 24）。
 # 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
+# 2026-11-15 起按用户要求「暂时不要同步编译 packages 包」停用：
+#   publish_packages 默认改为 false，编译只出固件；Refresh package index 也随之跳过。
+#   恢复方法：把 default 改回 true（或在 dispatch 传 publish_packages=true），kmod 需与固件成对使用。
 
 # 2026-11-14 原厂 WiFi 整合（本机备份 D:\ONT\PT1570-R10\BackUp-原厂 解包对比）：
 #   * 原厂 rtk_wifi6.ko（4.4.140，10.8 MB Realtek SDK）里只出现一个 FEM 名
@@ -94,9 +97,9 @@ on:
         default: false
         type: boolean
       publish_packages:
-        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）'
+        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）；暂时默认关闭，只出固件，需要时手动置 true'
         required: false
-        default: true
+        default: false
         type: boolean
       packages_repo_url:
         description: '可选：自建 packages 静态源根 URL，随固件写入 customfeeds.list'
@@ -1010,7 +1013,7 @@ jobs:
           retention-days: 30
 
       - name: Refresh package index
-        if: ${{ !inputs.test_only }}
+        if: ${{ !inputs.test_only && inputs.publish_packages }}
         working-directory: wrt
         run: |
           make package/index
@@ -1155,7 +1158,7 @@ jobs:
             配置见 Config-final.txt；校验见 sha256sums.txt
             本版 WiFi 整合：5G FEM 表换成原厂 PT1570 专用 `RTK66587_BPF_YH1570`（RTL9617C v52 标定，通用 v51 另存 `RTK66587_BPF_GENERIC/` 可回滚）；补上原厂 hostapd/MIB 的 LDPC、STBC、VHT/HE beamforming 配置（hostapd 按驱动能力自动回退），country 保持 CN；2.4G 默认表未动，另带原厂 `RTC7646/` 备选。
             本版 PonWRT 0.8.5 信号修复（对齐原厂）：开源驱动旧版把 SCC MAC0 的 `0xd208`/`0xd21c` 置位，额外启用厂商 `TXPWR_LMT`/`TXPWR_LMT_RU` 限制表，把发射功率压到单板 by-rate 标定值以下 —— 这是「WiFi 信号明显弱于原厂」的总闸。现按 0.8.5 与原厂 `power_limit MIB=0` 把这些位清零；by-rate 值本身已含 Linux/regdb 上限，不放宽合规。同时移植 0.8.5 的 wifi-scripts `txpower!=null` / 设置失败上报修复。0.8.5 是独立双 PE 驱动 + 36 个内核补丁，与本机单 PE1 驱动不兼容，未整套替换；其 26 张实机 v51 射频表随镜像放在 `RFE54_PONWRT085/`，编译时用 `fem_profile` 选 `yh1570`（默认）/ `ponwrt085` / `generic` 做 A/B 对照。
-            同批 packages 见 `PT1570-R10-4GE-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
+            本轮 `publish_packages=false`，未产出同批 packages；如需配套 kmod / packages.adb，请置 true 重编（kmod 与固件 vermagic 绑定，须成对使用）。
             ⚠️ 刷机前必须已完成新 U-Boot（rtk_boot / 读 fit 卷）确认、factory 导入与卷表重建，详见方案文档。
             ⚠️ 刷机前 U-Boot env 应保持编译默认（pt1570.env 无 bootargs）；清空动作执行一次即可。
             ⚠️ 本固件 bootargs 不含 root=，挂根由内核 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV 完成。
