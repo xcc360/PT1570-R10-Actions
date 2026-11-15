@@ -43,9 +43,16 @@
 # files-h10 的 95-pt1500-h10-wan-default 在首启时自动迁移并补 /24。
 # 调试时三台不要同时接同一网段，按 MAC 绑定网卡区分。
 #
-# 2.5G 口：本机直接用上游 rtl9617c-pt1500-h10-2p5g.dts（已实机验证可用），
-# 它的 ni0 自带 "p6-serdes" reg 资源 + realtek,p6-phy；Configure 段加了
-# 防回退断言，上游 ref 一变导致 P6 SerDes 被删会直接编译失败。
+# 2.5G 口：本机直接用上游 rtl9617c-pt1500-h10-2p5g.dts，ni0 自带
+# "p6-serdes" reg 资源 + realtek,p6-phy；Configure 段加了防回退断言，
+# 上游 ref 一变导致 P6 SerDes 被删会直接编译失败。
+# ⚠️ 2026-11-15 用户实机反馈：前次 2.5G 修复（含 run4）均宣告失败，
+#    不能再把「DTS 带 p6-serdes」等同于「2.5G 已可用」。CU 侧 run4
+#    正是补上该资源后让 rtl_p6_bringup 真跑 QX 复位而把整机启动打死。
+#    上游 HEAD 13ebc89b 的新方向是按 link 速度编程 1G lane
+#    （f74dc1e59646），本锁定 ref 已有 1G SerDes 表但 set_speed 未重载；
+#    该尝试已在 CU workflow 的 p6_mode=attempt1g 里落地，PT1500 暂保留
+#    上游原生 DTS + 防回退断言，等实机结论再统一。
 # 所以本机不需要像 CU 那样补 DTS，也不需要动 U-Boot。
 #
 # Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3。
@@ -78,9 +85,9 @@ on:
         default: false
         type: boolean
       publish_packages:
-        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）'
+        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）；固件/2.5G 稳定前默认关闭，只出固件，需要时手动置 true'
         required: false
-        default: true
+        default: false
         type: boolean
       packages_repo_url:
         description: '可选：自建 packages 静态源根 URL，随固件写入 customfeeds.list'
@@ -429,11 +436,12 @@ jobs:
             || { echo "ERROR: DTS 缺少 fpga-image@10000（factory 8 MiB 布局基线）" >&2; exit 1; }
           echo "  OK   DTS=$DTS board_name=$BOARD_NAME factory=8MiB"
 
-          # ---- 2.5G P6 SerDes 防回退断言（2026-11-15 与 CU 一并核对）----
-          # rtl9617c-xram.c 的 rtl_p6_bringup() 在 !priv->p6_serdes 时直接
-          # return；p6_serdes 只在 ni0 的 reg-names 含 "p6-serdes" 时 ioremap。
-          # 本机上游 DTS 自带这一组，CU 的 tyfza1-2p5g 基线则缺（已单独补）。
-          # 这里锁死，避免以后 source_ref 一变把 2.5G 口悄悄编译没了。
+          # ---- 2.5G P6 SerDes 资产防回退断言 ----
+          # 只保证「资源没被悄悄删掉」，不等于 2.5G 已实机可用：
+          # 2026-11-15 用户反馈前次 2.5G 修复均失败，CU run4 更因补上
+          # p6-serdes 让 QX bringup 真跑而整机起不来（CU 已用
+          # realtek,p6-bringup-off 回退）。1G lane 编程的新尝试见
+          # CU workflow 的 p6_mode=attempt1g。
           UP_DTS="target/linux/rtl9617c/dts/${DTS}.dts"
           for kw in '"p6-serdes"' '0xf550d000' 'realtek,p6-phy' 'realtek,dma-tx' 'realtek,qm-rx'; do
             grep -qF "$kw" "$UP_DTS" \
@@ -757,7 +765,7 @@ jobs:
           retention-days: 30
 
       - name: Refresh package index
-        if: ${{ !inputs.test_only }}
+        if: ${{ !inputs.test_only && inputs.publish_packages }}
         working-directory: wrt
         run: |
           make package/index
@@ -803,7 +811,8 @@ jobs:
             echo "lan_ip=192.168.1.1/24 (三机型统一；首启脚本迁移旧 192.168.2.1)"
             echo "default_wan=pon0.1101 pppoe (XGPON VLAN 1101, PON FE on, 95-pt1500-h10-wan-default)"
             echo "wifi=none (2.5G variant)"
-            echo "p6_serdes=upstream DTS 自带 reg-names p6-serdes + 0xf550d000 + realtek,p6-phy (2.5G 已实机验证；Configure 防回退断言)"
+            echo "p6_serdes=upstream DTS 自带 reg-names p6-serdes + 0xf550d000 + realtek,p6-phy (资产防回退断言；2.5G link 本批次实机未验证，用户反馈前次修复失败)"
+            echo "packages=publish_packages=false（固件/2.5G 稳定前暂不产出同批 packages，减少下载量）"
           } > "$OUT/BUILD_INFO.txt"
 
           case "$PUBLISH_PACKAGES" in
@@ -882,7 +891,8 @@ jobs:
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`（上游原生，未改动）
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
-            同批 packages 见 `PT1500-H10-2P5G-CT-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
+            本轮 `publish_packages=false`，未产出同批 packages（固件/2.5G 稳定前减少下载量；需要时置 true 重编）。
+            ⚠️ 2.5G 口本批次实机未验证：用户反馈前次修复均失败，且 CU run4 因补 `p6-serdes` 触发 QX bringup 整机起不来。上游 HEAD `13ebc89b` 已改为按 link 速度编程 1G lane（`f74dc1e59646`），该尝试先在 CU workflow 的 `p6_mode=attempt1g` 里做实验，PT1500 暂保留上游原生 DTS，等实机结论再统一。
 
             ⚠️ 仅适用于 PT1500-H10 2.5G（youhua,pt1500-h10-2p5g），无 WiFi。
             ⚠️ 刷机前必须已完成：U-Boot Web failsafe 里「重建 UBI」+ 导入 8 MiB factory 镜像。

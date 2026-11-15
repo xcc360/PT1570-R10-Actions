@@ -101,14 +101,20 @@ def main():
     ok(re.search(r'phys\s*=\s*<&pcie_controls\s+5>', t) is not None,
        'SGMII lane phys = <&pcie_controls 5>')
 
-    print('=== 3b. P6 SerDes 资源（2.5G 口能否 link 的总闸，2026-11-15 run3 定位）===')
-    # rtl9617c-xram.c: rtl_p6_bringup() 在 !priv->p6_serdes 时直接 return，
-    # 而 p6_serdes 只在 ni0 的 reg-names 含 "p6-serdes" 时才被 ioremap。
-    # 天翼 2p5g 基线缺这一项 -> QX SerDes 不离开复位 -> 2.5G 口永远不 link。
+    print('=== 3b. P6 SerDes 资源 + boot-safe 逃生开关（2026-11-15 run4 砖版回退）===')
+    # 资产完整性仍锁死：7 项 reg / reg-names 不能回退，2.5G 后续尝试要用。
     ok('"p6-serdes"' in t, 'ni0 reg-names 含 "p6-serdes" 资源名')
     ok('0xf550d000' in t, 'P6 QX SerDes 寄存器窗 0xf550d000 已声明')
     ok('realtek,dma-tx' in t, 'ni0 带 realtek,dma-tx（多口板 PORT_TO_CPU 必需）')
     ok('realtek,qm-rx' in t, 'ni0 带 realtek,qm-rx（P6 共享 CPU0 QM 池）')
+    # run3 -> run4 唯一实质差异就是放开 QX bringup，CU 刷入后整机起不来。
+    # 锁定 ref 的 rtl9617c-xram.c 里 rtl_p6_bringup() / rtl_p6_set_speed()
+    # 开头都检查 realtek,p6-bringup-off；带上它才回到 run3 已验证可启动的行为。
+    # 这一条防的是「以后有人为了试 2.5G 把开关删掉又刷砖」。
+    ok(re.search(r'^\s*realtek,p6-bringup-off\s*;', t, re.M) is not None,
+       'ni0 带 realtek,p6-bringup-off（boot-safe：关掉 QX 复位/15s 等时钟，保证能启动）')
+    ok(t.count('realtek,p6-bringup-off;') == 1,
+       'realtek,p6-bringup-off 只出现一次（p6_attempt 由编译期脚本删除，不在仓库 DTS 里改）')
 
     print('=== 4. CU 专用首启脚本 ===')
     for f in (LAN, LEDS):

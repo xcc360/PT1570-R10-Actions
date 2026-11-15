@@ -120,26 +120,52 @@
 
 &ni0 {
 	/*
-	 * 2026-11-15 run3 实机反馈「2.5G 口不可用」的根因（纯固件/DTS 侧，
-	 * 与 U-Boot 无关）：上游 rtl9617c-xram.c 的 rtl_p6_bringup() 开头是
-	 *   if (!priv->p6_serdes || priv->p6_started) return;
-	 * 而 p6_serdes 只在 ni0 节点的 reg-names 里存在 "p6-serdes" 资源时
-	 * 才会被 ioremap（platform_get_resource_byname(...,"p6-serdes")）。
-	 * 天翼 rtl9617c-tyfza1-2p5g.dts 基线（本文件 include 的那个）只给了
-	 * "ni","xram" 两项，dtsi 的覆盖块也只补到 "dma-lso" —— 于是
-	 * p6_serdes == NULL，QX SerDes 块（0xf550d000）永远不离开复位，
-	 * P6 XGE MAC 起不来，2.5G 口不可能 link。
+	 * 2026-11-15 run4 刷入后「整机起不来」的根因（本次修复的核心）。
 	 *
-	 * 已实机验证可用的 rtl9617c-pt1500-h10-2p5g.dts（同为 addr6 C22
-	 * RTL8221B + P6 XGE MAC）在这里给了完整的 7 项 reg / reg-names，
-	 * 含 "p6-serdes" = <4 0xf550d000 0 0x1000>。本机照抄这一组，
-	 * 并显式带上 realtek,dma-tx / realtek,qm-rx（多口板必需：否则
-	 * GLB_STATIC.PORT_TO_CPU 只把 port0 桥到 CPU，其余口只发不收）。
+	 * run3 能启动（灯正常、可登录，只是无无线 / 2.5G 口不 link），run4
+	 * 与 run3 的 DTS 差异只有本节点新增的 7 项 reg / reg-names 里的
+	 * "p6-serdes" 一项。真机核对锁定 ref 的 rtl9617c-xram.c 后确认：
+	 *
+	 *   rtl_probe():
+	 *     if (platform_get_resource_byname(pdev, IORESOURCE_MEM, "p6-serdes"))
+	 *         priv->p6_serdes = devm_platform_ioremap_resource_byname(...);
+	 *   rtl_engine_start():
+	 *     if (priv->ports[6]) rtl_p6_bringup(priv);       // p6-phy 存在即调用
+	 *   rtl_p6_bringup():
+	 *     if (realtek,p6-bringup-off) return;
+	 *     if (!priv->p6_serdes || priv->p6_started) return;   // run3 在此退出
+	 *
+	 * run3 的 2p5g 基线没有 p6-serdes 资源 -> p6_serdes==NULL -> bringup
+	 * 直接 return，什么也不做（所以能启动，但 2.5G 口不 link）。
+	 * run4 补上该资源后，bringup 真的跑起来：phy_power_on(sgmii) ->
+	 * 脉冲 QXGMII block reset（BIT31，mdelay 50）-> 写 0xf550d000 QX
+	 * SerDes 窗口 -> 加载 /etc/serdes/p6_serdes_sgmii_2g5.txt ->
+	 * for (1501 次 && !clock_ready) mdelay(10) 约 15 秒忙等 ->
+	 * phy_set_speed(SPEED_2500) -> rtl_p6_mac_config() -> rxmux 重配。
+	 * 联通本机是 XGPON + 1x2.5GE + 3xGE + 双 PCIe WiFi6，PON MAC 寄存器
+	 * 窗口 4f5500000~4f550bfff 与 QX SerDes 0xf550d000 紧邻；这套 QX
+	 * 复位 / 15s 忙等 / 2500M 强制编程在 PT1500-H10 上验证过，在 CU 板
+	 * 上没有，直接把启动链打死。
+	 *
+	 * 修复：保留 7 项 reg / reg-names（不回退，2.5G 逻辑与静态护栏都还要
+	 * 用），但显式打开驱动自带的 realtek,p6-bringup-off 逃生开关。该开关
+	 * 在 rtl_p6_bringup() 与 rtl_p6_set_speed() 开头都会被检查，等于把
+	 * 整条 QX 路径（含 link callback）关掉，回到 run3 已验证能启动的行为；
+	 * lan1(2.5G netdev) 仍由 realtek,p6-phy 正常注册，四个 GE 口与
+	 * 其余修复不受影响。
+	 *
+	 * 代价：2.5G 口回到 run3 的「不 link」状态。2.5G 的再次尝试改为
+	 * workflow 的 p6_attempt 开关单独编译验证，默认关闭，不拿启动冒险；
+	 * 上游 lyq1996/rtl9617c-openwrt HEAD 13ebc89b 的新方向是
+	 * 「program the P6 lane for 1G」（按 link 速度加载 1G SerDes 表），
+	 * 本机锁定 ref 已经自带 p6_serdes_sgmii_1g.txt 与 1G mode word，
+	 * 详见 .github/workflows 里的 p6_attempt 实现。
 	 *
 	 * /etc/serdes/p6_serdes_sgmii_{2g5,1g}.txt 由上游 base-files 提供，
 	 * rtl8221b-tyfza1.h 的 match 明确支持本机 C22 ID 0x001cc849
 	 * （(phy_id & 0xfffffff0) == 0x001cc840），所以 PHY 侧无需再改。
 	 */
+	realtek,p6-bringup-off;
 	reg = <4 0xf4300000 0 0x10000>, <0 0xf4500000 0 0x2000>,
 	      <4 0xf7001000 0 0x1000>, <4 0xf432d000 0 0x1000>,
 	      <4 0xf4320098 0 4>, <4 0xf432f000 0 0x1000>,

@@ -55,16 +55,30 @@
 #      lan-phys=<&phy0 &phy1 &phy2 &phy3>，netdev 为
 #      lan1(2.5G) + lan2/lan3/lan4(GE)；96-pt1570-h10-cu-lan5 按真实形态
 #      校正 br-lan（剔除 phantom lan0/lan5）。
-#  17. 2.5G 口仍不 link（2026-11-15 run3 实机反馈）：上游 rtl9617c-xram.c
-#      的 rtl_p6_bringup() 开头就判断 !priv->p6_serdes 直接 return，而
-#      p6_serdes 只在 ni0 的 reg-names 含 "p6-serdes" 时才被 ioremap；
-#      天翼 2p5g 基线只给了 "ni"/"xram"（dtsi 覆盖块补到 "dma-lso"），
-#      于是 QX SerDes 块（0xf550d000）永远不离开复位，P6 2.5G 口不可能
-#      link。CU DTS 按已实机验证的 rtl9617c-pt1500-h10-2p5g.dts 补齐 7 项
-#      reg / reg-names，外加 realtek,dma-tx / realtek,qm-rx。
-#      ⚠️ 这是纯 DTS / 内核驱动侧修复，不需要改 U-Boot：PHY cold init、
-#      GPIO128 reset、HiSGMII、QX SerDes 与 /etc/serdes 表全部在内核里，
-#      BL33 只负责把内核拉起来。
+#  17. run3 2.5G 口不 link / run4 整机起不来（2026-11-15 实机 + 源码核对）：
+#      上游 rtl9617c-xram.c 的 rtl_p6_bringup() 开头判断
+#      !priv->p6_serdes 直接 return；p6_serdes 只在 ni0 的 reg-names 含
+#      "p6-serdes" 时才被 ioremap。run3 的 2p5g 基线缺这一项 -> QX
+#      SerDes 不离开复位 -> 2.5G 口不 link（但能启动）。run4 补上该资源
+#      后，bringup 真的跑起来：phy_power_on -> QXGMII block reset(BIT31)
+#      -> 写 0xf550d000 -> 加载 2g5 表 -> 1501x10ms 约 15s 忙等 ->
+#      phy_set_speed(2500) -> MAC 重配。CU 是 XGPON + 双 PCIe WiFi6，
+#      PON MAC 窗口 4f5500000~4f550bfff 与 QX SerDes 相邻，这套 QX 复位
+#      只在 PT1500-H10 验证过，在 CU 上把启动链打死 —— run4 刷入起不来。
+#      本版：保留 7 项 reg / reg-names 资产，但打开驱动原生的
+#      realtek,p6-bringup-off 逃生开关（rtl_p6_bringup / rtl_p6_set_speed
+#      开头都检查），回到 run3 已验证能启动的行为，先保证机器可用。
+#      2.5G 单独尝试：dispatch 选 p6_mode=attempt1g，由
+#      cu-h10/fw/scripts/apply-p6-mode.py 在编译期删除 bringup-off、
+#      把 15s 忙等降到 300ms、并回移植上游 f74dc1e59646 的 1G lane
+#      编程（按 link 速度重载 p6_serdes_sgmii_1g.txt）。默认 bootsafe，
+#      实验版单独编译、单独刷，不拿启动冒险。
+#      上游 lyq1996/rtl9617c-openwrt HEAD 13ebc89b 与本锁定 ref 20b4cf4
+#      已分叉（ahead 31 / behind 104），HEAD 重写为 rtl9617c.dtsi +
+#      ni/ni_p6.c + 内建 RTL8221B patch + fit_do_upgrade，删除了
+#      tyfza1-*.dtsi，三机型 workflow 全基于旧树，不能直接切 source_ref，
+#      只逐项回移植（详见 apply-p6-mode.py 头部注释）。
+#      ⚠️ 全程纯 DTS / 内核驱动侧，不需要改 U-Boot。
 #  18. WiFi 整合 PonWRT-TYFZA1 v0.8.5（与 R10 run35 同一套）：驱动
 #      power-tables.c 清掉厂商额外功率限制位（0xd208/0xd21c）、
 #      wifi-scripts txpower ucode 修复、0.8.5 实机 26 张 v51 射频表作为
@@ -107,9 +121,9 @@ on:
         default: false
         type: boolean
       publish_packages:
-        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）'
+        description: '同期收集并发布配套 packages（kmod + packages.adb + 公钥）；固件/WiFi 稳定前默认关闭，只出固件，需要时手动置 true'
         required: false
-        default: true
+        default: false
         type: boolean
       packages_repo_url:
         description: '可选：自建 packages 静态源根 URL，随固件写入 customfeeds.list'
@@ -127,11 +141,17 @@ on:
         default: ''
         type: string
       fem_profile:
-        description: '5G 射频参数表 profile：yh1570=CU 现有默认表（默认）；ponwrt085=PonWRT 0.8.5 实机验证的 v51 全套；generic=上游通用 v51 回滚'
+        description: '射频参数表 profile：yh1570=CU 现有默认表（默认）；ponwrt085=0.8.5 实机 v51 全套；generic=上游通用 v51 回滚；h10_2026_stock=本机 2026.6 原厂备份逆向全套（2.4G RFE50/iFEM + 5G RTC7676D）'
         required: false
         default: 'yh1570'
         type: choice
-        options: [yh1570, ponwrt085, generic]
+        options: [yh1570, ponwrt085, generic, h10_2026_stock]
+      p6_mode:
+        description: 'P6 / 2.5G 模式：bootsafe=关闭 QX bringup 保证能启动（默认，2.5G 暂不 link）；attempt1g=回移植上游 1G lane 编程单独尝试 2.5G（实验版，单独刷，可能仍起不来）'
+        required: false
+        default: 'bootsafe'
+        type: choice
+        options: [bootsafe, attempt1g]
 
 permissions:
   contents: write
@@ -350,6 +370,19 @@ jobs:
           WRT: ${{ github.workspace }}/wrt
         run: bash "$GITHUB_WORKSPACE/cu-h10/fw/scripts/apply-board-h10-cu.sh"
 
+      # 2026-11-15 run4 砖版回退：默认 bootsafe（DTS 带
+      # realtek,p6-bringup-off），attempt1g 才在编译期打开 QX bringup +
+      # 回移植上游 1G lane 编程。脚本只改编译树里注入后的 DTS/驱动，
+      # 不动 assets 原件，因此 verify-h10-cu-board.py 的 boot-safe 断言
+      # 在两种模式下都成立。
+      - name: Select P6 / 2.5G mode (boot-safe default)
+        env:
+          P6_MODE: ${{ inputs.p6_mode }}
+          DTS: ${{ env.DTS }}
+          WRT: ${{ github.workspace }}/wrt
+          ASSETS: ${{ github.workspace }}
+        run: python3 "$ASSETS/cu-h10/fw/scripts/apply-p6-mode.py"
+
       - name: Apply custom rootfs files (cu-h10/fw/files-cu)
         env:
           PACKAGES_REPO_URL: ${{ inputs.packages_repo_url }}
@@ -407,6 +440,13 @@ jobs:
           set -e
           DST="$WRT/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54"
           [ -d "$DST" ] || { echo "::error::CU rootfs overlay 缺 RFE54 目录"; exit 1; }
+          # 驱动硬编码按 RFE54/RTK66587_BPF 读 5G、RFE54/RTK66287 读 2.4G。
+          # rootfs overlay 本来就带这两个子目录；这里 mkdir -p 兜底，防止
+          # 将来 assets 漏文件时 cp -f 把表写成同名普通文件而不是覆盖进目录。
+          D2="$WRT/files/lib/firmware/realtek/tyfza1/rtl8192xbe/RFE54"
+          mkdir -p "$DST/RTK66587_BPF" "$D2/RTK66287"
+          [ -d "$DST/RTK66587_BPF" ] && [ -d "$D2/RTK66287" ] \
+            || { echo "::error::FEM 表子目录创建失败"; exit 1; }
           case "${FEM_PROFILE:-yh1570}" in
             yh1570)
               echo "FEM_PROFILE=yh1570 (CU 现有默认表，不改动)"
@@ -427,6 +467,41 @@ jobs:
               cp -a "$SRC"/. "$DST/RTK66587_BPF/"
               echo "FEM_PROFILE=generic (upstream v51 rollback)"
               ;;
+            h10_2026_stock)
+              # 本机 2026.6 新批次原厂 mtd4 备份逆向（不照抄网上拆机图）：
+              #   2.4G = rtl8192xbe/RFE50，RadioA 0x02=0x0000D //iFEM，
+              #          PON_2G/RadioA 0xFD=0x15027 —— 无外置 PA/LNA；
+              #   5G   = rtl8852ce/RFE54，FEM 型号是 RTC7676D 系列
+              #          （RTC7676D / RTC7676D1 / RTC7676D1_2L /
+              #           RTC7676D_08U / RTK66587_DPX），不是天翼 TYFZA1
+              #          的 RTK66587_BPF。
+              # 路径映射与 R10 实机热验证一致：顶层 8 表 -> RFE54/(BASE)，
+              # PON_2G 8 表 -> RFE54/RTK66287/(FEM stage)；驱动硬编码按
+              # RFE54/RTK66287 读 2.4G、RFE54/RTK66587_BPF 读 5G。
+              S2="$ASSETS/cu-h10/fw/files-cu/lib/firmware/realtek/tyfza1/rtl8192xbe/RFE50_STOCK_2026H10"
+              S5="$ASSETS/cu-h10/fw/files-cu/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54_RTC7676D_2026H10"
+              [ "$(find "$S2" -name '*.txt' | wc -l)" = 38 ] \
+                || { echo "::error::本机原厂 2.4G RFE50 表不完整"; exit 1; }
+              [ "$(find "$S5" -name '*.txt' | wc -l)" = 74 ] \
+                || { echo "::error::本机原厂 5G RTC7676D 表不完整"; exit 1; }
+              for n in PHY_REG.txt PHY_REG_GAIN.txt RadioA.txt RadioB.txt \
+                       TXPWR_ByRate.txt TXPWR_LMT.txt TXPWR_LMT_RU.txt TXPWR_TrackTSSI.txt; do
+                cp -f "$S2/$n" "$D2/$n"
+                cp -f "$S2/PON_2G/$n" "$D2/RTK66287/$n"
+              done
+              # 5G：RTC7676D 作为主 FEM 表装进驱动硬编码的 RTK66587_BPF 路径
+              for f in "$S5/RTC7676D"/*.txt; do
+                cp -f "$f" "$DST/RTK66587_BPF/$(basename "$f")"
+              done
+              for f in "$S5"/*.txt; do
+                cp -f "$f" "$DST/$(basename "$f")"
+              done
+              grep -q '0x02.*0x0000D.*iFEM' "$D2/RadioA.txt" \
+                || { echo "::error::本机原厂 2.4G 表不是 iFEM 标定"; exit 1; }
+              grep -q '0xFD.*0x15027' "$D2/RTK66287/RadioA.txt" \
+                || { echo "::error::本机原厂 2.4G PON_2G FEM ID 不对"; exit 1; }
+              echo "FEM_PROFILE=h10_2026_stock (本机 2026.6 原厂 RFE50 iFEM 2.4G + RTC7676D 5G；注意：前端拓扑由驱动硬编码，换表不改 TRSW/RFM，2.4G 前端补丁仍在逆向)"
+              ;;
             *) echo "::error::未知 fem_profile=$FEM_PROFILE"; exit 1 ;;
           esac
           echo "FEM_PROFILE_SELECTED=${FEM_PROFILE:-yh1570}"
@@ -435,6 +510,7 @@ jobs:
         working-directory: wrt
         env:
           ASSETS: ${{ github.workspace }}
+          P6_MODE: ${{ inputs.p6_mode }}
           APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
           APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
         run: |
@@ -556,13 +632,26 @@ jobs:
           grep -q 'gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>' "$INJ" \
             || { echo "ERROR: 注入的 DTS 电源灯 GPIO 不是 gpio0 11 高有效" >&2; exit 1; }
           echo "  OK   注入 DTS：OEM 低号 LED GPIO + phy@6/P6 + lan-phys 四项"
-          # run3 实机「2.5G 口不可用」根因：ni0 缺 "p6-serdes" reg 资源 ->
-          # rtl_p6_bringup() 直接 return，QX SerDes 不离开复位。这里硬断言。
+          # P6 资源完整性（2.5G 后续尝试要用，不能回退）；注意这 4 项
+          # 不再等价于「2.5G 一定 link」—— run4 补齐后反而让 CU 起不来。
           for kw in '"p6-serdes"' '0xf550d000' 'realtek,dma-tx' 'realtek,qm-rx'; do
             grep -qF "$kw" "$INJ" \
-              || { echo "ERROR: 注入的 CU DTS 缺 $kw（2.5G 口不会 link）" >&2; exit 1; }
+              || { echo "ERROR: 注入的 CU DTS 缺 $kw（P6 资产回退）" >&2; exit 1; }
           done
-          echo "  OK   注入 DTS：P6 SerDes 资源齐全（2.5G link 总闸，纯固件修复）"
+          # bootsafe 模式必须带驱动原生逃生开关（run4 砖版根因的修复）。
+          case "${P6_MODE:-bootsafe}" in
+            bootsafe)
+              grep -q 'realtek,p6-bringup-off' "$INJ" \
+                || { echo "ERROR: bootsafe 版注入 DTS 缺 realtek,p6-bringup-off（run4 起不来的根因未修）" >&2; exit 1; }
+              echo "  OK   P6 bootsafe：QX bringup 已关闭，保证能启动"
+              ;;
+            attempt1g)
+              ! grep -q '^[[:space:]]*realtek,p6-bringup-off' "$INJ" \
+                || { echo "ERROR: attempt1g 版仍带 bringup-off（编译期脚本未生效）" >&2; exit 1; }
+              echo "  OK   P6 attempt1g：QX bringup 已打开（实验版，单独刷）"
+              ;;
+            *) echo "ERROR: 未知 p6_mode=${P6_MODE:-bootsafe}" >&2; exit 1 ;;
+          esac
 
           # 上游首启脚本必须齐全（LED / LAN / br-lan MAC），
           # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default
@@ -641,6 +730,7 @@ jobs:
                    "$GITHUB_WORKSPACE/cu-h10/fw/board/dts/rtl9617c-pt1570-h10-cu.dts" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/overlay-wifi-driver.sh" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/verify-h10-cu-board.py" \
+                   "$GITHUB_WORKSPACE/cu-h10/fw/scripts/apply-p6-mode.py" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap/pe-tx-code.h"; do
             [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
           done
@@ -920,7 +1010,7 @@ jobs:
           retention-days: 30
 
       - name: Refresh package index
-        if: ${{ !inputs.test_only }}
+        if: ${{ !inputs.test_only && inputs.publish_packages }}
         working-directory: wrt
         run: |
           make package/index
@@ -969,11 +1059,16 @@ jobs:
             echo "brickfix=ubi_device writable (CU DTS &qspi /delete-property/ read-only)"
             echo "wififix=PT1570 PE1 single-engine driver overlay (60 files, pe-tx-code.h 4076 words)"
             echo "lanfix=phy@6 C22 RTL8221B + realtek,p6-phy; lan1=2.5G, lan2/lan3/lan4=GE; addr7 C45 disabled"
-            echo "p6_serdes=ni0 reg-names p6-serdes + <4 0xf550d000 0 0x1000> + dma-tx/qm-rx (QX SerDes bring-up, 2.5G link 总闸；纯固件/DTS 修复，无需改 U-Boot)"
+            echo "p6_serdes=ni0 reg-names p6-serdes + <4 0xf550d000 0 0x1000> + dma-tx/qm-rx (资产保留)"
+            echo "p6_mode=${{ inputs.p6_mode || 'bootsafe' }} (bootsafe=realtek,p6-bringup-off 关闭 QX bringup 保证启动 / attempt1g=回移植上游 1G lane 编程的实验版)"
+            echo "bootfix=run4 刷入起不来的根因是 ni0 新增 p6-serdes 让 rtl_p6_bringup 真跑 QX 复位+15s 忙等；本版打开驱动原生 realtek,p6-bringup-off 回到 run3 可启动行为"
+            echo "upstream_sync=lyq1996/rtl9617c-openwrt HEAD 13ebc89b 与锁定 ref 20b4cf4 分叉(ahead31/behind104)，HEAD 删除 tyfza1-*.dtsi 重写为 ni/ni_p6.c，不能直接切 ref；已逐项回移植 1G lane 编程，fit_do_upgrade/内建 RTL8221B patch 由 CU 现有等价实现覆盖"
+            echo "h10_2026_stock=/本机 2026.6 原厂备份逆向资产：2.4G RFE50 iFEM(0x02=0x0000D, 0xFD=0x15027) + 5G RTC7676D 系列；fem_profile=h10_2026_stock 可切换"
             echo "ledfix=OEM低号GPIO (电源 gpio0 11H / 网口 0,1,3,4L) + 98-pt1570-h10-cu-leds; U-Boot run#5 同源"
-            echo "fem_profile=${{ inputs.fem_profile || 'yh1570' }} (yh1570=CU 默认表 / ponwrt085=0.8.5 实机 v51 26 表 / generic=v51 回滚)"
+            echo "fem_profile=${{ inputs.fem_profile || 'yh1570' }} (yh1570=CU 默认表 / ponwrt085=0.8.5 实机 v51 26 表 / generic=v51 回滚 / h10_2026_stock=本机 2026.6 原厂全套)"
             echo "ponwrt085_wifi=power_limit MIB=0, 0xd208/0xd21c vendor limit bits cleared, wifi-scripts txpower ucode patched, 0.8.5 v51 profile shipped"
             echo "wifi_diag=/tmp/pt1570-wifi-diag.txt (开机快照：PCIe 枚举 / ieee80211 phy / rtl_ax_ap dmesg / wireless path)"
+            echo "packages=publish_packages=false（固件/WiFi 稳定前暂不产出同批 packages，减少下载量；需要时置 true 重编）"
           } > "$OUT/BUILD_INFO.txt"
 
           case "$PUBLISH_PACKAGES" in
@@ -1052,10 +1147,11 @@ jobs:
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`（2p5g 基线注入）
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
-            本版修复：① ubi_device 被标 read-only → 刷入态黑砖（CU DTS 放开该分区写）；② 上游 rtl_ax_ap PE 引擎坏版 → 两张 WiFi6 卡 probe -110（整套替换为 PT1570 单 PE1 驱动）；③ 固件态面板灯按原厂 mtd4 DTB 覆盖回低号 GPIO，与 U-Boot run#5 同源；④ 2.5G 口/网口4：MDIO phy@6 C22 RTL8221B + realtek,p6-phy + lan-phys 四项，禁用电信 C45 addr7；⑤ **2.5G 口仍不 link 的真正根因**：ni0 缺 `p6-serdes` reg 资源导致 `rtl_p6_bringup()` 直接 return、QX SerDes 不离开复位 —— 按已实机验证的 PT1500-H10-2p5g DTS 补齐 7 项 reg/reg-names（含 `0xf550d000`）+ `realtek,dma-tx`/`qm-rx`。**纯固件/DTS 修复，U-Boot 不需要改**（PHY cold init、GPIO128 reset、HiSGMII、SerDes 表和 P6 XGE MAC 全在内核侧）；⑥ 整合 PonWRT-TYFZA1 0.8.5 WiFi：驱动清掉额外厂商功率限制位、wifi-scripts txpower ucode 修复、0.8.5 实机 26 张 v51 射频表作为 `fem_profile=ponwrt085` 可切换 profile（与原厂备份/自有表 A/B）；⑦ 三机型默认 LAN 统一 `192.168.1.1/24`，首启脚本自动迁移旧 `192.168.18.1`/`192.168.2.1` 并补 /24。
-            ⚠️ run3 刷入后「仍完全无无线」本版尚未有实机 dmesg 佐证，因此新增开机诊断快照：登录后执行 `cat /tmp/pt1570-wifi-diag.txt` 回传，即可区分 PCIe 枚举 / mac80211 phy 注册 / PE 启动哪一段卡住。信号强度若要 A/B，重编时把 `fem_profile` 选 `ponwrt085`。
-            PT1500-H10 2.5G 用的是上游自带、已含 `p6-serdes` 的 DTS，本轮同时加了防回退断言，无需另刷修复版。
-            同批 packages 见 `PT1570-H10-2P5G-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
+            本版修复：① **run4 刷入后整机起不来**：run3→run4 的 DTS 唯一实质差异是 ni0 新增 7 项 reg/reg-names 里的 `p6-serdes`，它让 `rtl_p6_bringup()` 从直接 return 变成真跑 QXGMII 复位 + 写 `0xf550d000` + 约 15s 等时钟 + 2500M 强制编程；这套 QX 路径只在 PT1500-H10 验证过，在联通 XGPON + 双 WiFi6 板上把启动链打死。本版保留资源但打开驱动原生的 `realtek,p6-bringup-off`，回到 run3 已验证能启动的行为。**先保证机器能启动**；② ubi_device 被标 read-only → 刷入态黑砖（CU DTS 放开该分区写）；③ 上游 rtl_ax_ap PE 引擎坏版 → probe -110（整套替换为 PT1570 单 PE1 驱动）；④ 面板灯按原厂 mtd4 DTB 覆盖回低号 GPIO；⑤ 2.5G/网口4 形态：phy@6 C22 RTL8221B + realtek,p6-phy + lan-phys 四项，禁用电信 C45 addr7；⑥ 整合 PonWRT-TYFZA1 0.8.5 WiFi 功率修复 + `fem_profile=ponwrt085`；⑦ 三机型默认 LAN 统一 `192.168.1.1/24`。
+            ⚠️ **2.5G 口本版回到 run3 状态（暂不 link）**。上游 `lyq1996/rtl9617c-openwrt` HEAD `13ebc89b` 与锁定 ref `20b4cf4` 已分叉（ahead 31 / behind 104），HEAD 删除了 `tyfza1-*.dtsi`、重写为 `ni/ni_p6.c` + 内建 RTL8221B patch + `fit_do_upgrade`，直接切 source_ref 会编译失败，所以只逐项回移植：重编时把 `p6_mode` 选 `attempt1g`，会编译期打开 QX bringup、把 15s 忙等降到 300ms、并回移植上游 `f74dc1e59646` 的 1G lane 编程（按 link 速度重载 `p6_serdes_sgmii_1g.txt`）。这是实验版，**单独编译、单独刷，可能仍起不来**，刷前请先确认 bootsafe 版能启动。
+            ⚠️ **H10 2026.6 新批次**：按本机原厂 mtd4 备份逆向（不照抄网上拆机图），确认 2.4G 是 `RFE50/iFEM` 无外置 PA/LNA（`RadioA 0x02=0x0000D`、`0xFD=0x15027`），5G 是 `RFE54` 且 FEM 型号为 `RTC7676D` 系列而非 TYFZA1 的 `RTK66587_BPF`；默认管理页 `192.168.18.1` 只是运营商软件定制，不代表硬件拓扑变化。全套 112 张表已作为 `fem_profile=h10_2026_stock` 随镜像附带，可一键 A/B。注意 R10 实机已证明换表不能改 `TRSW/RFM` 前端值（由 rtl_ax_ap 驱动硬编码 TYFZA1 RFE54/eFEM 拓扑），2.4G 前端 iFEM 补丁仍在逆向，本版不含该补丁。
+            ⚠️ run3 刷入后「仍完全无无线」本版尚未有实机 dmesg 佐证，因此保留开机诊断快照：登录后执行 `cat /tmp/pt1570-wifi-diag.txt` 回传，即可区分 PCIe 枚举 / mac80211 phy 注册 / PE 启动哪一段卡住。
+            本轮 `publish_packages=false`，未产出同批 packages（固件/WiFi 稳定前减少下载量；需要配套 kmod / packages.adb 时置 true 重编，kmod 与固件 vermagic 绑定，须成对使用）。
 
             ⚠️ 仅适用于 PT1570-H10-CU（1x2.5GE + 3xGE + WiFi6，youhua,pt1570-h10-cu）。
             ⚠️ 刷机前必须已完成：U-Boot Web failsafe 里「重建 UBI」+ 导入 8 MiB factory 镜像。
