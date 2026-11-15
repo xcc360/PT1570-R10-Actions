@@ -10,8 +10,9 @@
 #     电信板定义，LED GPIO 与 2.5G PHY 地址都与联通机不符，CU DTS 里逐项覆盖。
 #   * 上游没有 CU profile / DTS / sysupgrade 白名单，由
 #     cu-h10/fw/scripts/apply-board-h10-cu.sh 编译期注入。
-#   * 默认 LAN 192.168.18.1/24（沿用原厂联通管理地址；显式带掩码，
-#     避免命令行改地址丢掩码后 dnsmasq 不分配 IPv4 的坑）。
+#   * 默认 LAN 192.168.1.1/24（三机型统一；显式带掩码，避免命令行改地址
+#     丢掩码后 dnsmasq 不分配 IPv4 的坑。旧 192.168.18.1 / 192.168.2.1
+#     由首启脚本自动迁移过来）。
 #
 # 一次性修掉 PT1570-H10-CU / PT1570-R10 实践里踩过的全部坑：
 #   1. PON FE offload=0 → PPPoE PADS 后单播上行被静默丢弃、LCP 无回应
@@ -54,7 +55,24 @@
 #      lan-phys=<&phy0 &phy1 &phy2 &phy3>，netdev 为
 #      lan1(2.5G) + lan2/lan3/lan4(GE)；96-pt1570-h10-cu-lan5 按真实形态
 #      校正 br-lan（剔除 phantom lan0/lan5）。
-#  以上 15/16 由 cu-h10/fw/scripts/verify-h10-cu-board.py 统一静态护栏，
+#  17. 2.5G 口仍不 link（2026-11-15 run3 实机反馈）：上游 rtl9617c-xram.c
+#      的 rtl_p6_bringup() 开头就判断 !priv->p6_serdes 直接 return，而
+#      p6_serdes 只在 ni0 的 reg-names 含 "p6-serdes" 时才被 ioremap；
+#      天翼 2p5g 基线只给了 "ni"/"xram"（dtsi 覆盖块补到 "dma-lso"），
+#      于是 QX SerDes 块（0xf550d000）永远不离开复位，P6 2.5G 口不可能
+#      link。CU DTS 按已实机验证的 rtl9617c-pt1500-h10-2p5g.dts 补齐 7 项
+#      reg / reg-names，外加 realtek,dma-tx / realtek,qm-rx。
+#      ⚠️ 这是纯 DTS / 内核驱动侧修复，不需要改 U-Boot：PHY cold init、
+#      GPIO128 reset、HiSGMII、QX SerDes 与 /etc/serdes 表全部在内核里，
+#      BL33 只负责把内核拉起来。
+#  18. WiFi 整合 PonWRT-TYFZA1 v0.8.5（与 R10 run35 同一套）：驱动
+#      power-tables.c 清掉厂商额外功率限制位（0xd208/0xd21c）、
+#      wifi-scripts txpower ucode 修复、0.8.5 实机 26 张 v51 射频表作为
+#      fem_profile=ponwrt085 可切换 profile；并加开机诊断快照，用于定位
+#      run3「完全无无线」到底卡在 PCIe 枚举 / phy 注册 / PE 启动哪一段。
+#  19. 三机型默认 LAN 统一 192.168.1.1/24（R10 / H10-CU / PT1500-H10）。
+#  以上 15/16/17/18/19 由 cu-h10/fw/scripts/verify-h10-cu-board.py 与
+#  cu-h10/fw/scripts/verify-cu-wifi-085.py 统一静态护栏，
 #  apply-board-h10-cu.sh 与 workflow preflight 都会调用。
 #
 # factory 卷 8 MiB（与 DTS 的 fpga-image@10000 / 0x800000 对齐），
@@ -108,6 +126,12 @@ on:
         required: false
         default: ''
         type: string
+      fem_profile:
+        description: '5G 射频参数表 profile：yh1570=CU 现有默认表（默认）；ponwrt085=PonWRT 0.8.5 实机验证的 v51 全套；generic=上游通用 v51 回滚'
+        required: false
+        default: 'yh1570'
+        type: choice
+        options: [yh1570, ponwrt085, generic]
 
 permissions:
   contents: write
@@ -350,6 +374,63 @@ jobs:
             echo "custom packages repo: $URL/targets/rtl9617c/generic/packages/packages.adb"
           fi
 
+      # 2026-11-15：把 PonWRT-TYFZA1 v0.8.5 的 WiFi 修复整合进 CU，与 R10
+      # run35 同一套。驱动副本 cu-h10/fw/board/wifi/rtl_ax_ap/power-tables.c
+      # 已同步 0xd208/0xd21c 厂商限制位清零（信号弱的总闸）；这里再补
+      # wifi-scripts 的 txpower ucode 修复，并对编译树做源码级断言。
+      - name: Apply PonWRT 0.8.5 TX power fix (CU driver + wifi-scripts)
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: |
+          set -e
+          bash "$ASSETS/scripts/apply-ponwrt-txpower-fixes.sh"
+          D="$WRT/target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap"
+          for kw in "TYFZA1's original power_limit MIB defaults to 0" \
+                    'rtl_ax_update32(io, 0xd208, 0x00300000, 0);' \
+                    'rtl_ax_update32(io, 0xd21c, 0x00040000, 0);'; do
+            grep -qF "$kw" "$D/power-tables.c" \
+              || { echo "::error::CU 驱动缺 0.8.5 功率修复: $kw"; exit 1; }
+          done
+          ! grep -q '0x00300000, 0x00300000' "$D/power-tables.c" \
+            || { echo "::error::旧的 0xd208 置位逻辑残留"; exit 1; }
+          echo "CU_PONWRT085_POWER_FIX_OK=True"
+
+      # 0.8.5 实机解出的 26 张 v51 射频表随镜像附带，按 dispatch 一键切换；
+      # 默认保持 CU 现有表，便于 A/B 对比原厂备份 / 0.8.5 / 自有固件三套参数。
+      - name: Select WiFi RFE54 profile (CU)
+        env:
+          FEM_PROFILE: ${{ inputs.fem_profile }}
+          WRT: ${{ github.workspace }}/wrt
+          ASSETS: ${{ github.workspace }}
+        run: |
+          set -e
+          DST="$WRT/files/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54"
+          [ -d "$DST" ] || { echo "::error::CU rootfs overlay 缺 RFE54 目录"; exit 1; }
+          case "${FEM_PROFILE:-yh1570}" in
+            yh1570)
+              echo "FEM_PROFILE=yh1570 (CU 现有默认表，不改动)"
+              ;;
+            ponwrt085)
+              SRC="$ASSETS/cu-h10/fw/files-cu/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54_PONWRT085"
+              [ "$(find "$SRC" -name '*.txt' | wc -l)" = 26 ] \
+                || { echo "::error::CU RFE54_PONWRT085 profile 不完整"; exit 1; }
+              cp -a "$SRC"/. "$DST/"
+              grep -q 'version = 51' "$DST/RTK66587_BPF/PHY_REG_GAIN.txt" \
+                || { echo "::error::ponwrt085 profile 不是 v51 标定"; exit 1; }
+              echo "FEM_PROFILE=ponwrt085 (PonWRT 0.8.5 v51 full set, 26 tables)"
+              ;;
+            generic)
+              SRC="$ASSETS/cu-h10/fw/files-cu/lib/firmware/realtek/tyfza1/rtl8852ce/RFE54/RTK66587_BPF_GENERIC"
+              [ "$(find "$SRC" -name '*.txt' | wc -l)" = 12 ] \
+                || { echo "::error::RTK66587_BPF_GENERIC 回滚目录不完整"; exit 1; }
+              cp -a "$SRC"/. "$DST/RTK66587_BPF/"
+              echo "FEM_PROFILE=generic (upstream v51 rollback)"
+              ;;
+            *) echo "::error::未知 fem_profile=$FEM_PROFILE"; exit 1 ;;
+          esac
+          echo "FEM_PROFILE_SELECTED=${FEM_PROFILE:-yh1570}"
+
       - name: Configure
         working-directory: wrt
         env:
@@ -475,6 +556,13 @@ jobs:
           grep -q 'gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>' "$INJ" \
             || { echo "ERROR: 注入的 DTS 电源灯 GPIO 不是 gpio0 11 高有效" >&2; exit 1; }
           echo "  OK   注入 DTS：OEM 低号 LED GPIO + phy@6/P6 + lan-phys 四项"
+          # run3 实机「2.5G 口不可用」根因：ni0 缺 "p6-serdes" reg 资源 ->
+          # rtl_p6_bringup() 直接 return，QX SerDes 不离开复位。这里硬断言。
+          for kw in '"p6-serdes"' '0xf550d000' 'realtek,dma-tx' 'realtek,qm-rx'; do
+            grep -qF "$kw" "$INJ" \
+              || { echo "ERROR: 注入的 CU DTS 缺 $kw（2.5G 口不会 link）" >&2; exit 1; }
+          done
+          echo "  OK   注入 DTS：P6 SerDes 资源齐全（2.5G link 总闸，纯固件修复）"
 
           # 上游首启脚本必须齐全（LED / LAN / br-lan MAC），
           # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default
@@ -513,10 +601,19 @@ jobs:
             echo "  OK   ${good}"
           done
 
-          # 默认 LAN 必须是 192.168.18.1/24（显式掩码，DHCPv4 才不会被 /32 掐死）
-          grep -q '192.168.18.1/24' "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/95-pt1570-h10-cu-wan-default" \
-            || { echo "ERROR: WAN 脚本缺 LAN /24 掩码修复" >&2; exit 1; }
-          echo "  OK   LAN 192.168.18.1/24"
+          # 三机型统一默认 LAN 192.168.1.1/24（显式掩码，DHCPv4 才不会被 /32 掐死）
+          grep -qF "uci -q set network.lan.ipaddr='192.168.1.1/24'" \
+            "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/95-pt1570-h10-cu-wan-default" \
+            || { echo "ERROR: 首启脚本未把默认 LAN 统一到 192.168.1.1/24" >&2; exit 1; }
+          grep -qF 'WRT_IP="${WRT_IP:-192.168.1.1}"' \
+            "$GITHUB_WORKSPACE/cu-h10/fw/customize-cu.sh" \
+            || { echo "ERROR: customize-cu.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
+          echo "  OK   LAN 192.168.1.1/24（三机型统一）"
+
+          # 0.8.5 WiFi 整合护栏（驱动功率修复 / 26 张 v51 profile / 诊断脚本）
+          python3 "$ASSETS/cu-h10/fw/scripts/verify-cu-wifi-085.py" \
+            || { echo "ERROR: CU 0.8.5 WiFi 整合护栏未通过" >&2; exit 1; }
+          echo "  OK   CU 0.8.5 WiFi 整合护栏"
 
           echo "===== key config ====="
           grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET)=' .config || true
@@ -866,13 +963,17 @@ jobs:
             echo "factory_image=pt1570-h10-cu-factory.bin (8 MiB, MAC/SN 见本机备份)"
             echo "factory_base_mac=a8:57:ba:53:c7:80"
             echo "factory_pon_sn=YHTCBA53C780"
-            echo "lan_ip=192.168.18.1/24 (原厂联通管理地址；显式掩码，DHCPv4 必需)"
+            echo "lan_ip=192.168.1.1/24 (三机型统一；显式掩码，DHCPv4 必需；首启脚本迁移旧 18.1/2.1)"
             echo "default_wan=pon0.1101 pppoe (XGPON VLAN 1101, PON FE on, 95-pt1570-h10-cu-wan-default)"
             echo "wifi=rtl_ax_ap (2x PCIe WiFi6: 10ec:c852 / 10ec:0192)"
             echo "brickfix=ubi_device writable (CU DTS &qspi /delete-property/ read-only)"
             echo "wififix=PT1570 PE1 single-engine driver overlay (60 files, pe-tx-code.h 4076 words)"
             echo "lanfix=phy@6 C22 RTL8221B + realtek,p6-phy; lan1=2.5G, lan2/lan3/lan4=GE; addr7 C45 disabled"
+            echo "p6_serdes=ni0 reg-names p6-serdes + <4 0xf550d000 0 0x1000> + dma-tx/qm-rx (QX SerDes bring-up, 2.5G link 总闸；纯固件/DTS 修复，无需改 U-Boot)"
             echo "ledfix=OEM低号GPIO (电源 gpio0 11H / 网口 0,1,3,4L) + 98-pt1570-h10-cu-leds; U-Boot run#5 同源"
+            echo "fem_profile=${{ inputs.fem_profile || 'yh1570' }} (yh1570=CU 默认表 / ponwrt085=0.8.5 实机 v51 26 表 / generic=v51 回滚)"
+            echo "ponwrt085_wifi=power_limit MIB=0, 0xd208/0xd21c vendor limit bits cleared, wifi-scripts txpower ucode patched, 0.8.5 v51 profile shipped"
+            echo "wifi_diag=/tmp/pt1570-wifi-diag.txt (开机快照：PCIe 枚举 / ieee80211 phy / rtl_ax_ap dmesg / wireless path)"
           } > "$OUT/BUILD_INFO.txt"
 
           case "$PUBLISH_PACKAGES" in
@@ -951,8 +1052,9 @@ jobs:
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`（2p5g 基线注入）
             布局：factory(8 MiB static) + fit + rootfs_data（统一 UBI 方案），产物 sysupgrade.itb
             配置见 Config-final.txt；校验见 sha256sums.txt
-            本版修复：① ubi_device 被标 read-only → UBI 只读 attach、rootfs_data 建不出 overlay，刷入态黑砖（CU DTS 放开该分区写）；② 上游 rtl_ax_ap PE 引擎坏版 → 两张 WiFi6 卡 probe -110、完全无 WiFi（整套替换为 PT1570 已验证单 PE1 驱动）；③ 固件态面板灯按原厂 mtd4 DTB 覆盖回低号 GPIO（电源灯 gpio0 11 高有效、网口灯 0/1/3/4 低有效），与 U-Boot run#5 同源，并由 98 脚本校正 netdev 绑定 + 电源灯兜底；④ 2.5G 口与网口4 修复：MDIO phy@6 C22 RTL8221B + realtek,p6-phy + lan-phys 四项，禁用电信 C45 addr7，netdev 为 lan1(2.5G)+lan2..lan4(GE)，96 脚本按真实形态校正 br-lan。
-            WiFi 性能调优仍等 PT1570-R10 的实机结果再定方案，本版只保证有线可用与面板灯正确。
+            本版修复：① ubi_device 被标 read-only → 刷入态黑砖（CU DTS 放开该分区写）；② 上游 rtl_ax_ap PE 引擎坏版 → 两张 WiFi6 卡 probe -110（整套替换为 PT1570 单 PE1 驱动）；③ 固件态面板灯按原厂 mtd4 DTB 覆盖回低号 GPIO，与 U-Boot run#5 同源；④ 2.5G 口/网口4：MDIO phy@6 C22 RTL8221B + realtek,p6-phy + lan-phys 四项，禁用电信 C45 addr7；⑤ **2.5G 口仍不 link 的真正根因**：ni0 缺 `p6-serdes` reg 资源导致 `rtl_p6_bringup()` 直接 return、QX SerDes 不离开复位 —— 按已实机验证的 PT1500-H10-2p5g DTS 补齐 7 项 reg/reg-names（含 `0xf550d000`）+ `realtek,dma-tx`/`qm-rx`。**纯固件/DTS 修复，U-Boot 不需要改**（PHY cold init、GPIO128 reset、HiSGMII、SerDes 表和 P6 XGE MAC 全在内核侧）；⑥ 整合 PonWRT-TYFZA1 0.8.5 WiFi：驱动清掉额外厂商功率限制位、wifi-scripts txpower ucode 修复、0.8.5 实机 26 张 v51 射频表作为 `fem_profile=ponwrt085` 可切换 profile（与原厂备份/自有表 A/B）；⑦ 三机型默认 LAN 统一 `192.168.1.1/24`，首启脚本自动迁移旧 `192.168.18.1`/`192.168.2.1` 并补 /24。
+            ⚠️ run3 刷入后「仍完全无无线」本版尚未有实机 dmesg 佐证，因此新增开机诊断快照：登录后执行 `cat /tmp/pt1570-wifi-diag.txt` 回传，即可区分 PCIe 枚举 / mac80211 phy 注册 / PE 启动哪一段卡住。信号强度若要 A/B，重编时把 `fem_profile` 选 `ponwrt085`。
+            PT1500-H10 2.5G 用的是上游自带、已含 `p6-serdes` 的 DTS，本轮同时加了防回退断言，无需另刷修复版。
             同批 packages 见 `PT1570-H10-2P5G-CU-sysupgrade-packages-*.tar.zst`，用法见包内 apk-repos.txt / BUILD_INFO.txt。
 
             ⚠️ 仅适用于 PT1570-H10-CU（1x2.5GE + 3xGE + WiFi6，youhua,pt1570-h10-cu）。
@@ -962,6 +1064,6 @@ jobs:
                CU defconfig 的 factory 卷定义是 8 MiB，导入镜像必须正好 8 MiB。
             ⚠️ 首次刷机需在恢复页「重建 UBI」后导入 8 MiB factory 镜像，再刷 sysupgrade.itb。
             ⚠️ 本固件 bootargs 不含 root=，挂根由内核 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV 完成。
-            ⚠️ 默认 LAN 192.168.18.1；默认 WAN = pon0.1101（XGPON VLAN 1101）PPPoE，
+            ⚠️ 默认 LAN 192.168.1.1（三机型统一，旧地址自动迁移）；默认 WAN = pon0.1101（XGPON VLAN 1101）PPPoE，
                PON 转发引擎默认打开（pon.pon.offload=1 + flow_offloading_hw=1），
                底层 VLAN 口 MTU 1500。宽带账号需自行填写。

@@ -1,8 +1,10 @@
-# PT1570-R10 默认无线配置（随固件出厂，disabled=0 直接可用）
+# PT1570-H10-CU（联通版）默认无线配置（随固件出厂，disabled=0 直接可用）
 #
 # 两颗 Realtek 射频：
 #   radio0 = RTL8852CE（PCIe0，5GHz，HE80）
 #   radio1 = RTL8192XBE（PCIe1，2.4GHz，HE20）
+# CU 实机两张卡枚举为 0000:01:00.0 (10ec:c852 / 5G) 与
+# 0001:01:00.0 (10ec:0192 / 2.4G)，与 R10 相同，故 path 沿用。
 # path 与内核枚举顺序一致；换固件或换 U-Boot 版型后如果 phy 顺序变了，
 # 可以用 `wifi config` 重新生成，或按 `ls /sys/class/ieee80211/*/device` 核对。
 #
@@ -22,7 +24,7 @@ config wifi-iface 'default_radio0'
 	option device 'radio0'
 	option network 'lan'
 	option mode 'ap'
-	option ssid 'PT1570-R10'
+	option ssid 'PT1570-H10-CU'
 	option encryption 'none'
 
 config wifi-device 'radio1'
@@ -38,5 +40,5 @@ config wifi-iface 'default_radio1'
 	option device 'radio1'
 	option network 'lan'
 	option mode 'ap'
-	option ssid 'PT1570-R10'
+	option ssid 'PT1570-H10-CU'
 	option encryption 'none'

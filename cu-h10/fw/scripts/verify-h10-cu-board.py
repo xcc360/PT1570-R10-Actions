@@ -101,6 +101,15 @@ def main():
     ok(re.search(r'phys\s*=\s*<&pcie_controls\s+5>', t) is not None,
        'SGMII lane phys = <&pcie_controls 5>')
 
+    print('=== 3b. P6 SerDes 资源（2.5G 口能否 link 的总闸，2026-11-15 run3 定位）===')
+    # rtl9617c-xram.c: rtl_p6_bringup() 在 !priv->p6_serdes 时直接 return，
+    # 而 p6_serdes 只在 ni0 的 reg-names 含 "p6-serdes" 时才被 ioremap。
+    # 天翼 2p5g 基线缺这一项 -> QX SerDes 不离开复位 -> 2.5G 口永远不 link。
+    ok('"p6-serdes"' in t, 'ni0 reg-names 含 "p6-serdes" 资源名')
+    ok('0xf550d000' in t, 'P6 QX SerDes 寄存器窗 0xf550d000 已声明')
+    ok('realtek,dma-tx' in t, 'ni0 带 realtek,dma-tx（多口板 PORT_TO_CPU 必需）')
+    ok('realtek,qm-rx' in t, 'ni0 带 realtek,qm-rx（P6 共享 CPU0 QM 池）')
+
     print('=== 4. CU 专用首启脚本 ===')
     for f in (LAN, LEDS):
         ok(f.is_file(), '存在 %s' % f.name)
@@ -124,6 +133,24 @@ def main():
                 ok(r.returncode == 0, 'bash -n %s' % f.name)
     except FileNotFoundError:
         print('  SKIP bash -n（本机无 bash）')
+
+    print('=== 5. 三机型统一默认 LAN 192.168.1.1 ===')
+    WAN = UCI / '95-pt1570-h10-cu-wan-default'
+    CUSTOMIZE = FW / 'customize-cu.sh'
+    ok(WAN.is_file(), '存在 95-pt1570-h10-cu-wan-default')
+    if WAN.is_file():
+        w = WAN.read_text(encoding='utf-8')
+        ok("uci -q set network.lan.ipaddr='192.168.1.1/24'" in w,
+           '首启脚本把默认/旧 LAN 地址统一到 192.168.1.1/24')
+        ok('192.168.18.1/24' in w and '192.168.2.1/24' in w,
+           '首启脚本仍会把旧默认值迁移过来（sysupgrade 保留配置）')
+    ok(CUSTOMIZE.is_file()
+       and 'WRT_IP="${WRT_IP:-192.168.1.1}"' in CUSTOMIZE.read_text(encoding='utf-8'),
+       'customize-cu.sh 默认 IP = 192.168.1.1')
+
+    print('=== 6. 开机 WiFi 诊断脚本（run3 仍无无线，需实机证据）===')
+    ok((UCI / '97-pt1570-h10-cu-wifi-diag').is_file(),
+       '存在 97-pt1570-h10-cu-wifi-diag')
 
     print('H10CU_BOARD_GUARD_OK=%s checks=%d fails=%d' %
           ('True' if not fails else 'False', checks, len(fails)))

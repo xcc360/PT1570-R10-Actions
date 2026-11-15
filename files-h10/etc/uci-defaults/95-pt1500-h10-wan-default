@@ -112,11 +112,25 @@ esac
 [ "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" = "1" ] || {
   uci -q set firewall.@defaults[0].flow_offloading_hw='1'; changed=1; }
 
+# ---- 6. LAN 地址统一 + /24 掩码（2026-11-15 三机型统一 192.168.1.1）----
+# sysupgrade 保留旧 /etc/config/network：把旧默认值 192.168.2.1 迁移过来。
+# 不带掩码的 ipaddr 会被 netifd 按 /32 配到 br-lan，dnsmasq 算不出地址池、
+# DHCPv4 完全不响应（2026-11-14 本机实证），所以必须显式带 /24。
+# 用户自定义且已带掩码的地址一律不动。
+lan_ip=$(uci -q get network.lan.ipaddr)
+case "$lan_ip" in
+  ''|192.168.1.1|192.168.1.1/24|192.168.2.1|192.168.2.1/24|192.168.18.1|192.168.18.1/24)
+    uci -q set network.lan.ipaddr='192.168.1.1/24'
+    changed=1 ;;
+  */*) : ;;                                  # 已带掩码（含用户自定义），不动
+  *) uci -q set network.lan.ipaddr="$lan_ip/24"; changed=1 ;;
+esac
+
 if [ "$changed" = "1" ]; then
   uci -q commit network
   uci -q commit pon
   uci -q commit firewall
-  logger -t pt1500-h10-wan "default WAN -> $vlan_dev (pppoe), PON FE on"
+  logger -t pt1500-h10-wan "default WAN -> $vlan_dev (pppoe), PON FE on, LAN 192.168.1.1/24"
 fi
 
 exit 0

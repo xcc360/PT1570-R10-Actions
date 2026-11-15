@@ -1,0 +1,54 @@
+#!/bin/sh
+# PT1570-H10-CU：开机 WiFi 诊断快照（只读，不改任何配置）。
+#
+# 背景：run3 固件刷入后面板灯已正常，但仍「完全无无线」。R10 用同一套
+# rtl_ax_ap 单 PE1 驱动是有射频的，CU 侧的差异需要一次实机证据来区分：
+#   (a) PCIe 两张卡有没有枚举；
+#   (b) mac80211 有没有注册 phy0/phy1；
+#   (c) rtl_ax_ap probe 是否仍卡在 PEWD mailbox / -110；
+#   (d) /etc/config/wireless 的 radio path 是否与枚举出的卡一致。
+# 结果写到 /tmp/pt1570-wifi-diag.txt，登录执行 `cat /tmp/pt1570-wifi-diag.txt`
+# 即可一次回传，不用手动敲一堆命令。
+#
+# 本固件已同步 0.8.5 的功率限制位修复（power-tables.c 清 0xd208/0xd21c
+# 厂商限制位）、wifi-scripts txpower ucode 修复，并把 0.8.5 实机验证的
+# 26 张 v51 射频表作为 RFE54_PONWRT085 profile 带进镜像（默认仍是原厂表，
+# 编译期 fem_profile=ponwrt085 可一键切换）。
+#
+# 只在 CU 机型上执行；uci-defaults 由系统在首次配置生成后运行一次。
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+OUT=/tmp/pt1570-wifi-diag.txt
+{
+  echo "=== PT1570-H10-CU WiFi diag $(date) ==="
+  echo "board=$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+  echo "kernel=$(uname -a)"
+  echo
+  echo "--- ieee80211 phys ---"
+  ls -l /sys/class/ieee80211/ 2>&1
+  echo
+  echo "--- PCIe devices (vendor/device) ---"
+  for d in /sys/bus/pci/devices/*; do
+    [ -r "$d/vendor" ] || continue
+    printf '%s vendor=%s device=%s\n' "${d##*/}" "$(cat "$d/vendor" 2>/dev/null)" "$(cat "$d/device" 2>/dev/null)"
+  done
+  echo
+  echo "--- rtl_ax_ap / PCIe / firmware dmesg ---"
+  dmesg 2>/dev/null | grep -iE 'rtl_ax_ap|PEWD|8852|8192|10ec:|firmware|pcie.*link' | tail -150
+  echo
+  echo "--- relevant modules ---"
+  grep -E 'rtl_ax|mac80211|cfg80211' /proc/modules 2>/dev/null || echo '(none)'
+  echo
+  echo "--- /etc/config/wireless ---"
+  cat /etc/config/wireless 2>&1
+  echo
+  echo "--- radio paths actually present ---"
+  for p in /sys/class/ieee80211/phy*/device; do
+    [ -e "$p" ] && readlink -f "$p"
+  done
+} > "$OUT" 2>&1
+
+logger -t pt1570-h10-cu-wifi \
+  "diag=$OUT phys=$(ls /sys/class/ieee80211 2>/dev/null | tr '\n' ' ')"
+
+exit 0

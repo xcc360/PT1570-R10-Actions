@@ -38,8 +38,15 @@
 #   * 只复用机型无关的通用修复：apk 源/公钥/首启脚本、argon rpcd 插件、
 #     zz-pt1570-sysupgrade.sh（fitblk 释放 FIT 子镜像）、verify-fit-boot.py。
 #
-# 默认 LAN IP 192.168.2.1（不是 R10 的 .1.1）：用户两台设备同时在线，
-# WLAN 网关 192.168.1.1 是 R10，有线 192.168.2.1 是本机，避免撞 IP。
+# 三机型统一默认 LAN IP = 192.168.1.1/24（2026-11-15 用户要求）：
+# PT1570-R10 / PT1570-H10-CU / PT1500-H10 全部一致。旧 192.168.2.1 由
+# files-h10 的 95-pt1500-h10-wan-default 在首启时自动迁移并补 /24。
+# 调试时三台不要同时接同一网段，按 MAC 绑定网卡区分。
+#
+# 2.5G 口：本机直接用上游 rtl9617c-pt1500-h10-2p5g.dts（已实机验证可用），
+# 它的 ni0 自带 "p6-serdes" reg 资源 + realtek,p6-phy；Configure 段加了
+# 防回退断言，上游 ref 一变导致 P6 SerDes 被删会直接编译失败。
+# 所以本机不需要像 CU 那样补 DTS，也不需要动 U-Boot。
 #
 # Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3。
 # 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
@@ -422,6 +429,27 @@ jobs:
             || { echo "ERROR: DTS 缺少 fpga-image@10000（factory 8 MiB 布局基线）" >&2; exit 1; }
           echo "  OK   DTS=$DTS board_name=$BOARD_NAME factory=8MiB"
 
+          # ---- 2.5G P6 SerDes 防回退断言（2026-11-15 与 CU 一并核对）----
+          # rtl9617c-xram.c 的 rtl_p6_bringup() 在 !priv->p6_serdes 时直接
+          # return；p6_serdes 只在 ni0 的 reg-names 含 "p6-serdes" 时 ioremap。
+          # 本机上游 DTS 自带这一组，CU 的 tyfza1-2p5g 基线则缺（已单独补）。
+          # 这里锁死，避免以后 source_ref 一变把 2.5G 口悄悄编译没了。
+          UP_DTS="target/linux/rtl9617c/dts/${DTS}.dts"
+          for kw in '"p6-serdes"' '0xf550d000' 'realtek,p6-phy' 'realtek,dma-tx' 'realtek,qm-rx'; do
+            grep -qF "$kw" "$UP_DTS" \
+              || { echo "ERROR: 上游 DTS 缺 $kw（2.5G 口不会 link，请勿随意改 source_ref）" >&2; exit 1; }
+          done
+          echo "  OK   上游 DTS 的 P6 SerDes 配置齐全（2.5G link 总闸，固件侧）"
+
+          # 三机型统一默认 LAN 192.168.1.1/24
+          grep -qF 'WRT_IP="${WRT_IP:-192.168.1.1}"' \
+            "$GITHUB_WORKSPACE/customize-h10.sh" \
+            || { echo "ERROR: customize-h10.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
+          grep -qF "uci -q set network.lan.ipaddr='192.168.1.1/24'" \
+            "$GITHUB_WORKSPACE/files-h10/etc/uci-defaults/95-pt1500-h10-wan-default" \
+            || { echo "ERROR: 首启脚本未统一 LAN 到 192.168.1.1/24" >&2; exit 1; }
+          echo "  OK   LAN 192.168.1.1/24（三机型统一）"
+
           # 上游首启脚本必须齐全（LED / lan5(2.5G) / br-lan MAC），
           # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default
           #（H10 自有 95-pt1500-h10-wan-default，同名不同前缀，不冲突）。
@@ -772,9 +800,10 @@ jobs:
             echo "factory_image=p1500-h10-factory.bin sha256=08cf837e... (device readback byte-identical)"
             echo "factory_base_mac=fc:34:e2:69:1b:7a"
             echo "factory_pon_sn=YHTCE2691B7A"
-            echo "lan_ip=192.168.2.1 (avoid collision with R10 on 192.168.1.1)"
+            echo "lan_ip=192.168.1.1/24 (三机型统一；首启脚本迁移旧 192.168.2.1)"
             echo "default_wan=pon0.1101 pppoe (XGPON VLAN 1101, PON FE on, 95-pt1500-h10-wan-default)"
             echo "wifi=none (2.5G variant)"
+            echo "p6_serdes=upstream DTS 自带 reg-names p6-serdes + 0xf550d000 + realtek,p6-phy (2.5G 已实机验证；Configure 防回退断言)"
           } > "$OUT/BUILD_INFO.txt"
 
           case "$PUBLISH_PACKAGES" in
@@ -861,6 +890,6 @@ jobs:
                64 KiB 产物是新版 U-Boot 布局，刷进去会被恢复页拒绝。
             ⚠️ factory 卷已实机写入并读回逐字节校验通过，刷机时无需再动 factory。
             ⚠️ 本固件 bootargs 不含 root=，挂根由内核 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV 完成。
-            ⚠️ 默认 LAN 192.168.2.1；默认 WAN = pon0.1101（XGPON VLAN 1101）PPPoE，
+            ⚠️ 默认 LAN 192.168.1.1（三机型统一，旧 192.168.2.1 自动迁移）；默认 WAN = pon0.1101（XGPON VLAN 1101）PPPoE，
                PON 转发引擎默认打开（pon.pon.offload=1 + flow_offloading_hw=1），
                底层 VLAN 口 MTU 1500。宽带账号需自行填写。
