@@ -459,6 +459,14 @@ jobs:
               cmp -s "$DST/RTK66587_BPF/PHY_REG.txt" \
                      "$DST/RTK66587_BPF_GENERIC/PHY_REG.txt" \
                 && { echo "::error::5G FEM 表退回通用 RTK66587_BPF（非 H10 专用）"; exit 1; }
+              # 2026-11-15 run#43701802259 事故：PHY_REG 换成 YH1570 但 RadioA/RadioB
+              # 漏换（仍是通用 1472897b），导致 5G 接收 CRC 全错、搜得到连不上。
+              # 逐字节校验 RadioA/RadioB 必须与 _YH1570 源一致；缺任一即编译失败。
+              for RF in RadioA.txt RadioB.txt; do
+                cmp -s "$DST/RTK66587_BPF/$RF" \
+                       "$DST/RTK66587_BPF_YH1570/$RF" \
+                  || { echo "::error::5G $RF 不是 YH1570 专用（漏替换/退回通用），客户端将连不上"; exit 1; }
+              done
               grep -q '0x02.*0x0000D.*iFEM' "$D2/RadioA.txt" \
                 || { echo "::error::2.4G BASE 表不是 RFE50 iFEM 标定"; exit 1; }
               grep -q '0xFD.*0x15027' "$D2/RTK66287/RadioA.txt" \
