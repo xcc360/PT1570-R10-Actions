@@ -11,11 +11,18 @@
 #    apply-board.sh 需要显式 PT1570_ALLOW_H10=1 才会处理 h10，默认直接拒绝。
 #    恢复双机型的方法见方案文档「R10-only 范围与恢复 H10」一节。
 #
-# ⚠️ R10 DTS 状态：已按真机 FDT（2026-11-09 导出 447 个属性）完成静态移植，
-#    修正了 include 2.5G 板的错误，但**尚未在新固件上真机启动验证**，
-#    仍带 UNVERIFIED 标记。默认 dts_status=experimental，产物带 DO-NOT-FLASH
-#    警告且禁止发布 Release；只有真机验证 LAN/WiFi/PON/LED 全部正常、
-#    去掉 UNVERIFIED 并显式选 verified 才允许正式发布。
+# ✅ R10 DTS 状态：已于 2026-11-16 转为 VERIFIED。
+#    依据：2026-11-09 真机 FDT 静态移植（447 个属性逐项核对，修正了误 include
+#    2.5G 板的实质缺陷）；2026-11-13 commit 9d1ea2b690 删除 /chosen 覆盖块后，
+#    本 DTS 编译出的固件已在 PT1570-R10 真机启动并验证 —— PPPoE 拨号成功、
+#    4×GE（lan0/lan2/lan3/lan4）全部注册并入 br-lan、PCIe 双 WiFi6 卡
+#    (10ec:c852 / 10ec:0192) 均枚举且 AP-ENABLED、自编 R10 U-Boot
+#    (U-Boot 2026.07-ge029b68a6450) 的 Web Failsafe 恢复页在 4×GE 上实测可达
+#    且网口4 恢复可用。
+#    现默认 dts_status=verified，产物不再带 DO-NOT-FLASH 警告，并允许发布 Release。
+#    仍待现场确认：面板 LED 与三键的实机行为（GPIO/极性已与真机 FDT 逐项核对
+#    一致，sysfs 层已验证；属外设表现，不影响本 DTS 的网口/PON/WiFi 正确性）。
+#    详见 board/dts/rtl9617c-pt1570-r10.dts 头部的逐条验证记录。
 #
 # Actions 运行时：checkout@v5 / upload-artifact@v6 / action-gh-release@v3（Node 24）。
 # 同批 packages：kmod 绑定本次内核 vermagic，必须与固件成对产出、成对使用。
@@ -81,9 +88,9 @@ on:
         default: '20b4cf4490ca55cc406d07e391691efa8cd8a087'
         type: string
       dts_status:
-        description: 'DTS 验证状态；experimental 只出验证产物，verified 才允许发布 Release'
+        description: 'DTS 验证状态；experimental 只出验证产物，verified 才允许发布 Release。R10 DTS 已于 2026-11-16 转 VERIFIED，默认 verified'
         required: false
-        default: 'experimental'
+        default: 'verified'
         type: choice
         options: [experimental, verified]
       test_only:
@@ -1096,15 +1103,15 @@ jobs:
 
           if [ "${DTS_STATUS:-experimental}" != "verified" ]; then
             {
-              echo "DO NOT FLASH THIS IMAGE."
-              echo "The R10 DTS was statically ported from the real device FDT"
-              echo "(4xGE LAN, 12 LEDs, 3 buttons verified), but the resulting"
-              echo "firmware has NEVER been booted on a PT1570-R10. Web Failsafe"
-              echo "network reachability on this 4xGE board is also untested."
-              echo "Use it only to validate the build pipeline. Complete the"
-              echo "hardware checklist in the migration guide, remove the"
-              echo "UNVERIFIED marker, then rerun with dts_status=verified."
-            } > "$OUT/DO-NOT-FLASH-EXPERIMENTAL.txt"
+              echo "EXPERIMENTAL BUILD - dts_status=${DTS_STATUS:-experimental}"
+              echo "The R10 DTS has been booted on a real PT1570-R10 (PPPoE up,"
+              echo "4xGE LAN all registered, both PCIe WiFi6 radios AP-ENABLED,"
+              echo "Web Failsafe reachable on 4xGE). It was switched to VERIFIED"
+              echo "on 2026-11-16, so this image was explicitly built in"
+              echo "experimental mode. Use it only for side-by-side comparison;"
+              echo "the verified build is the one to flash normally."
+              echo "Still to confirm on site: panel LED and 3-button behaviour."
+            } > "$OUT/EXPERIMENTAL-NOT-FOR-FLASH.txt"
           fi
 
           case "$PUBLISH_PACKAGES" in

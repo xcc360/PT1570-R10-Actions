@@ -110,7 +110,7 @@ grep -q "SUPPORTED_DEVICES += ${name}" "$dev" && ok "$b SUPPORTED_DEVICES" || ba
 grep -q "DEVICE_DTS := rtl9617c-pt1570-${b}" "$dev" && ok "$b DEVICE_DTS" || bad "$b DEVICE_DTS"
 grep -q "IMAGES := sysupgrade.itb" "$dev" && ok "$b FIT output" || bad "$b FIT output"
 grep -q "external-static-with-rootfs" "$dev" && ok "$b FIT rootfs" || bad "$b FIT rootfs"
-grep -q "UNVERIFIED" "$dts" && ok "$b DTS 仍标 UNVERIFIED（默认禁止刷机）" || echo "  INFO $b DTS 已去除 UNVERIFIED（请用 verified 重编）"
+grep -q "UNVERIFIED" "$dts" && ok "$b DTS 仍标 UNVERIFIED（默认禁止刷机）" || ok "$b DTS 已转 VERIFIED（2026-11-16 真机启动验证通过）"
 grep -q '#include' "$dts" && ok "$b DTS 复用上游 FIT dtsi" || bad "$b DTS include"
 # H10 只做 dormant 留档检查
 for f in board/devices/pt1570-h10.mk.inc board/dts/rtl9617c-pt1570-h10.dts; do
@@ -123,7 +123,7 @@ grep -q 'CONFIG_PACKAGE_fitblk=y' Config-PT1570-FIT.txt && ok "fitblk 已启用"
 
 echo "=== 6. 防止误刷 / 防混刷 ==="
 WF=.github/workflows/build-pt1570-fit.yml
-grep -q "DO-NOT-FLASH-EXPERIMENTAL.txt" "$WF" && ok "实验产物带警告文件" || bad "缺实验警告"
+grep -q "EXPERIMENTAL-NOT-FOR-FLASH.txt" "$WF" && ok "experimental 产物带警告文件" || bad "缺实验警告"
 grep -q "inputs.dts_status == 'verified'" "$WF" && ok "Release 仅允许 verified" || bad "Release 未限制 dts_status"
 grep -q "UNVERIFIED" "$WF" && ok "workflow 会拒绝 verified 但带标记的 DTS" || bad "缺 verified 校验"
 grep -q 'pt1570-${{ matrix.board }}-fit-' "$WF" && ok "artifact 名带机型" || bad "artifact 名未隔离机型"

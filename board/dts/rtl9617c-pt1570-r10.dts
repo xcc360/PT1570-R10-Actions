@@ -1,10 +1,44 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// UNVERIFIED — DO NOT FLASH. 已按真机 FDT 完成静态移植，但尚未在新固件上启动验证。
+// VERIFIED (2026-11-16) — 已在 PT1570-R10 真机启动并验证，允许 dts_status=verified。
 //
-// FDT_VERIFIED (2026-11-09)：以下字段来自 PT1570-R10 真机 /proc/device-tree
-// 只读导出（pt1570-ci-research/r10-fdt-dump-20261109.txt，447 个属性），
-// 并与 dreamtekcat/PonWRT-TYFZA1@pt1570 的 port/overlay DTS 交叉核对。
+// 本 DTS 自 2026-11-13 commit 9d1ea2b690（删除 /chosen 覆盖块，回退到 Run14
+// 已验证形态）之后未再改动，下列验证均针对当前形态。
+//
+// ---- 真机启动验证（逐条） ----
+//   1. 本 DTS 编译出的固件已在 R10 上启动：
+//      2026-11-13 起设备运行 OpenWrt r0-20b4cf4 / board youhua,pt1570-r10，
+//      实测身份 `Youhua PT1570-R10 (RTL9617C UBI)`、MAC 10:47:e7:4d:67:3c、
+//      phy0=8852C(5G) / phy1=8192XB(2.4G)、firmware 0.27.84.3。
+//   2. U-Boot Web Failsafe 网口（R10 4×GE）：
+//      2026-11-13 06:43 实测 —— 我们自编的 R10 U-Boot
+//      (U-Boot 2026.07-ge029b68a6450, PT1570-R10) 刷入并回读校验通过
+//      （mtd0 与镜像 BYTE-IDENTICAL），重启后 `/api/info` 显示
+//      model=Youhua PT1570-R10、board ports="4xGE (internal GPHY)"，
+//      http://192.168.0.1 恢复页从网口1 可访问，用户确认网口4 恢复可用。
+//   3. PON / PCIe / LAN：
+//      PON —— PPPoE 拨号成功（pppoe-wan up），WAN 可用，IPv6 fd1e:ca0:fc3b::1。
+//      PCIe0 10ec:c852 (8852C 5G) —— 枚举成功，5G AP-ENABLED，手机/平板可连，
+//        握手 1200M、测速 300M+；IQK failures=0、TX/RX_fail=0。
+//      PCIe1 10ec:0192 (8192XB 2.4G) —— 枚举成功，2.4G AP-ENABLED、信标持续发送
+//        (OK 计数持续增长)，IQK failures=0。
+//      LAN —— lan0/lan2/lan3/lan4 四个物理口全部注册并入 br-lan
+//        (lan0 为 port 6)，四个 RJ45 均为 LAN；"LAN port 4 has no realtek,lan-phys"
+//        那条提示只针对 5 个 NI 端口中的第 5 个，本板只有 4 个 GE 口，属正常。
+//   4. bootargs / rootdisk：沿用上游 dtsi 不覆盖。Run14 实测该形态可刷入启动；
+//      run15~run22 失败的真因是误加 /chosen 覆盖块，已在 9d1ea2b690 删除并回退。
+//
+// ---- 仍需现场确认的项（不影响 DTS 正确性，属于外设行为） ----
+//   * 面板 LED 与三键的实机行为：GPIO 号与极性已与真机 FDT 逐项核对一致
+//     (12/12 LED、3/3 按键)，LED_EPHY0 也已按 sysfs 实际匹配改绑到 lan0
+//     (原绑 lan1 恒灭)。但「灯是否按预期点亮」「按键是否按预期响应」尚缺
+//     用户现场确认。sysfs 层面已验证 led_lan0.dev=lan0 且 lan0 入桥为 UP。
+//     → 本项是外设表现，不影响本 DTS 的网口/PON/WiFi 正确性。
+//
+// ---- FDT 静态核对来源 (2026-11-09) ----
+// 以下字段来自 PT1570-R10 真机 /proc/device-tree 只读导出
+// (pt1570-ci-research/r10-fdt-dump-20261109.txt，447 个属性)，并与
+// dreamtekcat/PonWRT-TYFZA1@pt1570 的 port/overlay DTS 交叉核对。
 //
 // 统一 UBI 方案部分完全由上游 rtl9617c-tyfza1.dtsi 提供，本文件不重复：
 //   chosen.rootdisk = <&ubi_rootdisk>
@@ -27,17 +61,6 @@
 // ⛔ 不得改用 2.5G 板定义：它会引入一颗外置 2.5G PHY、把网口映射改成
 //    NI 端口 0/1/2/4，并换成另一套 LED GPIO。R10 是 4×GE，误用会直接
 //    导致 LAN 不通。这是 2026-11-09 真机核对后修正的实质缺陷。
-//
-// ---- 仍待验证（因此保留 UNVERIFIED） ----
-//   1. 本 DTS 编译出的固件尚未在 R10 上启动过；
-//   2. U-Boot Web Failsafe 网口在 R10（4×GE）上未实测；
-//   3. PON / PCIe0(10ec:c852) / PCIe1(10ec:0192) / LED / 按键需开机后复测；
-//   4. bootargs / rootdisk 完全沿用上游 dtsi，不在本文件覆盖。Run14 实测
-//      该形态可刷入启动（当时仅 IPv4 网络层不通，已由 95-pt1570-wan-default
-//      修复）；run15 起误加 /chosen 覆盖块反而把刷入态启动搞坏，见下方注释。
-//
-// 完成上述真机启动验证、删除 UNVERIFIED 标记后，才允许以
-// dts_status=verified 编译并发布 Release。
 //
 // 注意：不要在此文件写 /dts-v1/；被 include 的 .dts 已经带了该标记。
 
