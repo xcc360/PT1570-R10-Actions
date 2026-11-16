@@ -29,11 +29,59 @@
 //      run15~run22 失败的真因是误加 /chosen 覆盖块，已在 9d1ea2b690 删除并回退。
 //
 // ---- 仍需现场确认的项（不影响 DTS 正确性，属于外设行为） ----
-//   * 面板 LED 与三键的实机行为：GPIO 号与极性已与真机 FDT 逐项核对一致
-//     (12/12 LED、3/3 按键)，LED_EPHY0 也已按 sysfs 实际匹配改绑到 lan0
-//     (原绑 lan1 恒灭)。但「灯是否按预期点亮」「按键是否按预期响应」尚缺
-//     用户现场确认。sysfs 层面已验证 led_lan0.dev=lan0 且 lan0 入桥为 UP。
-//     → 本项是外设表现，不影响本 DTS 的网口/PON/WiFi 正确性。
+//   * 12 个 DT 面板灯是否按预期点亮、4 个千兆口灯是否随 link 闪烁：
+//     GPIO 号与极性已与真机 FDT 逐项核对一致（见下方「面板灯」一节），
+//     LED_EPHY0 也已按 sysfs 实际匹配改绑到 lan0（原绑 lan1 恒灭）。
+//     sysfs 层面已验证 led_lan0.dev=lan0 且 lan0 入桥为 UP。
+//     面板 13 个灯位中的 [5G]/[2.4G] 两个 WiFi 指示灯在真机 FDT 里没有
+//     leds 节点，属原厂用户态/驱动侧行为，不在本 DTS 描述范围内。
+//   * 三键的实机响应：GPIO 已按真机 FDT 修正（reset gpio8 / rfkill gpio99 /
+//     lights_toggle gpio103），内核侧会注册成 input 设备，但按键动作本身
+//     尚未现场按下验证。
+//   → 本项是外设表现，不影响本 DTS 的网口/PON/WiFi 正确性。
+// ---- 面板灯：13 个物理灯位的完整归属（2026-11-16 用户提供物理顺序） ----
+// 面板左→右：电源 注册 光信号 [5G] [2.4G] 千兆口1 千兆口2 千兆口3 千兆口4
+//             电话 宽带 WPS USB
+//
+// 真机 FDT（r10-fdt-dump-20261109.txt）leds 节点共 12 个，GPIO/极性如下，
+// 与上游 rtl9617c-tyfza1.dtsi 的定义逐项一致（本文件不覆盖 leds，继承上游）：
+//
+//   gpio0 0  LOW   lan3      LED_EPHY3   千兆口4
+//   gpio0 1  LOW   lan2      LED_EPHY2   千兆口3
+//   gpio0 2  LOW   internet  LED_PPP_G   宽带
+//   gpio0 3  LOW   lan1      LED_EPHY1   千兆口2
+//   gpio0 4  LOW   lan0      LED_EPHY0   千兆口1
+//   gpio0 5  HIGH  wps       LED_WPS_G   WPS
+//   gpio0 6  LOW   usb1      LED_USB1    USB
+//   gpio0 7  HIGH  usb0      LED_USB0    USB
+//   gpio0 9  LOW   pon       LED_PON     注册
+//   gpio0 10 LOW   los       LED_LOS     光信号
+//   gpio0 11 HIGH  power     LED_PWR_G   电源
+//   gpio0 12 HIGH  phone     LED_FXS     电话
+//
+// 面板 13 个灯位中，[5G] 与 [2.4G] 两个 WiFi 指示灯**在真机 FDT 里没有任何
+// leds 节点**（leds 下只有上述 12 个子节点，leds 之外也没有其它 GPIO 输出
+// 节点，只有 led-button 的三个按键）。gpio0 pin 8 唯一空缺，但它是 btn-reset
+// 的按键脚（led-button/btn-reset gpios = phandle 0x11 / pin 8 / flags 1，
+// linux,code = 0x198），不是灯。
+//
+// 交叉验证：H10 原厂 DTB（网友备份 mtd6_ubi_DTB0）的 rtk_gpio_led 节点
+// 给出的 12 个灯 GPIO/极性与上表**逐项一致**（gpio base 0x28 = gpio0，pin 与
+// flags 完全相同，LED_* 标签同名），且同样缺失 gpio-led10 ——
+// ⇒ 两板 LED 硬件完全相同，本 DTS 的 LED 描述对 H10-CU 同样成立。
+//
+// ⇒ 5G/2.4G 两个灯不是设备树驱动的独立 GPIO 输出：原厂是由用户态
+//   （mib 的 HW_WLAN_LED_TYPE / PON_LED_SPEC 运行时规格表）控制，或由 PCIe
+//   WiFi 卡自身的 LED 输出驱动。OpenWrt 侧无对应 DT 节点，因此本 DTS 不
+//   对这两个灯作任何声明，与真机 FDT 保持一致。
+//
+//   → 12 个 DT 灯位全部有明确 GPIO/极性归属；5G/2.4G 两个灯位属于「原厂
+//     用户态/驱动侧行为」，不是本 DTS 的描述范围，也不是它的缺陷。
+//
+// 仍需现场确认：12 个 DT 灯是否按预期点亮（尤其 4 个千兆口灯随网口 link
+// 闪烁、WPS 灯随按键行为）。sysfs 层已验证 led_lan0.dev=lan0 且 lan0 入桥
+// 为 UP；原 bind 到不存在的 lan1 导致的「恒灭」已修正。
+
 //
 // ---- FDT 静态核对来源 (2026-11-09) ----
 // 以下字段来自 PT1570-R10 真机 /proc/device-tree 只读导出
