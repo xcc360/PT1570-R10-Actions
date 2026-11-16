@@ -501,6 +501,43 @@ jobs:
             || { echo "::error::ra_rssi_level 状态缺失 (pci.c)"; exit 1; }
           echo "PT1570_2G_RATE_CONTROL_GUARD_OK=True"
 
+      - name: Guard 2.4G RFE50 front-end fix (always runs)
+        if: ${{ inputs.wifi_diag != true }}
+        env:
+          WRT: ${{ github.workspace }}/wrt
+        run: |
+          set -e
+          D="$WRT/target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap"
+          # 8192XB must select RFE50 params (no external FEM), 8852C keeps RFE54.
+          grep -q 'const char \*rfe = chip == RTL_AX_8852C ? "RFE54" : "RFE50";' "$D/phy.c" \
+            || { echo "::error::2.4G RFE50 路径选择缺失 (phy.c)"; exit 1; }
+          grep -q 'const char \*rfe = chip == RTL_AX_8852C ? "RFE54" : "RFE50";' "$D/limits.c" \
+            || { echo "::error::2.4G RFE50 路径选择缺失 (limits.c)"; exit 1; }
+          grep -q 'const char \*rfe = chip == RTL_AX_8852C ? "RFE54" : "RFE50";' "$D/power-tables.c" \
+            || { echo "::error::2.4G RFE50 路径选择缺失 (power-tables.c)"; exit 1; }
+          # No external FEM for 8192XB (fem=""), and FEM GPIO only for 8852C.
+          grep -q 'const char \*fem = chip == RTL_AX_8852C ? "RTK66587_BPF" : "";' "$D/phy.c" \
+            || { echo "::error::8192XB 仍被当作有外置 FEM (phy.c)"; exit 1; }
+          grep -q 'if (chip == RTL_AX_8852C) {' "$D/bb-dm.h" \
+            || { echo "::error::FEM GPIO 未按芯片限制为 8852C (bb-dm.h)"; exit 1; }
+          grep -q 'rtl_ax_xb_gain2g(io, &phy->gain\[RTL_AX_PHY_FEM\]);' "$D/xb-channel.h" \
+            || { echo "::error::2.4G FEM 增益补偿未应用 (xb-channel.h)"; exit 1; }
+          # RPQ 8192XB stock agg=121 (0x00ff0079)
+          grep -q '0x00ff0079' "$D/mac-runtime.h" \
+            || { echo "::error::8192XB RPQ agg=121 缺失 (mac-runtime.h)"; exit 1; }
+          # Old rfe50_8192xb module-param approach must be gone.
+          ! grep -rq 'rfe50_8192xb' "$D" \
+            || { echo "::error::旧的 rfe50_8192xb 开关残留"; exit 1; }
+          # Complete RFE50 tables must ship in rootfs.
+          R="$WRT/files/lib/firmware/realtek/tyfza1/rtl8192xbe/RFE50"
+          for f in PHY_REG.txt PHY_REG_GAIN.txt RadioA.txt RadioB.txt \
+                   TXPWR_ByRate.txt TXPWR_LMT.txt TXPWR_LMT_RU.txt TXPWR_TrackTSSI.txt; do
+            [ -f "$R/$f" ] || { echo "::error::缺 2.4G RFE50 表: $f"; exit 1; }
+          done
+          [ "$(wc -c < "$R/PHY_REG.txt")" -gt 20000 ] \
+            || { echo "::error::RFE50/PHY_REG.txt 不是完整表（<20KB）"; exit 1; }
+          echo "PT1570_2G_RFE50_GUARD_OK=True"
+
       - name: Configure
         working-directory: wrt
         env:

@@ -4,10 +4,6 @@
 #define RTL_AX_AP_XB_CHANNEL_H
 #include "channel.h"
 
-/* Declared in pci.c; flips RTL_AX_8192XB (2.4G) from external FEM (RFE54)
- * to integrated FEM (RFE50) front-end topology. */
-extern bool rtl_ax_rfe50_8192xb;
-
 static inline void rtl_ax_xb_gain2g(const struct rtl_ax_io *io,
 	const struct rtl_ax_phy_gain *gain)
 {
@@ -117,10 +113,7 @@ static inline void rtl_ax_xb_bb2g(const struct rtl_ax_io *io,
 	rtl_ax_channel_field(io, 0x4974, 0x7f, (262144 + frequency / 2) / frequency);
 	for (i = 0; i < 8; i++)
 		rtl_ax_channel_field(io, cck_reg[i], 0xffffff, cck[center == 14][i]);
-	/* External-FEM (RFE54) gain offset; iFEM (RFE50) has no external
-	 * PA/LNA, so skip the compensation to avoid link-budget collapse. */
-	if (!rtl_ax_rfe50_8192xb)
-		rtl_ax_xb_gain2g(io, &phy->gain[RTL_AX_PHY_FEM]);
+	rtl_ax_xb_gain2g(io, &phy->gain[RTL_AX_PHY_FEM]);
 	rtl_ax_xb_gain_cal2g(io, phy, dm, channel);
 	rtl_ax_channel_field(io, 0x0734, 0xff0000, center);
 	rtl_ax_channel_field(io, 0x4974, 0xc0000000, bandwidth);

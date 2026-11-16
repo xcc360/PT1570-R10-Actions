@@ -4,10 +4,6 @@
 #include "power.h"
 #include "board-cal.h"
 
-/* Declared in pci.c; flips RTL_AX_8192XB (2.4G) from external FEM (RFE54)
- * to integrated FEM (RFE50) front-end topology. */
-extern bool rtl_ax_rfe50_8192xb;
-
 struct rtl_ax_bb_dm {
 	bool ic_ready, gpio_ready, gain_ready, normal_gain_valid, hidden_gain_valid;
 	s8 normal_gain[2][5], hidden_cs[2][12], hidden_cg[2][12];
@@ -113,21 +109,16 @@ static inline void rtl_ax_bb_dm_gpio_start(const struct rtl_ax_io *io, unsigned 
 			rtl_ax_update32(io, reg, 3U << shift, value << shift);
 		}
 	}
-	for (path = 0; path < 2; path++) {
-		unsigned int reg = path ? 0x17894 : 0x15894;
-
-		/* PAPE byte0=4,TRSW byte1=6. RFE53/54 LNA inverted,
-		 * standby mode=1,so LNA byte2=a instead of the default8.
-		 * iFEM (RFE50) keeps the non-inverted default byte2=8. */
-		rtl_ax_update32(io, reg, 255, 4);
-		rtl_ax_update32(io, reg, 255U << 8, 6U << 8);
-		if (chip == RTL_AX_8192XB)
-			rtl_ax_update32(io, reg, 255U << 16,
-					rtl_ax_rfe50_8192xb ? 8U << 16 : 10U << 16);
+	/* Stock gpio_setting_init_8192xb only programs PAPE/TRSW/LNA for
+	 * RFE 51..56; RFE 50 (internal PA/LNA) falls through with none. */
+	if (chip == RTL_AX_8852C) {
+		for (path = 0; path < 2; path++) {
+			unsigned int reg = path ? 0x17894 : 0x15894;
+			rtl_ax_update32(io, reg, 255, 4);
+			rtl_ax_update32(io, reg, 255U << 8, 6U << 8);
+			rtl_ax_update32(io, reg, 255U << 16, 10U << 16);
+		}
 	}
-	if (chip == RTL_AX_8852C)
-		for (path = 0; path < 2; path++)
-			rtl_ax_update32(io, path ? 0x17894 : 0x15894, 255U << 16, 10U << 16);
 	dm->gpio_ready = true;
 }
 

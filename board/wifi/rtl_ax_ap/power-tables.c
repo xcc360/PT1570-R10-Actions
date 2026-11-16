@@ -176,7 +176,12 @@ int rtl_ax_power_inputs_load(struct device *dev, unsigned int chip,
 			     struct rtl_ax_power_inputs *inputs)
 {
 	const char *family = chip == RTL_AX_8852C ? "rtl8852ce" : "rtl8192xbe";
-	const char *fem = chip == RTL_AX_8852C ? "RTK66587_BPF" : "RTK66287";
+	/* PT1570 2.4G (8192XB) reports RFE 50 with no external FEM (internal PA/LNA).
+	 * 5G (8852C) is RFE 54 with the stock YH1570 FEM table. */
+	const char *rfe = chip == RTL_AX_8852C ? "RFE54" : "RFE50";
+	/* 5G FEM path kept as RTK66587_BPF: workflow swaps stock YH1570 tables
+	 * into this path, so 5G behavior is unchanged. 2.4G has no FEM (fem=""). */
+	const char *fem = chip == RTL_AX_8852C ? "RTK66587_BPF" : "";
 	const char *names[] = {"TXPWR_ByRate.txt", "TXPWR_TrackTSSI.txt"};
 	unsigned int stage, table;
 	char name[128];
@@ -192,8 +197,9 @@ int rtl_ax_power_inputs_load(struct device *dev, unsigned int chip,
 			char *text;
 			int ret;
 
-			snprintf(name, sizeof(name), "realtek/tyfza1/%s/RFE54/%s%s%s",
-				 family, stage ? fem : "", stage ? "/" : "", names[table]);
+			snprintf(name, sizeof(name), "realtek/tyfza1/%s/%s/%s%s%s",
+				 family, rfe, stage && *fem ? fem : "",
+				 stage && *fem ? "/" : "", names[table]);
 			ret = request_firmware(&fw, name, dev);
 			if (ret)
 				return ret;
@@ -423,10 +429,8 @@ int rtl_ax_power_apply(const struct rtl_ax_io *io, unsigned int chip,
 	rtl_ax_update32(io, 0xd204, 0x000fffff, offset_mode);
 	if ((io->read32(io->ctx, 0xd204) & 0x000fffff) != offset_mode)
 		return -EIO;
-	/* TYFZA1's original power_limit MIB defaults to 0. Its capability
-	 * selection also disables these optional vendor limit tables. Enabling
-	 * them here caps TX below the board's by-rate targets.
-	 * The by-rate values above already include Linux's channel/user cap. */
+	/* Keep our verified 0.8.5 behavior: clear vendor limit bits so by-rate
+	 * calibration is the effective TX ceiling (5G verified working). */
 	rtl_ax_update32(io, 0xd208, 0x00300000, 0);
 	rtl_ax_update32(io, 0xd21c, 0x00040000, 0);
 	if ((io->read32(io->ctx, 0xd208) & 0x00300000) ||
