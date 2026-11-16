@@ -429,8 +429,12 @@ int rtl_ax_power_apply(const struct rtl_ax_io *io, unsigned int chip,
 	rtl_ax_update32(io, 0xd204, 0x000fffff, offset_mode);
 	if ((io->read32(io->ctx, 0xd204) & 0x000fffff) != offset_mode)
 		return -EIO;
-	/* Keep our verified 0.8.5 behavior: clear vendor limit bits so by-rate
-	 * calibration is the effective TX ceiling (5G verified working). */
+	/* TYFZA1's original power_limit MIB defaults to 0. Its capability
+	 * selection also disables these optional vendor limit tables. Enabling
+	 * them here caps TX below the board's by-rate targets.
+	 * The by-rate values above already include Linux's channel/user cap.
+	 * (2.4G front-end fix is in rfe/fem path selection above; power handling
+	 * intentionally unchanged from our verified 0.8.5 behavior.) */
 	rtl_ax_update32(io, 0xd208, 0x00300000, 0);
 	rtl_ax_update32(io, 0xd21c, 0x00040000, 0);
 	if ((io->read32(io->ctx, 0xd208) & 0x00300000) ||
