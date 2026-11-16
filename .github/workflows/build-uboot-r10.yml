@@ -59,6 +59,17 @@ jobs:
             "tools/release/boards/${BOARD}.json"
           echo "BOARD_ASSETS_OK=True"
 
+      # 面板灯表护栏。failsafe/led.c 严格按 lamp[0..n] 的数组下标走，
+      # 所以数组顺序就是面板物理左→右顺序；之前的 R10 灯表用的是 PT1500
+      # 面板顺序（宽带/电话/USB 排在 GE 灯之前），与本面板完全相反，
+      # 开机扫灯/走灯/进度条都会 zig-zag；还误占了 WPS(pin5) 与 USB1(pin6)。
+      # 这里在编译前拦截，参照 PT1570-H10-CU 的 verify_cu_leds.py。
+      - name: Verify R10 panel lamp order
+        run: |
+          set -eu
+          python3 tools/release/verify_r10_leds.py board/yhup/pt1570_r10/desc.c
+          echo "R10_LEDS_GUARD_OK=True"
+
       - name: Install deps
         run: |
           sudo apt-get update
