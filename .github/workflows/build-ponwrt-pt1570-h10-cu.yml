@@ -787,7 +787,13 @@ jobs:
             || { echo "ERROR: 2.4G legacy RA 补丁缺失 (rate.h)" >&2; exit 1; }
           grep -q 'rtl_ax_ra_legacy(command, id, legacy, band5g)' "$DRV/monitor.h" \
             || { echo "ERROR: 2.4G legacy RA 未接入 rtl_ax_ra_peer (monitor.h)" >&2; exit 1; }
-          echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件 + 2.4G legacy RA 补丁"
+          grep -q 'static inline u8 rtl_ax_ra_rssi_mask' "$DRV/rate.h" \
+            || { echo "ERROR: RA RSSI 掩码回退缺失 (rate.h)" >&2; exit 1; }
+          grep -q 'static inline void rtl_ax_ra_environment' "$DRV/rate.h" \
+            || { echo "ERROR: RA 环境噪声标记缺失 (rate.h)" >&2; exit 1; }
+          grep -q 'level = rtl_ax_ra_rssi_mask(mask_command, rssi, previous);' "$DRV/monitor.h" \
+            || { echo "ERROR: RSSI 掩码回退未接入 watchdog (monitor.h)" >&2; exit 1; }
+          echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件 + 2.4G legacy RA 补丁 + RA RSSI 掩码回退"
           echo "=== 3d. 固件态 有线 + 面板灯回归护栏 ==="
           python3 "$GITHUB_WORKSPACE/cu-h10/fw/scripts/verify-h10-cu-board.py" \
             || { echo "ERROR: H10-CU 板级护栏未通过" >&2; exit 1; }

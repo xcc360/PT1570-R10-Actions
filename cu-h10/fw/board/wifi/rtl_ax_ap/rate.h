@@ -4,6 +4,38 @@
 
 struct rtl_ax_phy_signal { u8 macid, rssi[3]; };
 
+/* Ported from PonWRT-TYFZA1 0.8.5: the RSSI-driven rate-mask fallback.
+ * The firmware rate controller only reacts to a registered peer, so when its
+ * own RA is not operational the driver has to narrow the advertised mask by
+ * the measured RSSI instead (upstream halbb_ramask_by_rssi equivalent).
+ * levels[] are the RSSI thresholds in 0.5 Mbps units; remove[] lists the
+ * rate bits dropped at each level, keeping the legacy rates reachable. */
+static inline u8 rtl_ax_ra_rssi_mask(u8 command[16], u8 rssi, u8 previous)
+{
+	static const u8 thresholds[] = {30, 44, 48, 52, 56, 60, 100};
+	static const u32 remove[] = {0, 0xf, 0x101f, 0x303f, 0x707f, 0xf0ff, 0xf0ff};
+	u8 level = 0;
+	u64 mask = get_unaligned_le64(command + 4) & ~BIT_ULL(63), filtered;
+
+	for (; level < 7; level++)
+		if (rssi < thresholds[level] + (level >= previous ? 3 : 0)) break;
+	if (level == 7) level = 0;
+	filtered = mask & ~((u64)remove[level]);
+	if (!(filtered >> 12)) filtered |= mask & ~0xfffULL;
+	if (!filtered) filtered = mask & 0xfff;
+	command[2] &= ~BIT(4);
+	command[3] = (command[3] & ~BIT(6)) | BIT(7);
+	put_unaligned_le64(filtered, command + 4);
+	return level;
+}
+
+/* Actual register/update/watchdog commands use background NHM ratio1..254.
+ * 0xff is the factory failed-sample value, not a noisy environment. */
+static inline void rtl_ax_ra_environment(u8 command[16], u8 nhm_ratio)
+{
+	command[15] = (command[15] & ~BIT(0)) | (nhm_ratio && nhm_ratio != 255);
+}
+
 static inline void rtl_ax_ra_limit(u8 command[16], u8 bandwidth, u8 nss, bool update)
 {
 	u64 mask = get_unaligned_le64(command + 4);

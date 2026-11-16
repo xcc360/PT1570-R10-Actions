@@ -659,6 +659,7 @@ static int rtl_ax_station_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif
 			if (ret) goto remove;
 			radio->ra_registered[id] = true;
 			radio->ra_rssi_samples[id] = radio->ra_reports[id] = radio->ra_updates[id] = 0;
+			radio->ra_rssi_level[id] = 0;
 			radio->ra_update_error[id] = 0;
 			clear_bit(id, radio->ra_pending);
 			memset(radio->ra_feedback[id], 0, 8);
@@ -1156,6 +1157,36 @@ static void rtl_ax_ra_work(struct wiphy *wiphy, struct wiphy_work *work)
 		radio->ra_rssi_result = rtl_ax_command_flags(radio, RTL_AX_H2C_LONG_DATA,
 			2, 1, 1, command, sizeof(command), false, false);
 		radio->ra_rssi_sent += !radio->ra_rssi_result;
+	}
+	/* Ported from PonWRT-TYFZA1 0.8.5: the watchdog follows the RSSI report
+	 * with a mask-only RA update. The firmware rate controller only reacts
+	 * to a registered peer, so this narrows the advertised mask by the
+	 * measured RSSI on its own. ra_config retains the full capability mask
+	 * so lower rates can return when the client moves closer. */
+	for (i = 1; i < 128; i++) {
+		u8 mask_command[16], rssi, previous, level;
+		int ret;
+
+		spin_lock_irqsave(&radio->command_lock, flags);
+		if (!radio->ra_registered[i] || !radio->ra_rssi_samples[i]) {
+			spin_unlock_irqrestore(&radio->command_lock, flags);
+			continue;
+		}
+		memcpy(mask_command, radio->ra_config[i], sizeof(mask_command));
+		rssi = radio->ra_rssi[i][0] >> 1;
+		previous = radio->ra_rssi_level[i];
+		spin_unlock_irqrestore(&radio->command_lock, flags);
+		level = rtl_ax_ra_rssi_mask(mask_command, rssi, previous);
+		rtl_ax_ra_environment(mask_command, 0);
+		ret = rtl_ax_command_flags(radio, RTL_AX_H2C_LONG_DATA, 2, 1, 0,
+			mask_command, sizeof(mask_command), false, false);
+		spin_lock_irqsave(&radio->command_lock, flags);
+		radio->ra_update_error[i] = ret;
+		if (!ret) {
+			radio->ra_rssi_level[i] = level;
+			radio->ra_updates[i]++;
+		}
+		spin_unlock_irqrestore(&radio->command_lock, flags);
 	}
 	wiphy_delayed_work_queue(wiphy, &radio->ra_work, 2 * HZ);
 }
