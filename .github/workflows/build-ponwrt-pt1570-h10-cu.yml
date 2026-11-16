@@ -429,6 +429,32 @@ jobs:
             || { echo "::error::旧的 0xd208 置位逻辑残留"; exit 1; }
           echo "CU_PONWRT085_POWER_FIX_OK=True"
 
+      # 2.4G 速率控制回归护栏。此处必须始终执行：原先这些断言只挂在
+      # "Run static preflight" 步骤下，而该步骤带 if: inputs.test_only，
+      # 正常固件编译时被整体跳过，等于从不生效。
+      - name: Guard 2.4G rate-control patches (always runs)
+        env:
+          WRT: ${{ github.workspace }}/wrt
+        run: |
+          set -e
+          D="$WRT/target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap"
+          for f in rate.h monitor.h pci.c; do
+            [ -f "$D/$f" ] || { echo "::error::CU 驱动缺文件: $f"; exit 1; }
+          done
+          grep -q 'static inline void rtl_ax_ra_legacy' "$D/rate.h" \
+            || { echo "::error::2.4G legacy RA 补丁缺失 (rate.h)"; exit 1; }
+          grep -q 'rtl_ax_ra_legacy(command, id, legacy, band5g)' "$D/monitor.h" \
+            || { echo "::error::2.4G legacy RA 未接入 rtl_ax_ra_peer (monitor.h)"; exit 1; }
+          grep -q 'static inline u8 rtl_ax_ra_rssi_mask' "$D/rate.h" \
+            || { echo "::error::RA RSSI 掩码回退缺失 (rate.h)"; exit 1; }
+          grep -q 'static inline void rtl_ax_ra_environment' "$D/rate.h" \
+            || { echo "::error::RA 环境噪声标记缺失 (rate.h)"; exit 1; }
+          grep -q 'level = rtl_ax_ra_rssi_mask(mask_command, rssi, previous);' "$D/monitor.h" \
+            || { echo "::error::RSSI 掩码回退未接入 watchdog (monitor.h)"; exit 1; }
+          grep -q 'u8 ra_rssi_level\[128\];' "$D/pci.c" \
+            || { echo "::error::ra_rssi_level 状态缺失 (pci.c)"; exit 1; }
+          echo "CU_2G_RATE_CONTROL_GUARD_OK=True"
+
       # 0.8.5 实机解出的 26 张 v51 射频表随镜像附带，按 dispatch 一键切换；
       # 默认保持 CU 现有表，便于 A/B 对比原厂备份 / 0.8.5 / 自有固件三套参数。
       - name: Select WiFi RFE54 profile (CU)
@@ -787,13 +813,8 @@ jobs:
             || { echo "ERROR: 2.4G legacy RA 补丁缺失 (rate.h)" >&2; exit 1; }
           grep -q 'rtl_ax_ra_legacy(command, id, legacy, band5g)' "$DRV/monitor.h" \
             || { echo "ERROR: 2.4G legacy RA 未接入 rtl_ax_ra_peer (monitor.h)" >&2; exit 1; }
-          grep -q 'static inline u8 rtl_ax_ra_rssi_mask' "$DRV/rate.h" \
-            || { echo "ERROR: RA RSSI 掩码回退缺失 (rate.h)" >&2; exit 1; }
-          grep -q 'static inline void rtl_ax_ra_environment' "$DRV/rate.h" \
-            || { echo "ERROR: RA 环境噪声标记缺失 (rate.h)" >&2; exit 1; }
-          grep -q 'level = rtl_ax_ra_rssi_mask(mask_command, rssi, previous);' "$DRV/monitor.h" \
-            || { echo "ERROR: RSSI 掩码回退未接入 watchdog (monitor.h)" >&2; exit 1; }
-          echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件 + 2.4G legacy RA 补丁 + RA RSSI 掩码回退"
+          echo "  OK   ubi_device 可写 + 单 PE1 参考驱动 60 文件 + 2.4G legacy RA 补丁"
+          echo "  (2.4G 速率控制断言由 always-run 的 Guard 步骤负责，见上)"
           echo "=== 3d. 固件态 有线 + 面板灯回归护栏 ==="
           python3 "$GITHUB_WORKSPACE/cu-h10/fw/scripts/verify-h10-cu-board.py" \
             || { echo "ERROR: H10-CU 板级护栏未通过" >&2; exit 1; }
