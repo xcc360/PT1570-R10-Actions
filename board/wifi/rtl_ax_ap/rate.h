@@ -4,6 +4,38 @@
 
 struct rtl_ax_phy_signal { u8 macid, rssi[3]; };
 
+/* Ported from PonWRT-TYFZA1 0.8.5: the RSSI-driven rate-mask fallback.
+ * The firmware rate controller only reacts to a registered peer, so when its
+ * own RA is not operational the driver has to narrow the advertised mask by
+ * the measured RSSI instead (upstream halbb_ramask_by_rssi equivalent).
+ * levels[] are the RSSI thresholds in 0.5 Mbps units; remove[] lists the
+ * rate bits dropped at each level, keeping the legacy rates reachable. */
+static inline u8 rtl_ax_ra_rssi_mask(u8 command[16], u8 rssi, u8 previous)
+{
+	static const u8 thresholds[] = {30, 44, 48, 52, 56, 60, 100};
+	static const u32 remove[] = {0, 0xf, 0x101f, 0x303f, 0x707f, 0xf0ff, 0xf0ff};
+	u8 level = 0;
+	u64 mask = get_unaligned_le64(command + 4) & ~BIT_ULL(63), filtered;
+
+	for (; level < 7; level++)
+		if (rssi < thresholds[level] + (level >= previous ? 3 : 0)) break;
+	if (level == 7) level = 0;
+	filtered = mask & ~((u64)remove[level]);
+	if (!(filtered >> 12)) filtered |= mask & ~0xfffULL;
+	if (!filtered) filtered = mask & 0xfff;
+	command[2] &= ~BIT(4);
+	command[3] = (command[3] & ~BIT(6)) | BIT(7);
+	put_unaligned_le64(filtered, command + 4);
+	return level;
+}
+
+/* Actual register/update/watchdog commands use background NHM ratio1..254.
+ * 0xff is the factory failed-sample value, not a noisy environment. */
+static inline void rtl_ax_ra_environment(u8 command[16], u8 nhm_ratio)
+{
+	command[15] = (command[15] & ~BIT(0)) | (nhm_ratio && nhm_ratio != 255);
+}
+
 static inline void rtl_ax_ra_limit(u8 command[16], u8 bandwidth, u8 nss, bool update)
 {
 	u64 mask = get_unaligned_le64(command + 4);
@@ -54,19 +86,38 @@ static inline int rtl_ax_ppdu_signal(const u8 *data, unsigned int bytes,
 	return count;
 }
 
-static inline void rtl_ax_ra_ht20(u8 command[16], u8 macid, u16 legacy, u16 ht, bool sgi)
+/* Ported from PonWRT-TYFZA1 0.8.5: a legacy-only (non-HT) 2.4G b/g peer
+ * needs its own RA H2C command. The stock rtl_ax_ra_peer() returned false for
+ * such peers, so firmware RA was never registered (registered=0, rate=0,
+ * ~60% retries). Self-contained: no PE-engine or mac80211-patch dependency. */
+static inline void rtl_ax_ra_legacy(u8 command[16], u8 macid, u16 legacy, bool band5g)
 {
-	u64 mask = (legacy & 0x15) | (u64)(ht & 255) << 12 |
+	u8 mode = band5g || !(legacy & 15) ? 4 : (legacy & 0xff0) ? 6 : 2;
+	u16 mask = legacy & (mode == 2 ? 15 : mode == 4 ? 0xff0 : 0xff5);
+
+	memset(command, 0, 16);
+	command[0] = mode;
+	command[1] = macid;
+	command[2] = 0x10;
+	put_unaligned_le64(mask | BIT_ULL(63), command + 4);
+	command[13] = 0x38;
+	command[15] = band5g ? 0x20 : 0x80;
+}
+
+static inline void rtl_ax_ra_ht20(u8 command[16], u8 macid, u16 legacy, u16 ht, bool sgi,
+	bool band5g)
+{
+	u64 mask = (legacy & (band5g ? 0x10 : 0x15)) | (u64)(ht & 255) << 12 |
 		(u64)(ht >> 8) << 24 | BIT_ULL(63);
 
 	memset(command, 0, 16);
-	command[0] = 0x0e; /* CCK/OFDM/HT, 20 MHz, firmware RA enabled. */
+	command[0] = band5g ? 0x0c : 0x0e; /* 5 GHz excludes CCK; BW updated by ra_limit. */
 	command[1] = macid;
 	command[2] = 0x10 | (sgi ? 0x20 : 0); /* Update all; RSSI unknown, init level0. */
 	command[3] = !!(ht >> 8);
 	put_unaligned_le64(mask, command + 4);
 	command[13] = 0x38; /* Original RFE54 fixed CSI GI/LTF. */
-	command[15] = 0x80; /* Original 8192XB RA debug-register format. */
+	command[15] = band5g ? 0x20 : 0x80; /* Original C/XB report formats. */
 }
 
 static inline void rtl_ax_ra_vht80(u8 command[16], u8 macid, u16 legacy, u16 mcs, bool sgi)

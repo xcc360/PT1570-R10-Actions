@@ -569,7 +569,8 @@ static bool rtl_ax_ra_peer(struct rtl_ax_ap *radio, struct ieee80211_sta *sta,
 	if (nss == 1) ht &= 255;
 	/* Stock txsc_amsdu_sta_init permits 10896 bytes for an HE 11K peer. */
 	*caps = BIT(17) | min_t(unsigned int, sta->cur->max_amsdu_len,
-		link->he_cap.has_he && sta->cur->max_amsdu_len >= 11454 ? 10896 : 7935) << 18;
+		link->he_cap.has_he && sta->cur->max_amsdu_len >= 11454 ? 10896 :
+		sta->cur->max_amsdu_len >= 7935 ? 7433 : 3793) << 18;
 	if (link->he_cap.has_he) {
 		const struct ieee80211_sta_he_cap *he = &link->he_cap;
 		rtl_ax_ra_he(command, id, link->supp_rates[radio->band.band] << (band5g ? 4 : 0),
@@ -584,10 +585,21 @@ static bool rtl_ax_ra_peer(struct rtl_ax_ap *radio, struct ieee80211_sta *sta,
 		*rate = 0x100;
 		*caps |= ht | (sgi ? BIT(16) : 0);
 	} else if (link->ht_cap.ht_supported) {
-		rtl_ax_ra_ht20(command, id, link->supp_rates[radio->band.band], ht, sgi);
+		rtl_ax_ra_ht20(command, id,
+			link->supp_rates[radio->band.band] << (band5g ? 4 : 0), ht, sgi, band5g);
 		*rate = 0x80;
 		*caps |= ht | (sgi ? BIT(16) : 0);
-	} else return false;
+	} else {
+		/* Legacy (non-HT) 2.4G b/g peer: register RA instead of returning false. */
+		u16 legacy = link->supp_rates[radio->band.band] << (band5g ? 4 : 0);
+
+		if (!legacy) return false;
+		rtl_ax_ra_legacy(command, id, legacy, band5g);
+		*rate = __ffs(legacy);
+		*caps = BIT(17);
+		bandwidth = 0;
+		nss = 1;
+	}
 	rtl_ax_ra_limit(command, bandwidth, nss, update);
 	*rate |= bandwidth << 16;
 	/* A dynamic-SMPS receiver wakes its other chains after RTS/CTS. */
@@ -647,6 +659,7 @@ static int rtl_ax_station_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif
 			if (ret) goto remove;
 			radio->ra_registered[id] = true;
 			radio->ra_rssi_samples[id] = radio->ra_reports[id] = radio->ra_updates[id] = 0;
+			radio->ra_rssi_level[id] = 0;
 			radio->ra_update_error[id] = 0;
 			clear_bit(id, radio->ra_pending);
 			memset(radio->ra_feedback[id], 0, 8);
@@ -1144,6 +1157,36 @@ static void rtl_ax_ra_work(struct wiphy *wiphy, struct wiphy_work *work)
 		radio->ra_rssi_result = rtl_ax_command_flags(radio, RTL_AX_H2C_LONG_DATA,
 			2, 1, 1, command, sizeof(command), false, false);
 		radio->ra_rssi_sent += !radio->ra_rssi_result;
+	}
+	/* Ported from PonWRT-TYFZA1 0.8.5: the watchdog follows the RSSI report
+	 * with a mask-only RA update. The firmware rate controller only reacts
+	 * to a registered peer, so this narrows the advertised mask by the
+	 * measured RSSI on its own. ra_config retains the full capability mask
+	 * so lower rates can return when the client moves closer. */
+	for (i = 1; i < 128; i++) {
+		u8 mask_command[16], rssi, previous, level;
+		int ret;
+
+		spin_lock_irqsave(&radio->command_lock, flags);
+		if (!radio->ra_registered[i] || !radio->ra_rssi_samples[i]) {
+			spin_unlock_irqrestore(&radio->command_lock, flags);
+			continue;
+		}
+		memcpy(mask_command, radio->ra_config[i], sizeof(mask_command));
+		rssi = radio->ra_rssi[i][0] >> 1;
+		previous = radio->ra_rssi_level[i];
+		spin_unlock_irqrestore(&radio->command_lock, flags);
+		level = rtl_ax_ra_rssi_mask(mask_command, rssi, previous);
+		rtl_ax_ra_environment(mask_command, 0);
+		ret = rtl_ax_command_flags(radio, RTL_AX_H2C_LONG_DATA, 2, 1, 0,
+			mask_command, sizeof(mask_command), false, false);
+		spin_lock_irqsave(&radio->command_lock, flags);
+		radio->ra_update_error[i] = ret;
+		if (!ret) {
+			radio->ra_rssi_level[i] = level;
+			radio->ra_updates[i]++;
+		}
+		spin_unlock_irqrestore(&radio->command_lock, flags);
 	}
 	wiphy_delayed_work_queue(wiphy, &radio->ra_work, 2 * HZ);
 }

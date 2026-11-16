@@ -200,6 +200,7 @@ struct rtl_ax_ap {
 	u64 ra_txstats_reports[128];
 	u8 ra_rssi[128][3];
 	u64 ra_rssi_samples[128], ra_rssi_sent;
+	u8 ra_rssi_level[128];
 	int ra_rssi_result;
 	u64 ra_ppdu_reports;
 	u8 ra_last_ppdu[64];
