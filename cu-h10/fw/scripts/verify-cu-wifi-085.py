@@ -12,7 +12,8 @@
     0.8.5 的 73 文件双 PE 架构；
   * 0.8.5 实机 26 张 v51 射频表作为可切换 profile 完整留存，且与 R10
     资产逐字节一致；
-  * 默认无线配置两个 radio 都启用、regdomain CN、SSID 为 CU 机型串；
+  * 默认无线配置两个 radio 都启用、regdomain CN、SSID 为 CU 机型串 + 频段
+    （PT1570-H10-CU-5G / PT1570-H10-CU-2.4G，禁用双频合一）；
   * 开机 WiFi 诊断脚本在位（run3 刷入仍无无线，需要一次实机证据）。
 """
 import hashlib
@@ -98,8 +99,30 @@ w = txt(WIRE)
 ok(w.count("option disabled '0'") == 2, '两个 radio 仍默认启用')
 ok("option country 'CN'" in w and 'country_code=US' not in w,
    'regdomain 保持 CN（不擅自改功率上限）')
-ok("PT1570-H10-CU" in w and 'PT1570-R10' not in w,
-   'SSID 改为 CU 机型串（不再沿用 R10）')
+# SSID 按「型号 + 频段」区分，禁用双频合一（2026-11-16）
+ok("option ssid 'PT1570-H10-CU-5G'" in w,
+   '5G SSID = PT1570-H10-CU-5G')
+ok("option ssid 'PT1570-H10-CU-2.4G'" in w,
+   '2.4G SSID = PT1570-H10-CU-2.4G')
+ok("option ssid 'PT1570-H10-CU'" not in w and 'PT1570-R10' not in w,
+   '无双频合一 SSID PT1570-H10-CU，也不沿用 R10')
+# hostapd 断流缓解（2026-11-17，移植自 lu-1991 CI）
+ok(w.count("option skip_inactivity_poll '1'") == 2,
+   '两个 VAP 都带 skip_inactivity_poll=1')
+ok(w.count("option disassoc_low_ack '0'") == 2,
+   '两个 VAP 都带 disassoc_low_ack=0')
+STAB = CU / 'files-cu/etc/uci-defaults/99-pt1570-h10-cu-wifi-stability'
+ok(STAB.is_file(), '99-pt1570-h10-cu-wifi-stability 存在')
+if STAB.is_file():
+    s = txt(STAB)
+    ok('youhua,pt1570-h10-cu' in s, 'stability 脚本按 CU board_name 门控')
+    ok('skip_inactivity_poll' in s and 'disassoc_low_ack' in s,
+       'stability 脚本为 sysupgrade 保留配置补 hostapd 断流两项')
+    try:
+        r = subprocess.run(['sh', '-n', str(STAB)], capture_output=True, text=True)
+        ok(r.returncode == 0, 'sh -n stability 脚本')
+    except FileNotFoundError:
+        pass
 ok(DIAG.is_file(), '开机 WiFi 诊断脚本 97-pt1570-h10-cu-wifi-diag 存在')
 if DIAG.is_file():
     d = txt(DIAG)

@@ -38,6 +38,12 @@
 #     也把「面板物理左→右顺序」作为硬断言锁死（run #4 缺的正是这一条）。
 #   * 固件由 build-ponwrt-pt1570-h10-cu.yml 产出，两者配套使用。
 #
+# WiFi SSID 约定（2026-11-16，全 H10 workflow 统一）：出厂 SSID 按
+#   「型号 + 频段」区分、不启用双频合一：5GHz -> PT1570-H10-CU-5G /
+#   2.4GHz -> PT1570-H10-CU-2.4G。本 workflow 只打包 U-Boot，不含无线配置；
+#   SSID 由固件 workflow build-ponwrt-pt1570-h10-cu.yml 的
+#   "Set band-specific SSIDs" 步骤 + scripts/set-band-ssids.py 落地并断言。
+#
 # ⚠️ stock 与这台设备绑定（GPT GUID 每机唯一）。换机需重新备份 mtd0 并更新
 #    boards/*.json 的 stock_sha256 与 stocks/.../stock-mtd0.bin.b64。
 # 统一命名 ID: PT1570-H10-2P5G-CU-uboot

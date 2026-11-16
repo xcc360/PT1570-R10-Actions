@@ -390,6 +390,18 @@ jobs:
             echo "custom packages repo: $URL/targets/rtl9617c/generic/packages/packages.adb"
           fi
 
+      # 2026-11-16：SSID 按「型号 + 频段」区分，禁用双频合一。
+      # radio0=5G / radio1=2.4G 改为 PT1570-R10-5G / PT1570-R10-2.4G。
+      # 在注入后的 files overlay 上执行（幂等），确保镜像内 conffile 就是分频 SSID。
+      - name: Set band-specific SSIDs (no dual-band unify)
+        run: |
+          set -e
+          WF="$GITHUB_WORKSPACE/wrt/files/etc/config/wireless"
+          [ -f "$WF" ] || { echo "::error::缺少注入后的 $WF"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/scripts/set-band-ssids.py" "$WF" "PT1570-R10"
+          echo "--- SSID in image overlay ---"
+          grep -n "option ssid" "$WF"
+
       - name: Select WiFi RFE54 profile
         env:
           FEM_PROFILE: ${{ inputs.fem_profile }}
@@ -959,6 +971,30 @@ jobs:
           [ "$(grep -c "option disabled '0'" "$ROOT/etc/config/wireless")" = 2 ] \
             || { echo "::error::默认 wireless 配置的 radio 数不是 2 或未启用"; exit 1; }
           echo "WIFI_DEFAULT_CFG_OK=True"
+
+          # ---- SSID 按型号+频段区分，禁用双频合一（2026-11-16）----
+          grep -q "^[[:space:]]*option ssid 'PT1570-R10-5G'$" "$ROOT/etc/config/wireless" \
+            || { echo "::error::镜像缺 5G SSID PT1570-R10-5G"; exit 1; }
+          grep -q "^[[:space:]]*option ssid 'PT1570-R10-2.4G'$" "$ROOT/etc/config/wireless" \
+            || { echo "::error::镜像缺 2.4G SSID PT1570-R10-2.4G"; exit 1; }
+          [ "$(grep -c "option ssid 'PT1570-R10'" "$ROOT/etc/config/wireless")" = 0 ] \
+            || { echo "::error::镜像仍有双频合一 SSID PT1570-R10"; exit 1; }
+          ssn=$(grep -c "option ssid" "$ROOT/etc/config/wireless")
+          [ "$ssn" = 2 ] || { echo "::error::镜像 SSID 数 $ssn != 2"; exit 1; }
+          echo "SSID_PER_BAND_OK=True (PT1570-R10-5G / PT1570-R10-2.4G, no dual-band unify)"
+
+          # ---- hostapd 断流缓解参数（2026-11-17，移植自 lu-1991 CI）----
+          [ "$(grep -c "option skip_inactivity_poll '1'" "$ROOT/etc/config/wireless")" = 2 ] \
+            || { echo "::error::镜像两个 VAP 缺 skip_inactivity_poll=1"; exit 1; }
+          [ "$(grep -c "option disassoc_low_ack '0'" "$ROOT/etc/config/wireless")" = 2 ] \
+            || { echo "::error::镜像两个 VAP 缺 disassoc_low_ack=0"; exit 1; }
+          [ -x "$ROOT/etc/uci-defaults/96-pt1570-wifi-tuning" ] \
+            || { echo "::error::96-pt1570-wifi-tuning 未进镜像或丢了可执行位"; exit 1; }
+          grep -q 'skip_inactivity_poll' "$ROOT/etc/uci-defaults/96-pt1570-wifi-tuning" \
+            || { echo "::error::96 tuning 缺 skip_inactivity_poll(sysupgrade 保留配置不会补)"; exit 1; }
+          grep -q 'disassoc_low_ack' "$ROOT/etc/uci-defaults/96-pt1570-wifi-tuning" \
+            || { echo "::error::96 tuning 缺 disassoc_low_ack(sysupgrade 保留配置不会补)"; exit 1; }
+          echo "HOSTAPD_STABILITY_OK=True (skip_inactivity_poll=1 / disassoc_low_ack=0 on 2 VAPs)"
 
           # ---- 原厂 PT1570 专用 FEM 表 + hostapd 高级参数（2026-11-14）----
           # 资产层：sha256 / 版本注释 / 回滚目录 / 溯源目录 / uci-defaults 全查
