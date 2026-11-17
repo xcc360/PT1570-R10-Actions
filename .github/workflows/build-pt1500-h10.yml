@@ -33,10 +33,12 @@
 #       `option mode 'epon-d10g'`（PT1500 EPON profile），而本机走 XGPON 线路；
 #       驱动按 mode 选 serdes 表并分流 offload 路径，走错分支则 OMCI 通道不建立。
 #       -> apply-board-h10.sh 在编译期把 mode 纠正为 xgpon，95 脚本首启再纠一次。
-#   上游本次还删除了 90-pon-wan / 91-pon-offload / 89-rtl9617c-lan-ports /
-#   97-rtl9617c-argon-default —— WAN provisioning 收进 Rust pon daemon、offload
-#   交回 firewall。故 WAN/VLAN/PPPoE/PON FE 全部改由 files-h10 的 95 脚本负责，
+#   上游本次还删除了 90-pon-wan / 91-pon-offload / 97-rtl9617c-argon-default
+#   —— WAN provisioning 收进 Rust pon daemon、offload 交回 firewall。
+#   故 WAN/VLAN/PPPoE/PON FE 全部改由 files-h10 的 95 脚本负责，
 #   断言改为「校验仍存在的 + 反向校验已删的确实不存在」。
+#   注：89-rtl9617c-lan-ports **没被删**，只是形态变了 —— 上游把 rename-netdevs.uc
+#   直接安装成 89（Makefile install 段），旧 HEAD 才是"包装脚本 + 单独装 uc"。
 #
 # ★★★ 2026-11-17 第一次重大变更：源码基线从 base 20b4cf4 整体切到 refactor ★★★
 #   依据：网友 lyq1996 本机编译的 refactor 固件
@@ -555,12 +557,14 @@ jobs:
           #   而不是旧 HEAD 那种"包装脚本 + 单独装 uc"的形式。**功能完全等价**，
           #   所以 89 脚本仍然必须存在，不能断言它不存在。
           #   97-rtl9617c-argon-default 才是真正被删的。
-          found=0
-          for f in "$PKG_UCI"/*/files/etc/uci-defaults/89-rtl9617c-lan-ports \
-                   "$PKG_UCI"/*/root/etc/uci-defaults/89-rtl9617c-lan-ports; do
-            [ -f "$f" ] && { found=1; break; }
-          done
-          [ "$found" = 1 ] || { echo "ERROR: refactor 缺少 89-rtl9617c-lan-ports（网卡重命名会失效）" >&2; exit 1; }
+          # 89 是 Makefile install 段安装的（源码树里没有这个静态文件），
+          # 所以只能校验 Makefile 的安装规则 —— RUN #9 实测纠正：误查源码树导致误报缺失。
+          PON_MK="$PKG_UCI/rtl9617c-pon-control/Makefile"
+          test -f "$PON_MK" || { echo "ERROR: refactor 缺少 rtl9617c-pon-control/Makefile" >&2; exit 1; }
+          grep -q '89-rtl9617c-lan-ports' "$PON_MK" \
+            || { echo "ERROR: pon-control Makefile 不再安装 89-rtl9617c-lan-ports（网卡重命名会失效）" >&2; exit 1; }
+          grep -q 'rename-netdevs.uc' "$PON_MK" \
+            || { echo "ERROR: pon-control Makefile 不再安装 rename-netdevs.uc" >&2; exit 1; }
           found=0
           for f in "$PKG_UCI"/*/files/etc/uci-defaults/97-rtl9617c-argon-default \
                    "$PKG_UCI"/*/root/etc/uci-defaults/97-rtl9617c-argon-default; do
