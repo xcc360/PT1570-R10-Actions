@@ -21,8 +21,25 @@
 # 布局：factory(8 MiB static) + fit + rootfs_data，产物 sysupgrade.itb
 #       （FIT external-static-with-rootfs）。
 #
-# ★★★ 2026-11-17 重大变更：源码基线从 base 20b4cf4 整体切到 upstream refactor 分支 ★★★
-#   默认 HEAD b5025a9d1c95。依据：网友 lyq1996 本机编译的 refactor 固件
+# ★★★ 2026-11-17 第二次升级：refactor HEAD b5025a9d1c95 -> 659700cc1bbc ★★★
+#   上游 4 个新提交：659700cc1bbc (harden OMCI handling and PON bring-up)、
+#   f076437fb4d5 (hand flow offload back to firewall) + 两个 revert。
+#   2.5G 架构零变化，且 run#6（b5025a9d1c95）已实机确认 2.5G 可用 —— 本次升级
+#   同时修掉实机暴露的两个问题：
+#     * 面板灯全错：上游 PT1500 DTS 的 leds GPIO 编号没按原厂 5-bank 换算，
+#       8 个灯错 7 个（PWR_G 还抢占了原厂 LOS 的脚）。-> 新增
+#       scripts/apply-dts-leds-fix.sh，按原厂 DTB flat 编号覆盖。
+#     * XGPON 认证失败 / LuCI 报"设备初始化失败"：上游 config/pon 硬编码
+#       `option mode 'epon-d10g'`（PT1500 EPON profile），而本机走 XGPON 线路；
+#       驱动按 mode 选 serdes 表并分流 offload 路径，走错分支则 OMCI 通道不建立。
+#       -> apply-board-h10.sh 在编译期把 mode 纠正为 xgpon，95 脚本首启再纠一次。
+#   上游本次还删除了 90-pon-wan / 91-pon-offload / 89-rtl9617c-lan-ports /
+#   97-rtl9617c-argon-default —— WAN provisioning 收进 Rust pon daemon、offload
+#   交回 firewall。故 WAN/VLAN/PPPoE/PON FE 全部改由 files-h10 的 95 脚本负责，
+#   断言改为「校验仍存在的 + 反向校验已删的确实不存在」。
+#
+# ★★★ 2026-11-17 第一次重大变更：源码基线从 base 20b4cf4 整体切到 refactor ★★★
+#   依据：网友 lyq1996 本机编译的 refactor 固件
 #   （r36946+24-79bc56cb74）实机 2.5G 可用，而 base 20b4cf4 自编译固件 2.5G 不可用。
 #   二进制比对确认两条铁证：
 #     * 内核符号：refactor 有 rtl8221b_hisgmii / rtl9617c_serdes / rtl_ni_p6_set_interface；
@@ -48,8 +65,9 @@
 #     网口、LED、br-lan MAC 由 refactor 的 89-rtl9617c-lan-ports（rename-netdevs.uc）
 #     与 DTS nvmem（base_mac）处理；
 #   * 带 H10 专用 95-pt1500-h10-wan-default（files-h10/etc/uci-defaults/）：
-#     默认 WAN：apply-board-h10.sh 在编译期把上游 90-pon-wan 的 VLAN 3961 改为
-#     本机 XGPON 的 1101（固件第一层默认即 pon0.1101）；95 脚本再补 mtu1500 + PON FE on；
+#     默认 WAN（上游 90-pon-wan 已删除，WAN 全部由本脚本负责）：
+#     VLAN 1101 + 8021q 子设备（mtu 1500）+ PPPoE + PON FE on + LAN 统一 +
+#     PON mode 纠正为 xgpon（首启再纠一次，防 sysupgrade 保留旧配置）；
 #   * 只复用机型无关的通用修复：apk 源/公钥、argon rpcd 插件（LF+0755）、
 #     92-pt1570-rpcd-eol 兜底、verify-fit-boot.py。
 #     zz-pt1570-sysupgrade.sh 在 refactor 下不再需要（用标准 fit_do_upgrade）。
@@ -83,9 +101,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 refactor HEAD b5025a9d1c95，完整 SHA；2.5G 正解架构）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 refactor HEAD 659700cc1bbc，完整 SHA；2.5G 正解架构 + OMCI/PON 加固）'
         required: false
-        default: 'b5025a9d1c9527166048c40688ff936fd0299330'
+        default: '659700cc1bbc'
         type: string
       test_only:
         description: '只生成并上传 .config / 校验报告，不编译'
@@ -211,7 +229,7 @@ jobs:
         run: |
           set -e
           # 2026-11-17 基线切到 refactor（2.5G 正解架构，实机验证可用）
-          REF="${{ inputs.source_ref || 'b5025a9d1c9527166048c40688ff936fd0299330' }}"
+          REF="${{ inputs.source_ref || '659700cc1bbc' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -322,7 +340,7 @@ jobs:
           done || true
           echo "  OK   rpcd exec 插件：CRLF 归一化 + 0755"
 
-      - name: Apply H10 board fixes (no DTS/Device injection)
+      - name: Apply H10 board fixes (PON mode + panel LED GPIO)
         env:
           ASSETS: ${{ github.workspace }}
           WRT: ${{ github.workspace }}/wrt
@@ -440,23 +458,31 @@ jobs:
             echo "  OK   $sym (2.5G refactor 驱动)"
           done
 
-          # 默认 WAN：apply-board-h10.sh 已在编译期把上游 90-pon-wan 的默认 VLAN
-          # 从 EPON 3961 改为本机 XGPON 的 1101（固件第一层默认即 pon0.1101）。
-          # 这里复核 patch 结果；95 脚本仍保留，负责 mtu1500 + PON FE on + LAN 统一。
+          # ★ 2026-11-17 基线升到 659700cc1bbc 后，上游删除了 90-pon-wan /
+          #   91-pon-offload（WAN provisioning 收进 Rust pon daemon，offload 交回
+          #   firewall）。因此 WAN/VLAN/PPPoE/PON FE 全部由我们的 95 脚本负责。
+          #   这里做反向断言（上游确实没有这两个脚本）+ 校验 95 脚本的关键项。
           UCI_SRC=target/linux/rtl9617c/base-files/etc/uci-defaults
-          test -f "$UCI_SRC/90-pon-wan" \
-            || { echo "ERROR: refactor 默认 WAN 脚本 90-pon-wan 缺失" >&2; exit 1; }
-          grep -q '^wan_vlan_default=1101$' "$UCI_SRC/90-pon-wan" \
-            || { echo "ERROR: 90-pon-wan 默认 VLAN 未被改为 1101（apply-board-h10.sh patch 失败？）" >&2; exit 1; }
-          test -f "$UCI_SRC/91-pon-offload" \
-            || { echo "ERROR: refactor 91-pon-offload 缺失" >&2; exit 1; }
+          [ ! -f "$UCI_SRC/90-pon-wan" ] \
+            || { echo "ERROR: 上游 90-pon-wan 复活，需复核两套 WAN 逻辑是否冲突" >&2; exit 1; }
+          [ ! -f "$UCI_SRC/91-pon-offload" ] \
+            || { echo "ERROR: 上游 91-pon-offload 复活，需复核 offload 策略" >&2; exit 1; }
           H10WAN="$GITHUB_WORKSPACE/files-h10/etc/uci-defaults/95-pt1500-h10-wan-default"
           test -f "$H10WAN" || { echo "ERROR: 缺 H10 WAN/FE 修复脚本 95-pt1500-h10-wan-default" >&2; exit 1; }
           bash -n "$H10WAN" || { echo "ERROR: 95-pt1500-h10-wan-default 语法错误" >&2; exit 1; }
           for kw in 'wan_vlan=1101' 'mtu=1500' "offload='1'" 'flow_offloading_hw' 'type=8021q'; do
             grep -qF "$kw" "$H10WAN" || { echo "ERROR: H10 WAN 脚本缺关键项 $kw" >&2; exit 1; }
           done
-          echo "  OK   默认 WAN=pon0.1101（90-pon-wan patch 后），95 补 mtu1500 + PON FE on"
+          # PON mode 必须是 xgpon（本机为 XGPON 线路；上游默认 epon-d10g 已被纠正）
+          grep -q "option mode 'xgpon'" \
+            "$GITHUB_WORKSPACE/wrt/package/rtl9617c/rtl9617c-pon-control/files/etc/config/pon" \
+            || { echo "ERROR: 上游 pon config 的 mode 未纠正为 xgpon" >&2; exit 1; }
+          # 95 脚本必须带 mode 纠正逻辑（防 sysupgrade 保留旧配置时 mode 仍是错的）
+          grep -qF "pon.pon.mode" "$H10WAN" \
+            || { echo "ERROR: 95 脚本缺 PON mode 纠正逻辑" >&2; exit 1; }
+          grep -qF "option mode 'xgpon'" "$H10WAN" \
+            || { echo "ERROR: 95 脚本未把 PON mode 设为 xgpon" >&2; exit 1; }
+          echo "  OK   默认 WAN=pon0.1101（95 脚本负责），PON mode=xgpon"
 
           grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
             || { echo "ERROR: image/Makefile 缺少 SUPPORTED_DEVICES" >&2; exit 1; }
@@ -503,15 +529,32 @@ jobs:
 
           # refactor 首启脚本在 package/rtl9617c 下（rtl9617c-* 命名），
           # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default。
+          # ★ 2026-11-17 基线 659700cc1bbc：上游删除了 89-rtl9617c-lan-ports
+          #   （rename-netdevs.uc 的包装脚本）与 97-rtl9617c-argon-default，
+          #   所以这里只校验仍然存在的三个，并反向确认被删的两个确实已删。
           PKG_UCI=package/rtl9617c
-          for s in 89-rtl9617c-lan-ports 94-rtl9617c-cpu 95-rtl9617c-argon \
-                   96-rtl9617c-rpcd-perms 97-rtl9617c-argon-default; do
+          for s in 94-rtl9617c-cpu 95-rtl9617c-argon 96-rtl9617c-rpcd-perms; do
             found=0
             for f in "$PKG_UCI"/*/files/etc/uci-defaults/"$s" \
                      "$PKG_UCI"/*/root/etc/uci-defaults/"$s"; do
               [ -f "$f" ] && { found=1; break; }
             done
             [ "$found" = 1 ] || { echo "ERROR: refactor 首启脚本缺失：$s" >&2; exit 1; }
+          done
+          # rename-netdevs.uc 本体与 pon-leds 必须在（网卡重命名 + LOS/PON 灯驱动）
+          test -f "$PKG_UCI/rtl9617c-pon-control/files/usr/share/rtl9617c/rename-netdevs.uc" \
+            || { echo "ERROR: refactor rename-netdevs.uc 缺失" >&2; exit 1; }
+          test -f "$PKG_UCI/rtl9617c-pon-control/files/etc/init.d/pon-leds" \
+            || { echo "ERROR: refactor pon-leds 服务缺失" >&2; exit 1; }
+          test -f "$PKG_UCI/rtl9617c-pon-control/files/pon-leds.uc" \
+            || { echo "ERROR: refactor pon-leds.uc 缺失" >&2; exit 1; }
+          for s in 89-rtl9617c-lan-ports 97-rtl9617c-argon-default; do
+            found=0
+            for f in "$PKG_UCI"/*/files/etc/uci-defaults/"$s" \
+                     "$PKG_UCI"/*/root/etc/uci-defaults/"$s"; do
+              [ -f "$f" ] && { found=1; break; }
+            done
+            [ "$found" = 0 ] || { echo "ERROR: $s 复活了（上游改版？）需复核" >&2; exit 1; }
           done
           [ ! -e "$UCI_SRC/99-pt1570-fit" ] \
             || { echo "ERROR: 上游树混入 R10 的 99-pt1570-fit" >&2; exit 1; }
@@ -723,17 +766,20 @@ jobs:
 
           # ---- 首启脚本（refactor rtl9617c-* 命名 + H10 WAN/FE 修复）----
           UCI="$ROOT/etc/uci-defaults"
-          for s in 90-pon-wan 91-pon-offload 89-rtl9617c-lan-ports \
-                   94-rtl9617c-cpu 95-rtl9617c-argon 96-rtl9617c-rpcd-perms \
-                   97-rtl9617c-argon-default 95-pt1500-h10-wan-default; do
+          # ★ 基线 659700cc1bbc：上游已删 90-pon-wan / 91-pon-offload /
+          #   89-rtl9617c-lan-ports / 97-rtl9617c-argon-default，
+          #   WAN/VLAN/PPPoE/PON FE 全部由我们的 95 脚本负责。
+          for s in 94-rtl9617c-cpu 95-rtl9617c-argon 96-rtl9617c-rpcd-perms \
+                   95-pt1500-h10-wan-default; do
             [ -f "$UCI/$s" ] || { echo "::error::镜像缺少首启脚本 $s"; exit 1; }
           done
-          # 第一层默认 WAN：90-pon-wan 默认 VLAN 必须已被 patch 成 1101
-          grep -q '^wan_vlan_default=1101$' "$UCI/90-pon-wan" \
-            || { echo "::error::镜像 90-pon-wan 默认 VLAN 不是 1101"; exit 1; }
-          # 2.5G 口 netdev 重命名由 refactor 的 rename-netdevs.uc 处理
-          [ -f "$ROOT/usr/share/rtl9617c/rename-netdevs.uc" ] \
-            || { echo "::error::镜像缺少 rename-netdevs.uc（2.5G 口命名）"; exit 1; }
+          for s in 90-pon-wan 91-pon-offload 89-rtl9617c-lan-ports \
+                   97-rtl9617c-argon-default; do
+            [ ! -e "$UCI/$s" ] || { echo "::error::镜像里上游脚本 $s 不该存在（两套逻辑会打架）"; exit 1; }
+          done
+          # PON mode 必须是 xgpon（上游 epon-d10g 已在编译期纠正）
+          grep -q "option mode 'xgpon'" "$ROOT/etc/config/pon" \
+            || { echo "::error::镜像 /etc/config/pon 的 mode 不是 xgpon"; exit 1; }
           # H10 WAN/FE 修复脚本必须带齐全部关键项
           H10WAN="$UCI/95-pt1500-h10-wan-default"
           grep -q 'youhua,pt1500-h10-2p5g' "$H10WAN" \
@@ -741,6 +787,27 @@ jobs:
           for kw in 'wan_vlan=1101' 'mtu=1500' "offload='1'" 'flow_offloading_hw' 'type=8021q'; do
             grep -qF "$kw" "$H10WAN" || { echo "::error::镜像里 H10 WAN 脚本缺 $kw"; exit 1; }
           done
+          # PON mode 纠正逻辑必须在（防 sysupgrade 保留旧配置时 mode 仍是错的）
+          grep -qF "option mode 'xgpon'" "$H10WAN" \
+            || { echo "::error::镜像里 H10 WAN 脚本缺 PON mode=xgpon 纠正逻辑"; exit 1; }
+          # 面板灯：镜像 DTB 必须是按原厂 DTB 换算后的 GPIO 编号
+          # （上游 DTS 的编号未按原厂 5-bank 换算，8 个灯错 7 个，实机表现为灯全乱）
+          DTB_SRC="$GITHUB_WORKSPACE/wrt/target/linux/rtl9617c/dts/${DTS}.dts"
+          if [ -f "$DTB_SRC" ]; then
+            for pair in 'LED_PPP_G 96' 'LED_LOS 11' 'LED_PON 108' 'LED_PWR_G 6' \
+                        'LED_FXS 12' 'LED_EPHY1 103' 'LED_EPHY2 97' 'LED_EPHY3 100' \
+                        'LED_USB0 99' 'LED_EPHY0 102' 'LED_USB1 101'; do
+              lbl=${pair% *}; pin=${pair#* }
+              grep -A3 "label = \"$lbl\"" "$DTB_SRC" | grep -q "gpios = <&gpio0 $pin " \
+                || { echo "::error::DTS 灯 $lbl 的 GPIO 不是原厂 flat 编号 $pin（灯修复未生效？）"; exit 1; }
+            done
+            echo "  OK   DTS 面板灯 GPIO 已按原厂 DTB 换算（11 个灯全部核对通过）"
+          else
+            echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过灯 GPIO 校验"
+          fi
+          # 2.5G 口 netdev 重命名由 refactor 的 rename-netdevs.uc 处理
+          [ -f "$ROOT/usr/share/rtl9617c/rename-netdevs.uc" ] \
+            || { echo "::error::镜像缺少 rename-netdevs.uc（2.5G 口命名）"; exit 1; }
           # 绝不能把 R10 的网口/MAC 兜底与 WAN 覆盖带进 H10
           [ ! -e "$UCI/99-pt1570-fit" ] \
             || { echo "::error::镜像混入 R10 的 99-pt1570-fit"; exit 1; }
@@ -830,10 +897,10 @@ jobs:
             echo "release_id=PT1500-H10-2P5G-CT-sysupgrade"
             echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
-            echo "dts=$DTS (refactor upstream @ $SOURCE_HASH, unmodified)"
-            echo "source_ref=$SOURCE_REF (baseline=refactor, 2.5G 正解架构)"
+            echo "dts=$DTS (refactor upstream @ $SOURCE_HASH; 面板灯 GPIO 已按原厂 DTB 覆盖)"
+            echo "source_ref=$SOURCE_REF (baseline=refactor 659700cc1bbc, 2.5G 正解架构 + OMCI/PON 加固)"
             echo "source_commit=$SOURCE_HASH"
-            echo "baseline=refactor b5025a9d1c95 — HisGMII PHY + SerDes PHY + 按速切 2500BASEX/SGMII（网友实机验证 2.5G 可用）"
+            echo "baseline=refactor 659700cc1bbc — HisGMII PHY + SerDes PHY + 按速切 2500BASEX/SGMII（run#6 实机验证 2.5G 可用）"
             echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
             echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs, 标准 fit_do_upgrade)"
             echo "bootloader=lyq1996/rtl9617c-uboot@3a709714e551 (2026-11-10, pt1500-h10-2p5g_defconfig)"
@@ -843,7 +910,7 @@ jobs:
             echo "factory_pon_sn=YHTCE2691B7A"
             echo "arch=aarch64_cortex-a53 (refactor CPU_TYPE=cortex-a53)"
             echo "lan_ip=192.168.1.1/24 (三机型统一；首启脚本迁移旧 192.168.2.1)"
-            echo "default_wan=pon0.1101 pppoe (90-pon-wan VLAN 3961->1101 patched + 95 PON FE on/mtu1500)"
+            echo "default_wan=pon0.1101 pppoe (95 脚本负责: VLAN 1101 + mtu1500 + PON FE on)"
             echo "wifi=none (2.5G variant)"
             echo "2p5g=refactor DTS realtek,hisgmii + serdes-option-mode + phy-mode=2500base-x + phys=&serdes；驱动 realtek_hisgmii.c + phy-rtl9617c-serdes.c + patch 700-730 (防回退断言，串回 base 会编译失败)"
             echo "packages=publish_packages=false（暂不产出同批 packages，减少下载量）"
