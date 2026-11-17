@@ -1,28 +1,50 @@
 #!/bin/bash
 # PT1500-H10 2.5G 板级校验（独立 workflow 专用，幂等，只读断言 + 少量修补）。
 #
-# 2026-11-17 重大变更：源码基线从 base 20b4cf4 整体切到 upstream refactor 分支
-#   （默认 HEAD b5025a9d1c95）。refactor 自带完整、实机验证的 2.5G 架构：
+# ★★★ 2026-11-17 第二次基线升级：refactor HEAD b5025a9d1c95 -> 659700cc1bbc ★★★
+#   上游 4 个新提交：659700cc1bbc (harden OMCI handling and PON bring-up)、
+#   f076437fb4d5 (hand flow offload back to firewall)、以及两个 revert。
+#   2.5G 架构**零变化**（HisGMII / SerDes PHY / 2500base-x 全部原位），
+#   且 run#6 已实机确认 2.5G 可用。升级同时修了两个实机问题：
+#
+#   【问题 1】面板灯全错 —— 上游 DTS 的 leds GPIO 编号没按原厂 bank 换算。
+#     原厂 DTB 是 5 个 bank（面板灯分布在 bank0 与 bank3），上游 refactor 合并成
+#     单个扁平 gpio0 后，PT1500 DTS 沿用了另一套编号，8 个灯错 7 个。
+#     → 本脚本第 6 组调用 apply-dts-leds-fix.sh 按原厂 DTB 覆盖。
+#
+#   【问题 2】XGPON 认证失败、LuCI 报"设备初始化失败" —— 上游 config/pon 硬编码
+#     `option mode 'epon-d10g'`（PT1500 EPON profile），而本机走 XGPON 线路。
+#     驱动按 mode 选 serdes 表并分流 offload 路径，走错分支则 OMCI 通道不建立。
+#     → 本脚本第 5 组把上游默认值直接纠正为 xgpon；
+#       95-pt1500-h10-wan-default 也在首启时二次纠正（防 sysupgrade 保留旧配置）。
+#
+#   上游在本次重构中删除了 90-pon-wan / 91-pon-offload / 89-rtl9617c-lan-ports /
+#   97-rtl9617c-argon-default（WAN provisioning 收进 Rust pon daemon，offload
+#   交回 firewall，89 只是 rename-netdevs.uc 的包装脚本）。因此：
+#     * WAN / VLAN / PPPoE / PON FE 全部改由 files-h10 的 95 脚本负责；
+#     * 断言改为「校验仍存在的 + 反向校验已删的确实不存在」，防上游改版时我们
+#       基于旧假设写出错误的注入逻辑。
+#
+# 历史变更（2026-11-17 第一次）：源码基线从 base 20b4cf4 整体切到 refactor 分支。
+#   refactor 自带完整、实机验证的 2.5G 架构：
 #     * RTL8221B HisGMII PHY 驱动（drivers/net/phy/realtek/realtek_hisgmii.c）
 #     * 独立 SerDes PHY（drivers/phy/realtek/phy-rtl9617c-serdes.c）
 #     * P6 lane 按协商速率重编（ni/ni_p6.c + patch 730）
 #     * DTS 用 realtek,hisgmii + phy-mode=2500base-x + &serdes
-#   因此本脚本【不再注入任何驱动/DTS/内核 patch】，只做校验 + 一处 WAN 默认值
-#   改写（3961 -> 1101），防止上游改版悄悄回退 2.5G。
-#
-# base 旧基线的三步修补在 refactor 下全部作废并已删除：
+# base 旧基线的三步修补在 refactor 下全部作废：
 #   * 移除 pt1500-fip.sh        —— refactor 树里根本没有该文件，升级走标准 fit_do_upgrade；
 #   * 修 tyfza1-factory 参数     —— refactor 没有该 shell 脚本，factory 校准由驱动直读 UBI 卷
 #                                   （commit b5025a9d1c9: driver is the only reader of factory volume）；
 #   * CI_KERNPART=fit / zz 覆盖  —— refactor platform.sh 自带 RAMFS_COPY_BIN='fitblk fit_check_sign'
 #                                   并调用 fit_do_upgrade，不需要 zz 脚本覆盖 nand_do_upgrade。
 #
-# 本脚本现在做四组断言 + 一处 WAN 默认值改写（任何一项不满足就 fail，编不出废固件）：
+# 本脚本现在做六组断言 + 三处修补（任何一项不满足就 fail，编不出废固件）：
 #   1. 机型定义齐全（profile / DTS / SUPPORTED_DEVICES / platform.sh 白名单）；
 #   2. 2.5G 驱动与 DTS 的 hisgmii/serdes/2500base-x 特征齐全（核心，防回退到 base）；
 #   3. config-6.18 的 2.5G 驱动符号齐全；
-#   4. refactor 的 WAN / 首启脚本命名齐全（rtl9617c-*，不是 tyfza1-*）；
-#   5. 把上游 90-pon-wan 默认 VLAN 3961 改为用户实机 XGPON 的 1101（幂等）。
+#   4. refactor 首启脚本齐全 + 被删脚本确实已删（防上游改版导致逻辑打架）；
+#   5. 上游 pon config 的 mode 纠正为 xgpon + 确认上游 WAN 脚本未复活；
+#   6. DTS 面板灯按原厂 DTB flat 编号覆盖。
 #
 # env: ASSETS=<资产目录>  WRT=<源码树>
 
@@ -100,14 +122,17 @@ for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
 done
 echo "  OK  config-6.18：HisGMII/SerDes/MDIO/UIMAGE_FIT_BLK 符号齐全"
 
-# ---- 4. WAN / 首启脚本（refactor 命名 rtl9617c-*）----
-for s in 90-pon-wan 91-pon-offload; do
-  [ -f "$UCI_DIR/$s" ] || fail "refactor 上游 WAN 脚本缺失：$s"
-done
-# package 里的首启脚本（refactor 从 package 而非 target base-files 安装）
+# ---- 4. 首启脚本（refactor 命名 rtl9617c-*）----
+# ★ 2026-11-17：基线从 b5025a9d1c95 升到 659700cc1bbc 后，上游重构了首启脚本：
+#   * 删除 89-rtl9617c-lan-ports（只是 rename-netdevs.uc 的包装脚本，
+#     rename-netdevs.uc 本体仍在 package/rtl9617c/rtl9617c-pon-control/files/ 下）
+#   * 删除 97-rtl9617c-argon-default
+#   * 删除 90-pon-wan / 91-pon-offload（WAN provisioning 收进 Rust pon daemon，
+#     offload 交回 firewall）—— 见第 5 组，WAN/VLAN 改由我们的 95 脚本负责。
+# 因此这里的断言改为「校验仍然存在的那些 + 校验被删的那些确实不存在」，
+# 防止上游改版时我们基于旧假设写出错误的注入逻辑。
 PKG_UCI="$WRT/package/rtl9617c"
-for s in 89-rtl9617c-lan-ports 94-rtl9617c-cpu 95-rtl9617c-argon \
-         96-rtl9617c-rpcd-perms 97-rtl9617c-argon-default; do
+for s in 94-rtl9617c-cpu 95-rtl9617c-argon 96-rtl9617c-rpcd-perms; do
   found=0
   for f in "$PKG_UCI"/*/files/etc/uci-defaults/"$s" \
            "$PKG_UCI"/*/root/etc/uci-defaults/"$s"; do
@@ -115,19 +140,52 @@ for s in 89-rtl9617c-lan-ports 94-rtl9617c-cpu 95-rtl9617c-argon \
   done
   [ "$found" = 1 ] || fail "refactor 首启脚本缺失：$s"
 done
-# ---- 5. 默认 WAN VLAN 3961 -> 1101（用户实机 XGPON 默认）----
-# 上游 90-pon-wan 是 EPON stock 布局（wan_vlan_default=3961，vlan_mac_offset=3）；
-# 本机是 XGPON/1101 线路。编译期直接把上游默认值改成 1101，使固件第一层默认
-# 就是 pon0.1101，不再只依赖 95 脚本的时序覆盖（两层保险，95 脚本仍保留，
-# 负责 mtu1500 + PON FE on + LAN 统一等 H10 专属项）。
-# 幂等：已是 1101 则跳过；既非 3961 也非 1101 则 fail，提示人工复核上游改版。
-WAN90="$UCI_DIR/90-pon-wan"
-if grep -q '^wan_vlan_default=3961$' "$WAN90"; then
-  sed -i 's/^wan_vlan_default=3961$/wan_vlan_default=1101/' "$WAN90"
-  sed -i 's/PPPoE on VLAN 3961/PPPoE on VLAN 1101 (H10 XGPON)/' "$WAN90" || true
-fi
-grep -q '^wan_vlan_default=1101$' "$WAN90" \
-  || fail "90-pon-wan 默认 VLAN 既非 3961 也非 1101（上游改版？需人工复核）"
-echo "  OK  首启/WAN：rtl9617c-* 命名齐全，90-pon-wan 默认 VLAN=1101（pon0.1101）"
+# rename-netdevs.uc 本体必须还在（89 脚本虽然删了，网卡重命名还得靠它）
+found=0
+for f in "$PKG_UCI"/*/files/usr/share/rtl9617c/rename-netdevs.uc; do
+  [ -f "$f" ] && { found=1; break; }
+done
+[ "$found" = 1 ] || fail "refactor rename-netdevs.uc 缺失（网卡重命名会失效）"
+# pon-leds 服务与 ucode 助手必须在（面板 LOS/PON 灯由它按 label 名驱动）
+[ -f "$PKG_UCI/rtl9617c-pon-control/files/etc/init.d/pon-leds" ] \
+  || fail "refactor pon-leds 服务缺失"
+[ -f "$PKG_UCI/rtl9617c-pon-control/files/pon-leds.uc" ] \
+  || fail "refactor pon-leds.uc 缺失（LOS/PON 灯不会被驱动）"
 
-echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=refactor wan_default_vlan=1101"
+# ---- 5. PON mode 纠正为 xgpon + WAN VLAN 1101 ----
+# ★ 2026-11-17 实机回归：XGPON 认证失败、LuCI 报"设备初始化失败"。
+#   根因：上游 refactor 的 package/rtl9617c/rtl9617c-pon-control/files/etc/config/pon
+#   硬编码 `option mode 'epon-d10g'`（PT1500 的 EPON profile），
+#   而本机实机走 XGPON 线路（原厂 mtd4 内多处 WanType=XGPON 佐证）。
+#   驱动侧后果：pon_serdes.c 按 mode 选 serdes 表（epon_d10g vs xgpon），
+#   init.d/pon 的 offload 分支也按 mode 分流（EPON 写 traffic/mpcp，
+#   XGPON 才写 activation/pon-omci）-> OMCI 通道不建立 -> OLT 等不到注册。
+#   这里在编译期直接纠正上游默认值，使固件第一层默认就是 xgpon。
+PON_CONF="$PKG_UCI/rtl9617c-pon-control/files/etc/config/pon"
+[ -f "$PON_CONF" ] || fail "refactor pon 配置缺失：$PON_CONF"
+if grep -q "^[[:space:]]*option mode 'epon-d10g'$" "$PON_CONF"; then
+  sed -i "s/^\([[:space:]]*\)option mode 'epon-d10g'$/\1option mode 'xgpon'/" "$PON_CONF"
+fi
+grep -q "^[[:space:]]*option mode 'xgpon'$" "$PON_CONF" \
+  || fail "pon config 的 mode 既非 epon-d10g 也非 xgpon（上游改版？需人工复核）"
+echo "  OK  PON mode：上游 epon-d10g 已纠正为 xgpon（本机为 XGPON 线路）"
+
+# WAN / VLAN：上游 90-pon-wan 已被删除（WAN provisioning 收进 Rust daemon），
+# 我们不再 patch 上游默认值，而是完全由 files-h10 的 95 脚本负责：
+#   VLAN 1101 + 8021q 子设备（mtu 1500）+ PPPoE + PON FE on + LAN 统一。
+# 这里只做「确保上游确实没有 90-pon-wan（避免两套 WAN 逻辑打架）」的反向断言，
+# 以及校验我们的 95 脚本确实带了关键项。
+[ ! -f "$UCI_DIR/90-pon-wan" ] \
+  || fail "上游 90-pon-wan 复活了（WAN provisioning 又回到 shell？）需复核两套逻辑是否冲突"
+[ ! -f "$UCI_DIR/91-pon-offload" ] \
+  || fail "上游 91-pon-offload 复活了（offload 策略又变？）需复核"
+
+# ---- 6. DTS 面板灯按原厂 DTB 校准 ----
+# 上游 PT1500 DTS 的 leds 用的是未按原厂 bank 换算的编号（8 个灯错 7 个），
+# 实机表现为"指示灯完全不对"。这里调用注入脚本按原厂 DTB 换算后覆盖。
+LED_SCRIPT="$ASSETS/scripts/apply-dts-leds-fix.sh"
+[ -f "$LED_SCRIPT" ] || fail "缺 DTS 灯校正脚本：$LED_SCRIPT"
+bash "$LED_SCRIPT" "$WRT" "$DTS"
+echo "  OK  面板灯：已按原厂 DTB flat 编号覆盖（PPP_G=96 LOS=11 PON=108 PWR_G=6 FXS=12 EPHY1=103 EPHY2=97 EPHY3=100 + 补 USB0/EPHY0/USB1）"
+
+echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=refactor pon_mode=xgpon wan_default_vlan=1101"
