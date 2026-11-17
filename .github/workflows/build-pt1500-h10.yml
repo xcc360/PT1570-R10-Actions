@@ -231,15 +231,21 @@ jobs:
           test -f package/utils/fitblk/files/fit.sh
           echo "source: $(git rev-parse HEAD)"
 
-      - name: Build PE firmware (pe-tx-code.h)
-        # H10 2.5G 版无 WiFi，但内核 files-6.18 里 rtl_ax_ap 目录仍随源码树展开，
-        # 且该头文件被上游 .gitignore 排除、OpenWrt 不会自动生成。缺它会在
-        # target/linux/compile 阶段报 "pe-tx-code.h is missing" 而整树编译失败
-        # （R10 run #7 的根因）。生成它是几分钟的保险，不会把 WiFi 驱动带进镜像。
+      - name: Build PE firmware (pe-tx-code.h) [base-only; skipped on refactor]
+        # PE 固件（rtl_ax_ap / pe-tx-code.h）是 base 20b4cf4 基线的 WiFi 残留物。
+        # refactor HEAD b5025a9d1c95 的 rtl9617c target 是纯 2.5G 无 WiFi：
+        #   树里既没有 target/linux/rtl9617c/pe，也没有 rtl_ax_ap/ 驱动目录，
+        #   RUN #5 就是死在 make -C .../pe (No such file or directory)。
+        # 因此改为条件式：仅当源码树确有 pe/Makefile 才构建（兼容回退到 base）；
+        # refactor 下直接跳过，不把 WiFi 驱动带进镜像。
         working-directory: wrt
         run: |
           set -eo pipefail
-          echo "=== PE toolchain ==="
+          if [ ! -f target/linux/rtl9617c/pe/Makefile ]; then
+            echo "PE_SKIPPED=True (refactor baseline: no target/linux/rtl9617c/pe, no WiFi)"
+            exit 0
+          fi
+          echo "=== PE toolchain (base baseline only) ==="
           for t in clang-18 ld.lld-18 llvm-objcopy-18 python3; do
             if ! command -v "$t" >/dev/null 2>&1; then
               echo "::error::PE 构建缺少工具 $t" >&2
