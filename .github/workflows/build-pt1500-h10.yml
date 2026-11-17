@@ -548,14 +548,25 @@ jobs:
             || { echo "ERROR: refactor pon-leds 服务缺失" >&2; exit 1; }
           test -f "$PKG_UCI/rtl9617c-pon-control/files/pon-leds.uc" \
             || { echo "ERROR: refactor pon-leds.uc 缺失" >&2; exit 1; }
-          for s in 89-rtl9617c-lan-ports 97-rtl9617c-argon-default; do
-            found=0
-            for f in "$PKG_UCI"/*/files/etc/uci-defaults/"$s" \
-                     "$PKG_UCI"/*/root/etc/uci-defaults/"$s"; do
-              [ -f "$f" ] && { found=1; break; }
-            done
-            [ "$found" = 0 ] || { echo "ERROR: $s 复活了（上游改版？）需复核" >&2; exit 1; }
+          # ★ 2026-11-17 基线 659700cc1bbc 的真实情况（run#8 实测纠正）：
+          #   上游把 rename-netdevs.uc **直接安装成** 89-rtl9617c-lan-ports
+          #   （Makefile: INSTALL_BIN ./files/usr/share/rtl9617c/rename-netdevs.uc
+          #    -> $(1)/etc/uci-defaults/89-rtl9617c-lan-ports），
+          #   而不是旧 HEAD 那种"包装脚本 + 单独装 uc"的形式。**功能完全等价**，
+          #   所以 89 脚本仍然必须存在，不能断言它不存在。
+          #   97-rtl9617c-argon-default 才是真正被删的。
+          found=0
+          for f in "$PKG_UCI"/*/files/etc/uci-defaults/89-rtl9617c-lan-ports \
+                   "$PKG_UCI"/*/root/etc/uci-defaults/89-rtl9617c-lan-ports; do
+            [ -f "$f" ] && { found=1; break; }
           done
+          [ "$found" = 1 ] || { echo "ERROR: refactor 缺少 89-rtl9617c-lan-ports（网卡重命名会失效）" >&2; exit 1; }
+          found=0
+          for f in "$PKG_UCI"/*/files/etc/uci-defaults/97-rtl9617c-argon-default \
+                   "$PKG_UCI"/*/root/etc/uci-defaults/97-rtl9617c-argon-default; do
+            [ -f "$f" ] && { found=1; break; }
+          done
+          [ "$found" = 0 ] || { echo "ERROR: 97-rtl9617c-argon-default 复活了（上游改版？）需复核" >&2; exit 1; }
           [ ! -e "$UCI_SRC/99-pt1570-fit" ] \
             || { echo "ERROR: 上游树混入 R10 的 99-pt1570-fit" >&2; exit 1; }
           [ ! -e "$UCI_SRC/95-pt1570-wan-default" ] \
@@ -773,8 +784,11 @@ jobs:
                    95-pt1500-h10-wan-default; do
             [ -f "$UCI/$s" ] || { echo "::error::镜像缺少首启脚本 $s"; exit 1; }
           done
-          for s in 90-pon-wan 91-pon-offload 89-rtl9617c-lan-ports \
-                   97-rtl9617c-argon-default; do
+          # 上游 659700cc1bbc：89-rtl9617c-lan-ports 是 rename-netdevs.uc 本体
+          # （Makefile 直接安装），必须存在；97-rtl9617c-argon-default 已删除。
+          [ -e "$UCI/89-rtl9617c-lan-ports" ] \
+            || { echo "::error::镜像缺少 89-rtl9617c-lan-ports（网卡重命名会失效）"; exit 1; }
+          for s in 90-pon-wan 91-pon-offload 97-rtl9617c-argon-default; do
             [ ! -e "$UCI/$s" ] || { echo "::error::镜像里上游脚本 $s 不该存在（两套逻辑会打架）"; exit 1; }
           done
           # PON mode 必须是 xgpon（上游 epon-d10g 已在编译期纠正）
