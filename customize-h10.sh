@@ -11,12 +11,12 @@
 #   4. 可选注入外部 apk 源公钥
 #
 # 不做：SSID/密码（本机无 WiFi）、root 密码、PON SN/MAC/LOID
-#       （这些来自 factory 卷，由 tyfza1-factory 运行时导出）。
+#       （这些来自 factory 卷，由 refactor 的 pon-control 运行时导出）。
+# 2026-11-17 基线切到 refactor：源码用 upstream 的 90-pon-wan / 91-pon-offload，
+#       架构为 aarch64_cortex-a53（不再是 base 的 a55）。
 # WAN 默认值不在这里改：由 files-h10/etc/uci-defaults/95-pt1500-h10-wan-default
-#       在 90/91 之后覆盖。上游 90-tyfza1-pon-wan 的 EPON 默认
-#       （pon0.3961 + offload=0）在本机 XGPON/1101 线路上拨不上号：
-#       PON FE 关闭时 PADS 之后的单播上行帧被静默丢弃，pppd LCP 无回应。
-#       与 PT1570-R10 2026-11-11 定位的是同一个坑。
+#       在 90/91 之后覆盖。refactor 的 90-pon-wan 默认 EPON VLAN 3961；
+#       PT1500 实机（XGPON/1101 线路）需要 1101 + PON FE，由该脚本覆盖。
 #
 # 三机型统一默认 LAN IP = 192.168.1.1（2026-11-15 用户要求）。
 #    PT1570-R10 / PT1570-H10-CU / PT1500-H10 全部改成 192.168.1.1/24。
@@ -47,7 +47,9 @@ WRT_TZ="${WRT_TZ:-<+08>-8}"
 WRT_ZONENAME="${WRT_ZONENAME:-Asia/Shanghai}"
 WRT_NTP="${WRT_NTP:-1}"
 WRT_TARGET_SUBTARGET="${WRT_TARGET_SUBTARGET:-rtl9617c/generic}"
-WRT_ARCH_PACKAGES="${WRT_ARCH_PACKAGES:-aarch64_cortex-a55}"
+# refactor 编译架构 aarch64_cortex-a53（CPU_TYPE=cortex-a53），与北大镜像
+# immortalwrt 25.12 的 aarch64_cortex-a53 目录正好一致，无需再补 a53。
+WRT_ARCH_PACKAGES="${WRT_ARCH_PACKAGES:-aarch64_cortex-a53}"
 WRT_APK_FEEDS="${WRT_APK_FEEDS:-base luci packages routing telephony}"
 
 CFG="package/base-files/files/bin/config_generate"
@@ -78,8 +80,8 @@ if [ "$WRT_NTP" = "1" ]; then
 fi
 
 # ---- 3. apk 源（沿用 R10 基线：北大镜像 immortalwrt 25.12-SNAPSHOT）----
-# 本 target 编译架构 aarch64_cortex-a55，北大镜像只有 aarch64_cortex-a53 目录；
-# a53/a55 同属 armv8-a，用户态通用。公钥由 files-h10/etc/apk/keys/ 注入。
+# refactor 编译架构 aarch64_cortex-a53，与北大镜像 aarch64_cortex-a53 目录一致。
+# 公钥由 files-h10/etc/apk/keys/ 注入。
 WRT_APK_MIRROR="${WRT_APK_MIRROR:-https://mirrors.pku.edu.cn/immortalwrt}"
 WRT_APK_RELEASE="${WRT_APK_RELEASE:-25.12-SNAPSHOT}"
 WRT_APK_REPO_ARCH="${WRT_APK_REPO_ARCH:-aarch64_cortex-a53}"

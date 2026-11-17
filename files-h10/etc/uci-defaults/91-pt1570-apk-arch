@@ -1,10 +1,11 @@
 #!/bin/sh
-# 保证 apk 允许安装镜像仓库架构（2026-11-13）
+# 保证 apk 允许安装镜像仓库架构（2026-11-17 refactor 基线更新）
 #
-# 本 target 编译架构是 aarch64_cortex-a55，但北大镜像 / 国内其它镜像的
-# immortalwrt releases/<ver>/packages/ 下只有 aarch64_cortex-a53 目录。
-# 两者同属 armv8-a，用户态通用。镜像里 /etc/apk/arch 正常已含两行，
-# 这里只做幂等补齐，避免 apk 以 "unsupported architecture" 拒装。
+# refactor 基线编译架构已是 aarch64_cortex-a53（CPU_TYPE=cortex-a53），
+# 镜像内 /etc/apk/arch 通常已含 aarch64_cortex-a53。本脚本做幂等补齐：
+#   1. 若 /etc/apk/arch 缺失则跳过（避免误建错误架构文件）；
+#   2. 若无 aarch64_cortex-a53 则补一行（防止后续镜像源切换架构被拒装）。
+# base 旧基线的 a55 已被淘汰，这里不再追加 a53 做「跨架构通用」。
 [ -f /etc/apk/arch ] || exit 0
 grep -qx 'aarch64_cortex-a53' /etc/apk/arch || echo 'aarch64_cortex-a53' >> /etc/apk/arch
 exit 0

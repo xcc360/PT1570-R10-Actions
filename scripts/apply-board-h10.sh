@@ -1,21 +1,28 @@
 #!/bin/bash
-# PT1500-H10 2.5G 板级注入（独立 workflow 专用，幂等）。
+# PT1500-H10 2.5G 板级校验（独立 workflow 专用，幂等，只读断言 + 少量修补）。
 #
-# 与 R10 的 apply-board.sh 不同：上游 lyq1996/rtl9617c-openwrt@20b4cf4
-# 已经有完整的 youhua_pt1500_h10_2p5g profile、rtl9617c-pt1500-h10-2p5g.dts、
-# platform.sh 白名单与 95/96/97-pt1500-* 首启脚本，**不注入任何 Device/DTS**。
-# 本脚本只做三件事：
-#   1. 编译期移除上游 pt1500-fip.sh（它按老 fip 卷布局写，且会覆盖 platform.sh）；
-#   2. 修 tyfza1-factory 的 factory_blob 目标参数（机型无关的 PON 平台缺陷）；
-#   3. 断言上游机型定义齐全，改版时提前失败而不是编出废固件。
+# 2026-11-17 重大变更：源码基线从 base 20b4cf4 整体切到 upstream refactor 分支
+#   （默认 HEAD b5025a9d1c95）。refactor 自带完整、实机验证的 2.5G 架构：
+#     * RTL8221B HisGMII PHY 驱动（drivers/net/phy/realtek/realtek_hisgmii.c）
+#     * 独立 SerDes PHY（drivers/phy/realtek/phy-rtl9617c-serdes.c）
+#     * P6 lane 按协商速率重编（ni/ni_p6.c + patch 730）
+#     * DTS 用 realtek,hisgmii + phy-mode=2500base-x + &serdes
+#   因此本脚本【不再注入任何驱动/DTS/内核 patch】，只做校验 + 一处 WAN 默认值
+#   改写（3961 -> 1101），防止上游改版悄悄回退 2.5G。
 #
-# 不做的（避免把 R10 资产串进来）：
-#   * 不注入 rtl9617c-pt1570-r10.dts / Device/youhua_pt1570_r10；
-#   * 不往 platform.sh 追加 youhua,pt1570-r10；
-#   * 不放宽 fitblk FIT 头上限：本机型与 R10 同为 external-static-with-rootfs，
-#     FIT 头仅 4096 B，4 MiB 上限根本不会触发（R10 run14 未打补丁实测可启动），
-#     少一个补丁少一个失败点；
-#   * 不校验/注入任何 WiFi AP 固件：2.5G 版 DTS 明确无 PCIe 端点、无 WiFi。
+# base 旧基线的三步修补在 refactor 下全部作废并已删除：
+#   * 移除 pt1500-fip.sh        —— refactor 树里根本没有该文件，升级走标准 fit_do_upgrade；
+#   * 修 tyfza1-factory 参数     —— refactor 没有该 shell 脚本，factory 校准由驱动直读 UBI 卷
+#                                   （commit b5025a9d1c9: driver is the only reader of factory volume）；
+#   * CI_KERNPART=fit / zz 覆盖  —— refactor platform.sh 自带 RAMFS_COPY_BIN='fitblk fit_check_sign'
+#                                   并调用 fit_do_upgrade，不需要 zz 脚本覆盖 nand_do_upgrade。
+#
+# 本脚本现在做四组断言 + 一处 WAN 默认值改写（任何一项不满足就 fail，编不出废固件）：
+#   1. 机型定义齐全（profile / DTS / SUPPORTED_DEVICES / platform.sh 白名单）；
+#   2. 2.5G 驱动与 DTS 的 hisgmii/serdes/2500base-x 特征齐全（核心，防回退到 base）；
+#   3. config-6.18 的 2.5G 驱动符号齐全；
+#   4. refactor 的 WAN / 首启脚本命名齐全（rtl9617c-*，不是 tyfza1-*）；
+#   5. 把上游 90-pon-wan 默认 VLAN 3961 改为用户实机 XGPON 的 1101（幂等）。
 #
 # env: ASSETS=<资产目录>  WRT=<源码树>
 
@@ -32,57 +39,13 @@ BOARD_NAME="youhua,pt1500-h10-2p5g"
 DTS="rtl9617c-pt1500-h10-2p5g"
 IMG_MK="$WRT/target/linux/rtl9617c/image/Makefile"
 DTS_FILE="$WRT/target/linux/rtl9617c/dts/${DTS}.dts"
-UPG_DIR="$WRT/target/linux/rtl9617c/base-files/lib/upgrade"
-PLATFORM="$UPG_DIR/platform.sh"
+PLATFORM="$WRT/target/linux/rtl9617c/base-files/lib/upgrade/platform.sh"
+CFG="$WRT/target/linux/rtl9617c/config-6.18"
+DRV="$WRT/target/linux/rtl9617c/files-6.18/drivers"
+PATCHES="$WRT/target/linux/rtl9617c/patches-6.18"
+UCI_DIR="$WRT/target/linux/rtl9617c/base-files/etc/uci-defaults"
 
-# ---- 1. 移除上游 pt1500-fip.sh ----
-# /sbin/sysupgrade 的 `include /lib/upgrade` 按文件名字母序 source：
-#   common.sh ... platform.sh -> pt1500-fip.sh -> tar.sh
-# pt1500-fip.sh 排在 platform.sh 之后，会整体覆盖 platform_check_image /
-# platform_do_upgrade / platform_copy_config。它的白名单虽含
-# youhua,pt1500-h10-2p5g（机型校验不会报错），但 platform_do_upgrade 写的是
-# `fip` UBI 卷，而本机卷表只有 factory(8MiB static) / fit / rootfs_data，
-# 没有 fip，系统内升级必然报 "no fip volume" 并失败。
-# 统一 UBI 方案必须走 platform.sh 的 CI_KERNPART=fit + nand_do_upgrade，
-# 再叠加 files-h10/lib/upgrade/zz-pt1570-sysupgrade.sh 的 fitblk 释放修复。
-FIP_SH="$UPG_DIR/pt1500-fip.sh"
-if [ -f "$FIP_SH" ]; then
-  rm -f "$FIP_SH"
-  echo "removed upstream pt1500-fip.sh (old fip volume layout, not applicable to FIT/UBI)"
-else
-  echo "upstream pt1500-fip.sh absent, nothing to remove"
-fi
-
-# ---- 2. tyfza1-factory: factory_blob 目标参数 ----
-# 函数签名 factory_blob <offset> <size> <dest>，上游结尾写的是 mv "$tmp" "$2"，
-# $2 是长度不是目标路径，导致 /lib/firmware 下校准软链接全部悬空。
-# 这是 PON 平台公共缺陷，H10 也要修（BOSA/A2H 校准数据从 factory 卷导出）。
-FACTORY="$WRT/package/tyfza1-pon-control/files/tyfza1-factory"
-[ -f "$FACTORY" ] || fail "找不到 $FACTORY（上游目录结构变了？）"
-
-if grep -q 'mv "\$tmp" "\$2"' "$FACTORY"; then
-  python3 - "$FACTORY" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-text = p.read_text(encoding='utf-8')
-old = '\t\tmv "$tmp" "$2"'
-new = '\t\tmkdir -p "${3%/*}"\n\t\tmv "$tmp" "$3"'
-if old not in text:
-    raise SystemExit('ERROR: 未找到预期的 mv "$tmp" "$2" 行（缩进不符）')
-p.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
-print('patched tyfza1-factory: factory_blob -> mv "$tmp" "$3"')
-PY
-else
-  echo "tyfza1-factory 已是修好的版本，跳过"
-fi
-grep -q 'mv "\$tmp" "\$3"' "$FACTORY" \
-  || fail 'tyfza1-factory 修补失败：没有 mv "$tmp" "$3"'
-! grep -q 'mv "\$tmp" "\$2"' "$FACTORY" \
-  || fail 'tyfza1-factory 仍残留 mv "$tmp" "$2"'
-grep -q 'factory_blob \$((0x4000)) 1024' "$FACTORY" \
-  || fail 'factory_blob 调用点与预期不符（上游改动？）'
-
-# ---- 3. 断言上游机型定义齐全 ----
+# ---- 1. 机型定义齐全 ----
 grep -q "^define Device/${PROFILE}$" "$IMG_MK" \
   || fail "上游 image/Makefile 缺少 Device/${PROFILE}"
 grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" "$IMG_MK" \
@@ -90,26 +53,81 @@ grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" "$IMG_MK" \
 grep -q "DEVICE_DTS := ${DTS}" "$IMG_MK" \
   || fail "上游 image/Makefile 的 DEVICE_DTS 不是 ${DTS}"
 [ -f "$DTS_FILE" ] || fail "上游 DTS 缺失：$DTS_FILE"
-grep -q 'compatible = "youhua,pt1500-h10-2p5g"' "$DTS_FILE" \
+grep -q "compatible = \"${BOARD_NAME}\"" "$DTS_FILE" \
   || fail "上游 DTS 的 compatible 与 $BOARD_NAME 不一致"
 grep -q "${BOARD_NAME}" "$PLATFORM" \
   || fail "platform.sh 白名单缺少 ${BOARD_NAME}"
-grep -q 'CI_KERNPART=fit' "$PLATFORM" \
-  || fail "platform.sh 升级目标卷不是 fit"
+grep -q 'fit_do_upgrade' "$PLATFORM" \
+  || fail "platform.sh 未走标准 fit_do_upgrade（refactor 基线特征）"
 grep -q 'volname = "fit"' "$DTS_FILE" \
   || fail "DTS 缺少 volname=fit 的 UBI 卷"
-# factory 卷 8 MiB，与 DTS 的 fpga-image@10000 (0x10000+0x7e0000=0x800000) 对齐
-grep -q 'fpga-image@10000' "$DTS_FILE" \
-  || fail "DTS 缺少 fpga-image@10000（factory 8 MiB 布局基线）"
+echo "  OK  机型定义：profile=$PROFILE board=$BOARD_NAME dts=$DTS"
 
-# 上游首启脚本必须存在（LED / lan5(2.5G) / lan MAC 由它们处理，不能用 R10 的 99-pt1570-fit）
-UCI_DIR="$WRT/target/linux/rtl9617c/base-files/etc/uci-defaults"
-for s in 95-pt1500-storage 96-pt1500-leds 96-tyfza1-lan-mac 97-pt1500-lan5; do
-  [ -f "$UCI_DIR/$s" ] || fail "上游首启脚本缺失：$s"
+# ---- 2. 2.5G 驱动与 DTS 特征（核心，防回退到 base 旧架构）----
+# 驱动源码：refactor 全新拆分布局（base 的 rtl8221b-tyfza1.h 注入式已废弃）
+for f in \
+  "$DRV/net/phy/realtek/realtek_hisgmii.c" \
+  "$DRV/net/phy/realtek/realtek_hisgmii_patch.h" \
+  "$DRV/phy/realtek/phy-rtl9617c-serdes.c" \
+  "$DRV/net/mdio/mdio-realtek-rtl9617c.c" \
+  "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_p6.c"; do
+  [ -s "$f" ] || fail "refactor 2.5G 驱动文件缺失/为空：$f"
 done
+for p in 700-net-mdio-realtek-rtl9617c.patch 710-phy-realtek-rtl9617c-serdes.patch \
+         720-net-phy-realtek-hisgmii.patch 730-net-ethernet-realtek-rtl9617c.patch; do
+  [ -s "$PATCHES/$p" ] || fail "refactor 2.5G 内核补丁缺失：$p"
+done
+# DTS：2.5G 口（phy@6）必须是 hisgmii + serdes-option-mode，NI port@6 走 2500base-x
+for kw in 'realtek,hisgmii' 'realtek,serdes-option-mode' 'phy-mode = "2500base-x"' \
+          'ethernet-phy@6' 'port@6' 'phys = <&serdes>' '&serdes'; do
+  grep -qF "$kw" "$DTS_FILE" \
+    || fail "DTS 缺 2.5G 特征 '$kw'（可能回退到 base 架构，2.5G 不会 link）"
+done
+# 反向：refactor 不应再有 base 的 2.5G 特征（出现即说明基线串了）
+for kw in 'realtek,hsgmii' 'realtek,p6-phy' 'fpga-image@10000' 'p6-serdes'; do
+  grep -qF "$kw" "$DTS_FILE" \
+    && fail "DTS 残留 base 旧架构特征 '$kw'（基线可能被串回 20b4cf4）" || true
+done
+[ ! -d "$WRT/target/linux/rtl9617c/base-files/etc/serdes" ] \
+  || fail "残留 base 的 /etc/serdes/*.txt（refactor 用内建 patch data，不该有此目录）"
+echo "  OK  2.5G 架构：HisGMII + SerDes PHY + 2500base-x + patch 700-730 齐全"
 
-# 结果：绝不能残留 fip 覆盖脚本
-find "$UPG_DIR" -name 'pt1500-fip.sh' -print -quit | grep -q . \
-  && fail "pt1500-fip.sh 仍存在，会覆盖 sysupgrade 并写不存在的 fip 卷" || true
+# ---- 3. config-6.18 的 2.5G 驱动符号 ----
+for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
+           CONFIG_MDIO_REALTEK_RTL9617C CONFIG_UIMAGE_FIT_BLK CONFIG_RTL9617C_NI; do
+  grep -q "^${sym}=y$" "$CFG" \
+    || fail "target config-6.18 缺 $sym=y（2.5G/FIT 驱动没编进内核）"
+done
+echo "  OK  config-6.18：HisGMII/SerDes/MDIO/UIMAGE_FIT_BLK 符号齐全"
 
-echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS"
+# ---- 4. WAN / 首启脚本（refactor 命名 rtl9617c-*）----
+for s in 90-pon-wan 91-pon-offload; do
+  [ -f "$UCI_DIR/$s" ] || fail "refactor 上游 WAN 脚本缺失：$s"
+done
+# package 里的首启脚本（refactor 从 package 而非 target base-files 安装）
+PKG_UCI="$WRT/package/rtl9617c"
+for s in 89-rtl9617c-lan-ports 94-rtl9617c-cpu 95-rtl9617c-argon \
+         96-rtl9617c-rpcd-perms 97-rtl9617c-argon-default; do
+  found=0
+  for f in "$PKG_UCI"/*/files/etc/uci-defaults/"$s" \
+           "$PKG_UCI"/*/root/etc/uci-defaults/"$s"; do
+    [ -f "$f" ] && { found=1; break; }
+  done
+  [ "$found" = 1 ] || fail "refactor 首启脚本缺失：$s"
+done
+# ---- 5. 默认 WAN VLAN 3961 -> 1101（用户实机 XGPON 默认）----
+# 上游 90-pon-wan 是 EPON stock 布局（wan_vlan_default=3961，vlan_mac_offset=3）；
+# 本机是 XGPON/1101 线路。编译期直接把上游默认值改成 1101，使固件第一层默认
+# 就是 pon0.1101，不再只依赖 95 脚本的时序覆盖（两层保险，95 脚本仍保留，
+# 负责 mtu1500 + PON FE on + LAN 统一等 H10 专属项）。
+# 幂等：已是 1101 则跳过；既非 3961 也非 1101 则 fail，提示人工复核上游改版。
+WAN90="$UCI_DIR/90-pon-wan"
+if grep -q '^wan_vlan_default=3961$' "$WAN90"; then
+  sed -i 's/^wan_vlan_default=3961$/wan_vlan_default=1101/' "$WAN90"
+  sed -i 's/PPPoE on VLAN 3961/PPPoE on VLAN 1101 (H10 XGPON)/' "$WAN90" || true
+fi
+grep -q '^wan_vlan_default=1101$' "$WAN90" \
+  || fail "90-pon-wan 默认 VLAN 既非 3961 也非 1101（上游改版？需人工复核）"
+echo "  OK  首启/WAN：rtl9617c-* 命名齐全，90-pon-wan 默认 VLAN=1101（pon0.1101）"
+
+echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=refactor wan_default_vlan=1101"
