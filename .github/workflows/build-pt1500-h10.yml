@@ -103,9 +103,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 refactor HEAD 659700cc1bbc，完整 SHA；2.5G 正解架构 + OMCI/PON 加固）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 refactor HEAD d8f2e9522063，与 PT1570-H10-CU 同步；2.5G 正解架构 + OMCI/PON 加固）'
         required: false
-        default: '659700cc1bbc'
+        default: 'd8f2e9522063'
         type: string
       test_only:
         description: '只生成并上传 .config / 校验报告，不编译'
@@ -231,7 +231,7 @@ jobs:
         run: |
           set -e
           # 2026-11-17 基线切到 refactor（2.5G 正解架构，实机验证可用）
-          REF="${{ inputs.source_ref || '659700cc1bbc' }}"
+          REF="${{ inputs.source_ref || 'd8f2e9522063' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -823,9 +823,16 @@ jobs:
           else
             echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过灯 GPIO 校验"
           fi
-          # 2.5G 口 netdev 重命名由 refactor 的 rename-netdevs.uc 处理
-          [ -f "$ROOT/usr/share/rtl9617c/rename-netdevs.uc" ] \
-            || { echo "::error::镜像缺少 rename-netdevs.uc（2.5G 口命名）"; exit 1; }
+          # 2.5G 口 netdev 重命名由 refactor 的 rename-netdevs.uc 处理。
+          # ★ d8f2e9522063 起上游把 rename-netdevs.uc 用 INSTALL_BIN 直接
+          #   安装成 /etc/uci-defaults/89-rtl9617c-lan-ports，不再单独落到
+          #   /usr/share/rtl9617c/rename-netdevs.uc（源树里仍有源文件，但镜像
+          #   产物只有 89）。故镜像阶段改为校验 89 存在且为 ucode 脚本本体。
+          #   run#10 就是死在这条旧路径断言上（编译成功、仅校验失败）。
+          [ -f "$UCI/89-rtl9617c-lan-ports" ] \
+            || { echo "::error::镜像缺少 89-rtl9617c-lan-ports（rename-netdevs.uc 本体，2.5G 口命名会失效）"; exit 1; }
+          grep -q 'uci' "$UCI/89-rtl9617c-lan-ports" \
+            || { echo "::error::镜像 89-rtl9617c-lan-ports 内容异常（非 rename-netdevs.uc ucode 脚本）"; exit 1; }
           # 绝不能把 R10 的网口/MAC 兜底与 WAN 覆盖带进 H10
           [ ! -e "$UCI/99-pt1570-fit" ] \
             || { echo "::error::镜像混入 R10 的 99-pt1570-fit"; exit 1; }
@@ -916,9 +923,9 @@ jobs:
             echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
             echo "dts=$DTS (refactor upstream @ $SOURCE_HASH; 面板灯 GPIO 已按原厂 DTB 覆盖)"
-            echo "source_ref=$SOURCE_REF (baseline=refactor 659700cc1bbc, 2.5G 正解架构 + OMCI/PON 加固)"
+            echo "source_ref=$SOURCE_REF (baseline=refactor d8f2e9522063, 与 PT1570-H10-CU 同步, 2.5G 正解架构 + OMCI/PON 加固)"
             echo "source_commit=$SOURCE_HASH"
-            echo "baseline=refactor 659700cc1bbc — HisGMII PHY + SerDes PHY + 按速切 2500BASEX/SGMII（run#6 实机验证 2.5G 可用）"
+            echo "baseline=refactor d8f2e9522063 — HisGMII PHY + SerDes PHY + 按速切 2500BASEX/SGMII（run#6 实机验证 2.5G 可用）"
             echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
             echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs, 标准 fit_do_upgrade)"
             echo "bootloader=lyq1996/rtl9617c-uboot@3a709714e551 (2026-11-10, pt1500-h10-2p5g_defconfig)"
