@@ -124,8 +124,12 @@ echo "  OK  config-6.18：HisGMII/SerDes/MDIO/UIMAGE_FIT_BLK 符号齐全"
 
 # ---- 4. 首启脚本（refactor 命名 rtl9617c-*）----
 # ★ 2026-11-17：基线从 b5025a9d1c95 升到 659700cc1bbc 后，上游重构了首启脚本：
-#   * 删除 89-rtl9617c-lan-ports（只是 rename-netdevs.uc 的包装脚本，
-#     rename-netdevs.uc 本体仍在 package/rtl9617c/rtl9617c-pon-control/files/ 下）
+#   * 89-rtl9617c-lan-ports：**形态变了但没删**。旧 HEAD 是「shell 包装脚本 +
+#     单独装 rename-netdevs.uc」，新 HEAD 改成 Makefile 直接
+#     INSTALL_BIN ./files/usr/share/rtl9617c/rename-netdevs.uc
+#       -> $(1)/etc/uci-defaults/89-rtl9617c-lan-ports
+#     即 89 脚本本身就是 ucode 程序，功能等价。
+#     （这一点由 RUN #8 的镜像校验实测纠正：一度误判它被删，反向断言导致失败。）
 #   * 删除 97-rtl9617c-argon-default
 #   * 删除 90-pon-wan / 91-pon-offload（WAN provisioning 收进 Rust pon daemon，
 #     offload 交回 firewall）—— 见第 5 组，WAN/VLAN 改由我们的 95 脚本负责。
@@ -140,12 +144,19 @@ for s in 94-rtl9617c-cpu 95-rtl9617c-argon 96-rtl9617c-rpcd-perms; do
   done
   [ "$found" = 1 ] || fail "refactor 首启脚本缺失：$s"
 done
-# rename-netdevs.uc 本体必须还在（89 脚本虽然删了，网卡重命名还得靠它）
+# rename-netdevs.uc 本体必须还在（网卡重命名靠它）
 found=0
 for f in "$PKG_UCI"/*/files/usr/share/rtl9617c/rename-netdevs.uc; do
   [ -f "$f" ] && { found=1; break; }
 done
 [ "$found" = 1 ] || fail "refactor rename-netdevs.uc 缺失（网卡重命名会失效）"
+# 89-rtl9617c-lan-ports：新 HEAD 里它就是 rename-netdevs.uc 本体，必须存在
+found=0
+for f in "$PKG_UCI"/*/files/etc/uci-defaults/89-rtl9617c-lan-ports \
+         "$PKG_UCI"/*/root/etc/uci-defaults/89-rtl9617c-lan-ports; do
+  [ -f "$f" ] && { found=1; break; }
+done
+[ "$found" = 1 ] || fail "refactor 缺少 89-rtl9617c-lan-ports（网卡重命名会失效）"
 # pon-leds 服务与 ucode 助手必须在（面板 LOS/PON 灯由它按 label 名驱动）
 [ -f "$PKG_UCI/rtl9617c-pon-control/files/etc/init.d/pon-leds" ] \
   || fail "refactor pon-leds 服务缺失"
