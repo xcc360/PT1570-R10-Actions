@@ -480,7 +480,7 @@ jobs:
           # 95 脚本必须带 mode 纠正逻辑（防 sysupgrade 保留旧配置时 mode 仍是错的）
           grep -qF "pon.pon.mode" "$H10WAN" \
             || { echo "ERROR: 95 脚本缺 PON mode 纠正逻辑" >&2; exit 1; }
-          grep -qF "option mode 'xgpon'" "$H10WAN" \
+          grep -qF "uci -q set pon.pon.mode='xgpon'" "$H10WAN" \
             || { echo "ERROR: 95 脚本未把 PON mode 设为 xgpon" >&2; exit 1; }
           echo "  OK   默认 WAN=pon0.1101（95 脚本负责），PON mode=xgpon"
 
@@ -788,7 +788,7 @@ jobs:
             grep -qF "$kw" "$H10WAN" || { echo "::error::镜像里 H10 WAN 脚本缺 $kw"; exit 1; }
           done
           # PON mode 纠正逻辑必须在（防 sysupgrade 保留旧配置时 mode 仍是错的）
-          grep -qF "option mode 'xgpon'" "$H10WAN" \
+          grep -qF "uci -q set pon.pon.mode='xgpon'" "$H10WAN" \
             || { echo "::error::镜像里 H10 WAN 脚本缺 PON mode=xgpon 纠正逻辑"; exit 1; }
           # 面板灯：镜像 DTB 必须是按原厂 DTB 换算后的 GPIO 编号
           # （上游 DTS 的编号未按原厂 5-bank 换算，8 个灯错 7 个，实机表现为灯全乱）
