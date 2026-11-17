@@ -808,21 +808,33 @@ jobs:
           # PON mode 纠正逻辑必须在（防 sysupgrade 保留旧配置时 mode 仍是错的）
           grep -qF "uci -q set pon.pon.mode='xgpon'" "$H10WAN" \
             || { echo "::error::镜像里 H10 WAN 脚本缺 PON mode=xgpon 纠正逻辑"; exit 1; }
-          # 面板灯：镜像 DTB 必须是按原厂 DTB 换算后的 GPIO 编号
-          # （上游 DTS 的编号未按原厂 5-bank 换算，8 个灯错 7 个，实机表现为灯全乱）
+          # 面板灯：镜像 DTB 必须是按原厂 DTB 换算后的 GPIO 编号 + 极性 ACTIVE_HIGH
+          # （上游 DTS 编号未按原厂 5-bank 换算，且极性写成 ACTIVE_LOW；
+          #  实机 run#11 "只有电源灯亮" = 极性反了，原厂 flags 全 0x00=ACTIVE_HIGH）
           DTB_SRC="$GITHUB_WORKSPACE/wrt/target/linux/rtl9617c/dts/${DTS}.dts"
           if [ -f "$DTB_SRC" ]; then
             for pair in 'LED_PPP_G 96' 'LED_LOS 11' 'LED_PON 108' 'LED_PWR_G 6' \
                         'LED_FXS 12' 'LED_EPHY1 103' 'LED_EPHY2 97' 'LED_EPHY3 100' \
                         'LED_USB0 99' 'LED_EPHY0 102' 'LED_USB1 101'; do
               lbl=${pair% *}; pin=${pair#* }
-              grep -A3 "label = \"$lbl\"" "$DTB_SRC" | grep -q "gpios = <&gpio0 $pin " \
-                || { echo "::error::DTS 灯 $lbl 的 GPIO 不是原厂 flat 编号 $pin（灯修复未生效？）"; exit 1; }
+              # 编号 + 极性必须同时正确：gpios = <&gpio0 PIN GPIO_ACTIVE_HIGH>
+              grep -A3 "label = \"$lbl\"" "$DTB_SRC" \
+                | grep -q "gpios = <&gpio0 $pin GPIO_ACTIVE_HIGH>" \
+                || { echo "::error::DTS 灯 $lbl 应为 gpio0 $pin GPIO_ACTIVE_HIGH（编号/极性修复未生效？）"; exit 1; }
             done
-            echo "  OK   DTS 面板灯 GPIO 已按原厂 DTB 换算（11 个灯全部核对通过）"
+            echo "  OK   DTS 面板灯 11 盏 GPIO 编号 + ACTIVE_HIGH 极性全部核对通过"
           else
-            echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过灯 GPIO 校验"
+            echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过灯 GPIO/极性校验"
           fi
+          # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
+          LED_SCRIPT="$UCI/93-pt1500-h10-leds"
+          [ -f "$LED_SCRIPT" ] \
+            || { echo "::error::镜像缺 93-pt1500-h10-leds（LAN/USB 灯 trigger 驱动）"; exit 1; }
+          for kw in 'LED_EPHY1' 'LED_EPHY2' 'LED_EPHY3' 'add_or_fix_netdev_led'; do
+            grep -q "$kw" "$LED_SCRIPT" \
+              || { echo "::error::镜像 93-pt1500-h10-leds 缺关键项 $kw"; exit 1; }
+          done
+          echo "  OK   LAN/USB 灯 trigger 驱动脚本已注入（refactor 规范命名）"
           # 2.5G 口 netdev 重命名由 refactor 的 rename-netdevs.uc 处理。
           # ★ d8f2e9522063 起上游把 rename-netdevs.uc 用 INSTALL_BIN 直接
           #   安装成 /etc/uci-defaults/89-rtl9617c-lan-ports，不再单独落到

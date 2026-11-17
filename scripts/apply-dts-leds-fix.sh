@@ -33,11 +33,13 @@
 #   LED_PWR_G  bank0 pin6  -> gpio6     LED_USB1   bank3 pin5 -> gpio101
 #   LED_FXS    bank0 pin12 -> gpio12
 #
-# 极性说明：原厂 led-gpio 的 flags 全为 0x00（ACTIVE_HIGH），但原厂用的是私有
-# g3hgu-gpio-led 驱动，"0=亮/1=亮"的语义未必等同标准 gpio-leds。上游 DTS 把
-# PPP/LOS/PON/EPHY 全写成 ACTIVE_LOW、PWR/FXS 写成 ACTIVE_HIGH，这种混合更像
-# 是按"灯灭"的状态反推的。**本脚本只改编号、不改极性**，保留上游的极性分组，
-# 避免一次引入两个变量；极性等实机确认哪个亮哪个灭之后再单独调整。
+# 极性说明（2026-11-18 实机修正）：
+#   原厂 DTB 的 11 盏 led-gpio flags 全为 0x00 = GPIO_ACTIVE_HIGH（高电平点亮）。
+#   第一版（run#11）只改编号、极性沿用上游分组（PPP/LOS/PON/EPHY/USB=ACTIVE_LOW），
+#   实机结果"只有电源灯亮"——电源灯恰是唯一 ACTIVE_HIGH + default-state=on 的灯。
+#   实机 /sys/kernel/debug/gpio 实证：ACTIVE_LOW 灯在 bright=1 时输出低电平，
+#   而硬件是高电平点亮，逻辑完全反了。本版把 11 盏灯统一改为 GPIO_ACTIVE_HIGH，
+#   与原厂 flags=0x00 严格一致。
 #
 # 注意：DTS 里有多个 leds 节点 —— 顶层面板灯节点、以及 mdio 下 phy_2p5g 里的
 # PHY LED 节点（LED_8221B_P6_*，那是 RTL8221B 芯片自己的灯，不是面板灯）。
@@ -55,22 +57,22 @@ TARGET_FILE="$WRT/target/linux/rtl9617c/dts/.pt1500-leds-target.dtsi"
 
 [ -f "$DTS_FILE" ] || { echo "ERROR: DTS 不存在：$DTS_FILE" >&2; exit 1; }
 
-# 目标 leds 节点（按原厂 flat 编号；极性沿用上游分组）
+# 目标 leds 节点（按原厂 flat 编号 + 原厂极性 ACTIVE_HIGH，flags=0x00）
 cat > "$TARGET_FILE" <<'EOF'
 	leds {
 		compatible = "gpio-leds";
 		internet {
 			label = "LED_PPP_G";
-			gpios = <&gpio0 96 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 96 GPIO_ACTIVE_HIGH>;
 			default-state = "off";
 		};
 		los {
 			label = "LED_LOS";
-			gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
 		};
 		pon {
 			label = "LED_PON";
-			gpios = <&gpio0 108 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 108 GPIO_ACTIVE_HIGH>;
 		};
 		led_power: power {
 			label = "LED_PWR_G";
@@ -83,27 +85,27 @@ cat > "$TARGET_FILE" <<'EOF'
 		};
 		lan1 {
 			label = "LED_EPHY1";
-			gpios = <&gpio0 103 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 103 GPIO_ACTIVE_HIGH>;
 		};
 		lan2 {
 			label = "LED_EPHY2";
-			gpios = <&gpio0 97 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 97 GPIO_ACTIVE_HIGH>;
 		};
 		lan3 {
 			label = "LED_EPHY3";
-			gpios = <&gpio0 100 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 100 GPIO_ACTIVE_HIGH>;
 		};
 		usb0 {
 			label = "LED_USB0";
-			gpios = <&gpio0 99 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 99 GPIO_ACTIVE_HIGH>;
 		};
 		ephy0 {
 			label = "LED_EPHY0";
-			gpios = <&gpio0 102 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 102 GPIO_ACTIVE_HIGH>;
 		};
 		usb1 {
 			label = "LED_USB1";
-			gpios = <&gpio0 101 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 101 GPIO_ACTIVE_HIGH>;
 		};
 	};
 EOF
@@ -125,9 +127,12 @@ if len(matches) != 1:
              % len(matches))
 
 old = matches[0]
-new = target
+# 保留 old 的前导换行（matches 里每个元素以 \n 开头），否则替换后节点会
+# 紧贴上一行，二次执行时 \n\tleds 匹配不到，破坏幂等。
+lead = '\n' if old.startswith('\n') else ''
+new = lead + target
 if old.strip() == new.strip():
-    print('  OK   DTS 灯 GPIO 已是原厂 flat 编号（幂等跳过）')
+    print('  OK   DTS 灯 GPIO 已是原厂 flat 编号 + ACTIVE_HIGH（幂等跳过）')
     sys.exit(0)
 
 text = text.replace(old, new, 1)
