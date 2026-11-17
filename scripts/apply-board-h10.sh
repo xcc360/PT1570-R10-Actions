@@ -150,13 +150,16 @@ for f in "$PKG_UCI"/*/files/usr/share/rtl9617c/rename-netdevs.uc; do
   [ -f "$f" ] && { found=1; break; }
 done
 [ "$found" = 1 ] || fail "refactor rename-netdevs.uc 缺失（网卡重命名会失效）"
-# 89-rtl9617c-lan-ports：新 HEAD 里它就是 rename-netdevs.uc 本体，必须存在
-found=0
-for f in "$PKG_UCI"/*/files/etc/uci-defaults/89-rtl9617c-lan-ports \
-         "$PKG_UCI"/*/root/etc/uci-defaults/89-rtl9617c-lan-ports; do
-  [ -f "$f" ] && { found=1; break; }
-done
-[ "$found" = 1 ] || fail "refactor 缺少 89-rtl9617c-lan-ports（网卡重命名会失效）"
+# 89-rtl9617c-lan-ports：新 HEAD 里它就是 rename-netdevs.uc 本体，
+# 由 Makefile 的 install 段直接装到 $(1)/etc/uci-defaults/89-rtl9617c-lan-ports。
+# 注意：源码树里【没有】这个文件（它不是 files/etc/uci-defaults/ 下的静态文件），
+# 所以只能校验 Makefile 的安装规则 —— RUN #9 实测纠正：误查源码树导致误报缺失。
+MK="$PKG_UCI/rtl9617c-pon-control/Makefile"
+[ -f "$MK" ] || fail "refactor 缺少 rtl9617c-pon-control/Makefile"
+grep -q '89-rtl9617c-lan-ports' "$MK" \
+  || fail "refactor 的 pon-control Makefile 不再安装 89-rtl9617c-lan-ports（网卡重命名会失效）"
+grep -q 'rename-netdevs.uc' "$MK" \
+  || fail "refactor 的 pon-control Makefile 不再安装 rename-netdevs.uc"
 # pon-leds 服务与 ucode 助手必须在（面板 LOS/PON 灯由它按 label 名驱动）
 [ -f "$PKG_UCI/rtl9617c-pon-control/files/etc/init.d/pon-leds" ] \
   || fail "refactor pon-leds 服务缺失"
