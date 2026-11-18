@@ -74,7 +74,7 @@ jobs:
           set -eu
           cpp -nostdinc -I work/dts -I work/include -undef -D__DTS__ \
               -x assembler-with-cpp -o work/board.pp work/dts/board.dts
-          dtc -I work/dts -O dtb \
+          dtc -i work/dts -O dtb \
               -Wno-unit_address_vs_reg -Wno-avoid_unnecessary_addr_size \
               -o work/board.dtb work/board.pp
           dtc -I work/dts -O dts work/board.dtb > work/board.decompiled.dts
@@ -86,7 +86,7 @@ jobs:
           set -eu
           cpp -nostdinc -I work/dts -I work/include -undef -D__DTS__ \
               -x assembler-with-cpp -o work/upstream.pp work/dts/upstream.dts
-          dtc -I work/dts -O dtb \
+          dtc -i work/dts -O dtb \
               -Wno-unit_address_vs_reg -Wno-avoid_unnecessary_addr_size \
               -o work/upstream.dtb work/upstream.pp
           echo "DTC_OK upstream=${{ inputs.upstream_dts }}"
