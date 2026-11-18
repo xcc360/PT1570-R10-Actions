@@ -46,19 +46,27 @@ jobs:
           mkdir -p work/dts \
                    work/include/dt-bindings/interrupt-controller \
                    work/include/dt-bindings/gpio \
-                   work/include/dt-bindings/input
-          curl -sSfL https://raw.githubusercontent.com/lyq1996/rtl9617c-openwrt/refactor/target/linux/rtl9617c/dts/rtl9617c.dtsi \
+                   work/include/dt-bindings/input \
+                   work/include/uapi/linux
+          curl -sSfL --retry 3 --retry-delay 2 \
+               https://raw.githubusercontent.com/lyq1996/rtl9617c-openwrt/refactor/target/linux/rtl9617c/dts/rtl9617c.dtsi \
                -o work/dts/rtl9617c.dtsi
-          base=https://raw.githubusercontent.com/torvalds/linux/v6.18/include/dt-bindings
-          curl -sSfL "$base/interrupt-controller/arm-gic.h" \
+          base=https://raw.githubusercontent.com/torvalds/linux/v6.18/include
+          curl -sSfL --retry 3 --retry-delay 2 "$base/dt-bindings/interrupt-controller/arm-gic.h" \
                -o work/include/dt-bindings/interrupt-controller/arm-gic.h
-          curl -sSfL "$base/gpio/gpio.h" \
+          curl -sSfL --retry 3 --retry-delay 2 "$base/dt-bindings/interrupt-controller/irq.h" \
+               -o work/include/dt-bindings/interrupt-controller/irq.h
+          curl -sSfL --retry 3 --retry-delay 2 "$base/dt-bindings/gpio/gpio.h" \
                -o work/include/dt-bindings/gpio/gpio.h
-          curl -sSfL "$base/input/linux-event-codes.h" \
-               -o work/include/dt-bindings/input/linux-event-codes.h
+          # dt-bindings/input/linux-event-codes.h is a symlink in the kernel
+          # tree; mirror the real file and recreate the link.
+          curl -sSfL --retry 3 --retry-delay 2 "$base/uapi/linux/input-event-codes.h" \
+               -o work/include/uapi/linux/input-event-codes.h
+          ln -sf ../../uapi/linux/input-event-codes.h \
+                 work/include/dt-bindings/input/linux-event-codes.h
           cp '${{ inputs.dts }}' work/dts/board.dts
           if [ -n '${{ inputs.upstream_dts }}' ]; then
-            curl -sSfL "${{ inputs.upstream_dts }}" -o work/dts/upstream.dts
+            curl -sSfL --retry 3 --retry-delay 2 "${{ inputs.upstream_dts }}" -o work/dts/upstream.dts
           fi
 
       - name: Parse board DTS
