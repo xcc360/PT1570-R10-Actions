@@ -808,13 +808,17 @@ jobs:
           # PON mode 纠正逻辑必须在（防 sysupgrade 保留旧配置时 mode 仍是错的）
           grep -qF "uci -q set pon.pon.mode='xgpon'" "$H10WAN" \
             || { echo "::error::镜像里 H10 WAN 脚本缺 PON mode=xgpon 纠正逻辑"; exit 1; }
-          # 面板灯：镜像 DTB 必须是按原厂 DTB 换算后的 GPIO 编号 + 极性 ACTIVE_HIGH
-          # （上游 DTS 编号未按原厂 5-bank 换算，且极性写成 ACTIVE_LOW；
-          #  实机 run#11 "只有电源灯亮" = 极性反了，原厂 flags 全 0x00=ACTIVE_HIGH）
+          # 面板灯：镜像 DTB 必须是**实机校准后**的 GPIO 编号 + 极性 ACTIVE_HIGH
+          # ★ 2026-11-18 实机逐 pin 扫描：本机面板只有两处可见灯，
+          #   flat 96 = 物理"电源"灯位，flat 11 = 物理"电话"灯位；
+          #   其余 9 个 flat 在这块板上背后是空的（无可见灯）。
+          #   原厂 DTB 是产品线通用模板，label 与本机丝印不对应，
+          #   故按物理丝印指派：96->LED_PWR_G(常亮) / 11->LED_FXS，
+          #   原 PPP_G/LOS 位置顺移到 6/12。
           DTB_SRC="$GITHUB_WORKSPACE/wrt/target/linux/rtl9617c/dts/${DTS}.dts"
           if [ -f "$DTB_SRC" ]; then
-            for pair in 'LED_PPP_G 96' 'LED_LOS 11' 'LED_PON 108' 'LED_PWR_G 6' \
-                        'LED_FXS 12' 'LED_EPHY1 103' 'LED_EPHY2 97' 'LED_EPHY3 100' \
+            for pair in 'LED_PPP_G 6' 'LED_LOS 12' 'LED_PON 108' 'LED_PWR_G 96' \
+                        'LED_FXS 11' 'LED_EPHY1 103' 'LED_EPHY2 97' 'LED_EPHY3 100' \
                         'LED_USB0 99' 'LED_EPHY0 102' 'LED_USB1 101'; do
               lbl=${pair% *}; pin=${pair#* }
               # 编号 + 极性必须同时正确：gpios = <&gpio0 PIN GPIO_ACTIVE_HIGH>
@@ -822,7 +826,11 @@ jobs:
                 | grep -q "gpios = <&gpio0 $pin GPIO_ACTIVE_HIGH>" \
                 || { echo "::error::DTS 灯 $lbl 应为 gpio0 $pin GPIO_ACTIVE_HIGH（编号/极性修复未生效？）"; exit 1; }
             done
-            echo "  OK   DTS 面板灯 11 盏 GPIO 编号 + ACTIVE_HIGH 极性全部核对通过"
+            # 物理电源灯（flat 96）必须常亮，否则面板会全灭
+            grep -A3 'label = "LED_PWR_G"' "$DTB_SRC" \
+              | grep -q 'default-state = "on"' \
+              || { echo "::error::DTS 物理电源灯 (gpio0 96) 缺 default-state=on"; exit 1; }
+            echo "  OK   DTS 面板灯 11 盏 GPIO 编号 + ACTIVE_HIGH 极性全部核对通过（电源灯 96 常亮）"
           else
             echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过灯 GPIO/极性校验"
           fi

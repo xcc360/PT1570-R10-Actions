@@ -41,6 +41,25 @@
 #   而硬件是高电平点亮，逻辑完全反了。本版把 11 盏灯统一改为 GPIO_ACTIVE_HIGH，
 #   与原厂 flags=0x00 严格一致。
 #
+# ★★ 面板全灭的真正原因（2026-11-18 run#12 实机逐 pin 扫描后定位）：
+#   极性改对之后 run#12 仍"一个都不亮"。实机把 11 个 flat 逐一点亮（每次只亮
+#   一盏，读 /sys/kernel/debug/gpio 确认仅一个引脚为高）后现：**本机面板只有
+#   两处可见灯** —— flat 96 是物理"电源"灯位，flat 11 是物理"电话"灯位；
+#   其余 9 个 flat 背后在这块板上根本没有灯。
+#   即：原厂 DTB 里那 11 盏灯是整个 TYFZA1 产品线共用的通用模板，原厂 label
+#   与 PT1500-H10 的实际丝印并不对应（96 原厂标 LED_PPP_G、11 原厂标
+#   LED_LOS，而本机这两脚实际是电源灯与电话灯）。run#11/run#12 按原厂 label
+#   分配引脚时，把"电源灯"接到了没有灯的空脚上，于是面板全灭。
+#   （实机交叉验证：U-Boot 阶段用原厂引脚时面板灯是亮的，亮的也正是这两个脚。）
+#   本版按**物理丝印**指派：96 -> LED_PWR_G(default-state=on 常亮)、11 -> LED_FXS，
+#   原 PPP_G/LOS 的位置顺移到 6/12，其余引脚保持原厂编号不变。
+#
+#   附：base 架构（lyq1996 @main 的 rtl9617c-tyfza1.dtsi）用的是 PWR_G=11、
+#   PPP_G=2 这种连续低 pin 编号，且把 gpio 101/102 当 PHY reset、gpio 100 当
+#   USB vbus —— 而原厂 DTB 里这两处实际是 bank3 pin17(flat 113) 与
+#   bank4 pin13(flat 141)。可见 base 的 GPIO 编号体系与原厂 flat 并非同一套，
+#   不可直接套用到 refactor。
+#
 # 注意：DTS 里有多个 leds 节点 —— 顶层面板灯节点、以及 mdio 下 phy_2p5g 里的
 # PHY LED 节点（LED_8221B_P6_*，那是 RTL8221B 芯片自己的灯，不是面板灯）。
 # 本脚本只改**顶层**那个（紧跟 "/ {" 之后、缩进一级的 leds）。
@@ -57,18 +76,34 @@ TARGET_FILE="$WRT/target/linux/rtl9617c/dts/.pt1500-leds-target.dtsi"
 
 [ -f "$DTS_FILE" ] || { echo "ERROR: DTS 不存在：$DTS_FILE" >&2; exit 1; }
 
-# 目标 leds 节点（按原厂 flat 编号 + 原厂极性 ACTIVE_HIGH，flags=0x00）
+# 目标 leds 节点（实机校准后的物理灯位 + 原厂极性 ACTIVE_HIGH，flags=0x00）
+#
+# ★ 2026-11-18 实机逐 pin 扫描（run#12 设备上 /sys/kernel/debug/gpio + 物理观察）：
+#   把 11 盏灯逐一点亮（每次只亮一盏）后，本机面板上**只有两处有可见灯**：
+#     flat 96  -> 物理"电源"灯位
+#     flat 11  -> 物理"电话"灯位
+#   其余 9 个 flat（6/12/97/99/100/101/102/103/108）后面在这块板上是空的，
+#   点亮时面板毫无反应。
+#
+#   即：原厂 DTB 是整个 TYFZA1 产品线共用的通用模板，它描述了 11 盏灯，
+#   但 PT1500-H10 面板只接了其中两个引脚；原厂 label 与本机丝印并不对应
+#   （原厂 96=LED_PPP_G、11=LED_LOS，而本机这两脚实际是电源灯与电话灯）。
+#
+#   故按**物理丝印**重新指派：96 -> LED_PWR_G（default-state=on 常亮），
+#   11 -> LED_FXS（电话）。原 PPP_G/LOS 的位置顺移到 6/12，
+#   其余引脚保持原厂编号不变。
+#   label 集合保持完整，uci 的 system.led_wan / led_lan1..3 引用不受影响。
 cat > "$TARGET_FILE" <<'EOF'
 	leds {
 		compatible = "gpio-leds";
 		internet {
 			label = "LED_PPP_G";
-			gpios = <&gpio0 96 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
 			default-state = "off";
 		};
 		los {
 			label = "LED_LOS";
-			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
 		};
 		pon {
 			label = "LED_PON";
@@ -76,12 +111,12 @@ cat > "$TARGET_FILE" <<'EOF'
 		};
 		led_power: power {
 			label = "LED_PWR_G";
-			gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 96 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 		phone {
 			label = "LED_FXS";
-			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
 		};
 		lan1 {
 			label = "LED_EPHY1";
