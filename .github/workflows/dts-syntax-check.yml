@@ -77,7 +77,7 @@ jobs:
           dtc -i work/dts -O dtb \
               -Wno-unit_address_vs_reg -Wno-avoid_unnecessary_addr_size \
               -o work/board.dtb work/board.pp
-          dtc -I work/dts -O dts work/board.dtb > work/board.decompiled.dts
+          dtc -O dts work/board.dtb > work/board.decompiled.dts
           echo "DTC_OK board=${{ inputs.dts }} lines=$(wc -l < work/board.decompiled.dts)"
 
       - name: Parse upstream control DTS
