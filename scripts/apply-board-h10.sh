@@ -200,6 +200,6 @@ echo "  OK  PON mode：上游 epon-d10g 已纠正为 xgpon（本机为 XGPON 线
 LED_SCRIPT="$ASSETS/scripts/apply-dts-leds-fix.sh"
 [ -f "$LED_SCRIPT" ] || fail "缺 DTS 灯校正脚本：$LED_SCRIPT"
 bash "$LED_SCRIPT" "$WRT" "$DTS"
-echo "  OK  面板灯：已按原厂 DTB flat 编号覆盖（PPP_G=96 LOS=11 PON=108 PWR_G=6 FXS=12 EPHY1=103 EPHY2=97 EPHY3=100 + 补 USB0/EPHY0/USB1）"
+echo "  OK  面板灯：已切换为 27 个 PROBE_<pin> 探测灯；已按方案 B 删除 /aliases 的 4 行 led_power 引用"
 
 echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=refactor pon_mode=xgpon wan_default_vlan=1101"

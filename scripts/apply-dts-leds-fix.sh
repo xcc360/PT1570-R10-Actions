@@ -65,6 +65,12 @@
 # 本脚本只改**顶层**那个（紧跟 "/ {" 之后、缩进一级的 leds）。
 #
 # 幂等：已是目标内容则跳过；匹配不到唯一的顶层 leds 节点则 fail（提示上游改版需复核）。
+# ★ 2026-11-18 方案 B：上游 /aliases 里有 4 行 led-* = &led_power，
+#   而探测版 leds 节点不再定义 led_power label，dtc 的 path_references
+#   会报 "Reference to non-existent node or label \"led_power\"" 并中止编译。
+#   按用户选择执行方案 B：只删这 4 行别名引用，不补 label；
+#   27 个 PROBE_<pin> 探测灯照常注册，供实机跑马灯确定真实引脚。
+#
 # 用法：apply-dts-leds-fix.sh <源码树根目录> <DTS 文件名>
 
 set -eu
@@ -218,6 +224,16 @@ path, target_path = sys.argv[1], sys.argv[2]
 text = open(path, encoding='utf-8').read()
 target = open(target_path, encoding='utf-8').read()
 
+# 方案 B：删掉 /aliases 中 4 行指向 led_power 的别名。探测版 leds 节点
+# 不含该 label，dtc 的 path_references 会报错并中止编译。只删引用，
+# 不碰 serial0，也不影响 27 个 PROBE 灯注册。
+alias_re = re.compile(
+    r'^[ \t]*led-(?:boot|failsafe|running|upgrade)[ \t]*=[ \t]*&led_power;[ \t]*\n?',
+    re.M)
+text, nalias = alias_re.subn('', text)
+if '&led_power' in text:
+    sys.exit('ERROR: DTS 仍残留 &led_power 引用，需人工复核 aliases 节点')
+
 # 顶层 leds 节点：缩进恰好一个 tab（mdio 下 phy_2p5g 里的 leds 缩进两 tab，不会被匹配）。
 # 用「以 \n\tleds { 开头、以 \n\t}; 结尾」定位，保证只命中顶层那个。
 pattern = re.compile(r'\n\tleds \{\n.*?\n\t\};\n', re.S)
@@ -231,14 +247,20 @@ old = matches[0]
 # 紧贴上一行，二次执行时 \n\tleds 匹配不到，破坏幂等。
 lead = '\n' if old.startswith('\n') else ''
 new = lead + target
-if old.strip() == new.strip():
-    print('  OK   DTS 灯 GPIO 已是原厂 flat 编号 + ACTIVE_HIGH（幂等跳过）')
-    sys.exit(0)
+changed = False
+if old.strip() != new.strip():
+    text = text.replace(old, new, 1)
+    changed = True
+if changed or nalias:
+    open(path, 'w', encoding='utf-8').write(text)
+if changed:
+    n = target.count('label = "PROBE_')
+    print('  OK   DTS 面板灯已切换为 %d 个 PROBE_<pin> 探测灯' % n)
+else:
+    print('  OK   DTS 探测灯配置已是目标内容（幂等跳过）')
+if nalias:
+    print('  OK   已按方案 B 删除 %d 行指向 led_power 的 /aliases 引用（消除 dtc path_references 错误）' % nalias)
 
-text = text.replace(old, new, 1)
-open(path, 'w', encoding='utf-8').write(text)
-n = target.count('label = "LED_')
-print('  OK   DTS 灯 GPIO 已按原厂 DTB 换算覆盖（%d 个灯，补齐 USB0/EPHY0/USB1）' % n)
 PYEOF
 
 rm -f "$TARGET_FILE"
