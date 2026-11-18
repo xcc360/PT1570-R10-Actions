@@ -76,76 +76,136 @@ TARGET_FILE="$WRT/target/linux/rtl9617c/dts/.pt1500-leds-target.dtsi"
 
 [ -f "$DTS_FILE" ] || { echo "ERROR: DTS 不存在：$DTS_FILE" >&2; exit 1; }
 
-# 目标 leds 节点（U-Boot 权威灯表：lyq1996/rtl9617c-uboot
-# board/youhua/pt1500-h10-ct/desc-2p5g.c，U-Boot 阶段面板灯实机正常）
+# 目标 leds 节点 —— **探测版**（2026-11-18）
 #
-#   { .pin = 11 },                      /* power */
-#   { .pin = 9,  .active_low = true },  /* pon   */
-#   { .pin = 10, .active_low = true },  /* los   */
-#   { .pin = 2,  .active_low = true },  /* ppp   */
-#   { .pin = 12 },                      /* fxs   */
-#   { .pin = 7 },                       /* usb0  */
-#   { .pin = 0,  .active_low = true },  /* lan3  */
-#   { .pin = 1,  .active_low = true },  /* lan2  */
-#   { .pin = 3,  .active_low = true },  /* lan1  */
-#   //{ .pin = 6, .active_low = true },  /* usb1 —— 板上无此灯 */
+# 背景：run#11/run#12 先后试过两种换算，结果都不对：
+#   (a) 按原厂 DTB 的 5-bank 结构换算 -> flat 96/97/99/... 面板全灭；
+#   (b) 按 U-Boot 灯表 (desc-2p5g.c, power=11/fxs=12/...) -> 与实机定点扫描
+#       仍对不上（实机实测 flat 12 = 物理电源灯位、flat 96 = 物理电话灯位，
+#       而 U-Boot 说 power=11、fxs=12）。
+# 原厂 DTB 是整个 TYFZA1 产品线共用的通用模板（11 盏灯），label 与本机丝印
+# 不能一一对应；U-Boot 的 pin 编号与 refactor 的 flat 编号同样不是恒等关系。
 #
-#   九盏灯全在 GPIO bank 0，pin 号即 flat 号（bank0 = flat 0..15）。
-#   2.5G 口旁那盏由 RTL8221B PHY 驱动，不在此表（故不占 gpio0）。
-#   复位键 = pin 8 active_low（上游 DTS 已正确使用）。
+# 既然静态推导不可靠，改为**实测一次定死**：把候选引脚各注册成一颗独立 LED
+# （label = PROBE_<pin>），刷上后跑一次跑马灯（每颗 3 秒，约 81 秒一轮），
+# 肉眼记录哪几个位置亮了，即得到面板各盏灯的真实 flat 编号；探测完再收敛
+# 成最终配置。
 #
-# ★ 2026-11-18 教训（run#11/run#12 走错了路，务必勿重犯）：
-#   run#11/run#12 曾按**原厂 DTB** 的 5-bank 结构换算成 flat 96/97/99/100/…，
-#   实测导致面板全灭。原因是原厂 DTB 是整个 TYFZA1 产品线共用的通用模板，
-#   描述了 11 盏灯；而本机面板只有 9 盏（U-Boot 表），原厂 label 与本机丝印
-#   并不能一一对应。上游 rtl9617c-pt1500-h10-2p5g.dts 的 leds 节点本来就已经
-#   与 U-Boot 权威表一致（PPP=2/LOS=10/PON=9/PWR=11/FXS=12/EPHY=3,1,0），
-#   只需补上上游遗漏的 USB0(pin 7) 即可。
-#   实机佐证：逐 pin 扫描时 flat 11（U-Boot 的 power 脚）与 flat 12（fxs 脚）
-#   是仅有的两个有可见灯的引脚，与 U-Boot 表吻合。
-#
-# 极性按 U-Boot 表原样保留（power/fxs/usb0 为高电平点亮，其余低电平点亮），
-# 原厂 DTB 里 led-gpio flags 全 0x00 是私有驱动语义，不能套用到标准 gpio-leds。
+# 候选集 = bank0 的 0..14（跳过 15）+ bank3 的 96..108，共 27 个。
+# 排除：flat 8（gpio-keys-polled 复位键）与 flat 15（USB tx-disable）——
+# 这两个会被别的驱动 gpio_request，一旦冲突会让**整个 leds 节点 probe 失败**，
+# 所有探测灯一颗都注册不出来。
+
 cat > "$TARGET_FILE" <<'EOF'
 	leds {
 		compatible = "gpio-leds";
-		internet {
-			label = "LED_PPP_G";
-			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
-			default-state = "off";
+		probe0: p0 {
+			label = "PROBE_0";
+			gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>;
 		};
-		los {
-			label = "LED_LOS";
-			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+		probe1: p1 {
+			label = "PROBE_1";
+			gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
 		};
-		pon {
-			label = "LED_PON";
-			gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
+		probe2: p2 {
+			label = "PROBE_2";
+			gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
 		};
-		led_power: power {
-			label = "LED_PWR_G";
-			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
-			default-state = "on";
+		probe3: p3 {
+			label = "PROBE_3";
+			gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
 		};
-		phone {
-			label = "LED_FXS";
-			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		probe4: p4 {
+			label = "PROBE_4";
+			gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 		};
-		usb0 {
-			label = "LED_USB0";
+		probe5: p5 {
+			label = "PROBE_5";
+			gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		};
+		probe6: p6 {
+			label = "PROBE_6";
+			gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+		};
+		probe7: p7 {
+			label = "PROBE_7";
 			gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
 		};
-		lan1 {
-			label = "LED_EPHY1";
-			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+		probe9: p9 {
+			label = "PROBE_9";
+			gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
 		};
-		lan2 {
-			label = "LED_EPHY2";
-			gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;
+		probe10: p10 {
+			label = "PROBE_10";
+			gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>;
 		};
-		lan3 {
-			label = "LED_EPHY3";
-			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+		probe11: p11 {
+			label = "PROBE_11";
+			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+		};
+		probe12: p12 {
+			label = "PROBE_12";
+			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		};
+		probe13: p13 {
+			label = "PROBE_13";
+			gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+		};
+		probe14: p14 {
+			label = "PROBE_14";
+			gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+		};
+		probe96: p96 {
+			label = "PROBE_96";
+			gpios = <&gpio0 96 GPIO_ACTIVE_HIGH>;
+		};
+		probe97: p97 {
+			label = "PROBE_97";
+			gpios = <&gpio0 97 GPIO_ACTIVE_HIGH>;
+		};
+		probe98: p98 {
+			label = "PROBE_98";
+			gpios = <&gpio0 98 GPIO_ACTIVE_HIGH>;
+		};
+		probe99: p99 {
+			label = "PROBE_99";
+			gpios = <&gpio0 99 GPIO_ACTIVE_HIGH>;
+		};
+		probe100: p100 {
+			label = "PROBE_100";
+			gpios = <&gpio0 100 GPIO_ACTIVE_HIGH>;
+		};
+		probe101: p101 {
+			label = "PROBE_101";
+			gpios = <&gpio0 101 GPIO_ACTIVE_HIGH>;
+		};
+		probe102: p102 {
+			label = "PROBE_102";
+			gpios = <&gpio0 102 GPIO_ACTIVE_HIGH>;
+		};
+		probe103: p103 {
+			label = "PROBE_103";
+			gpios = <&gpio0 103 GPIO_ACTIVE_HIGH>;
+		};
+		probe104: p104 {
+			label = "PROBE_104";
+			gpios = <&gpio0 104 GPIO_ACTIVE_HIGH>;
+		};
+		probe105: p105 {
+			label = "PROBE_105";
+			gpios = <&gpio0 105 GPIO_ACTIVE_HIGH>;
+		};
+		probe106: p106 {
+			label = "PROBE_106";
+			gpios = <&gpio0 106 GPIO_ACTIVE_HIGH>;
+		};
+		probe107: p107 {
+			label = "PROBE_107";
+			gpios = <&gpio0 107 GPIO_ACTIVE_HIGH>;
+		};
+		probe108: p108 {
+			label = "PROBE_108";
+			gpios = <&gpio0 108 GPIO_ACTIVE_HIGH>;
 		};
 	};
 EOF
