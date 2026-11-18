@@ -76,71 +76,76 @@ TARGET_FILE="$WRT/target/linux/rtl9617c/dts/.pt1500-leds-target.dtsi"
 
 [ -f "$DTS_FILE" ] || { echo "ERROR: DTS 不存在：$DTS_FILE" >&2; exit 1; }
 
-# 目标 leds 节点（实机校准后的物理灯位 + 原厂极性 ACTIVE_HIGH，flags=0x00）
+# 目标 leds 节点（U-Boot 权威灯表：lyq1996/rtl9617c-uboot
+# board/youhua/pt1500-h10-ct/desc-2p5g.c，U-Boot 阶段面板灯实机正常）
 #
-# ★ 2026-11-18 实机逐 pin 扫描（run#12 设备上 /sys/kernel/debug/gpio + 物理观察）：
-#   把 11 盏灯逐一点亮（每次只亮一盏）后，本机面板上**只有两处有可见灯**：
-#     flat 96  -> 物理"电源"灯位
-#     flat 11  -> 物理"电话"灯位
-#   其余 9 个 flat（6/12/97/99/100/101/102/103/108）后面在这块板上是空的，
-#   点亮时面板毫无反应。
+#   { .pin = 11 },                      /* power */
+#   { .pin = 9,  .active_low = true },  /* pon   */
+#   { .pin = 10, .active_low = true },  /* los   */
+#   { .pin = 2,  .active_low = true },  /* ppp   */
+#   { .pin = 12 },                      /* fxs   */
+#   { .pin = 7 },                       /* usb0  */
+#   { .pin = 0,  .active_low = true },  /* lan3  */
+#   { .pin = 1,  .active_low = true },  /* lan2  */
+#   { .pin = 3,  .active_low = true },  /* lan1  */
+#   //{ .pin = 6, .active_low = true },  /* usb1 —— 板上无此灯 */
 #
-#   即：原厂 DTB 是整个 TYFZA1 产品线共用的通用模板，它描述了 11 盏灯，
-#   但 PT1500-H10 面板只接了其中两个引脚；原厂 label 与本机丝印并不对应
-#   （原厂 96=LED_PPP_G、11=LED_LOS，而本机这两脚实际是电源灯与电话灯）。
+#   九盏灯全在 GPIO bank 0，pin 号即 flat 号（bank0 = flat 0..15）。
+#   2.5G 口旁那盏由 RTL8221B PHY 驱动，不在此表（故不占 gpio0）。
+#   复位键 = pin 8 active_low（上游 DTS 已正确使用）。
 #
-#   故按**物理丝印**重新指派：96 -> LED_PWR_G（default-state=on 常亮），
-#   11 -> LED_FXS（电话）。原 PPP_G/LOS 的位置顺移到 6/12，
-#   其余引脚保持原厂编号不变。
-#   label 集合保持完整，uci 的 system.led_wan / led_lan1..3 引用不受影响。
+# ★ 2026-11-18 教训（run#11/run#12 走错了路，务必勿重犯）：
+#   run#11/run#12 曾按**原厂 DTB** 的 5-bank 结构换算成 flat 96/97/99/100/…，
+#   实测导致面板全灭。原因是原厂 DTB 是整个 TYFZA1 产品线共用的通用模板，
+#   描述了 11 盏灯；而本机面板只有 9 盏（U-Boot 表），原厂 label 与本机丝印
+#   并不能一一对应。上游 rtl9617c-pt1500-h10-2p5g.dts 的 leds 节点本来就已经
+#   与 U-Boot 权威表一致（PPP=2/LOS=10/PON=9/PWR=11/FXS=12/EPHY=3,1,0），
+#   只需补上上游遗漏的 USB0(pin 7) 即可。
+#   实机佐证：逐 pin 扫描时 flat 11（U-Boot 的 power 脚）与 flat 12（fxs 脚）
+#   是仅有的两个有可见灯的引脚，与 U-Boot 表吻合。
+#
+# 极性按 U-Boot 表原样保留（power/fxs/usb0 为高电平点亮，其余低电平点亮），
+# 原厂 DTB 里 led-gpio flags 全 0x00 是私有驱动语义，不能套用到标准 gpio-leds。
 cat > "$TARGET_FILE" <<'EOF'
 	leds {
 		compatible = "gpio-leds";
 		internet {
 			label = "LED_PPP_G";
-			gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
 			default-state = "off";
 		};
 		los {
 			label = "LED_LOS";
-			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
 		};
 		pon {
 			label = "LED_PON";
-			gpios = <&gpio0 108 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
 		};
 		led_power: power {
 			label = "LED_PWR_G";
-			gpios = <&gpio0 96 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 		phone {
 			label = "LED_FXS";
-			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
-		};
-		lan1 {
-			label = "LED_EPHY1";
-			gpios = <&gpio0 103 GPIO_ACTIVE_HIGH>;
-		};
-		lan2 {
-			label = "LED_EPHY2";
-			gpios = <&gpio0 97 GPIO_ACTIVE_HIGH>;
-		};
-		lan3 {
-			label = "LED_EPHY3";
-			gpios = <&gpio0 100 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
 		};
 		usb0 {
 			label = "LED_USB0";
-			gpios = <&gpio0 99 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
 		};
-		ephy0 {
-			label = "LED_EPHY0";
-			gpios = <&gpio0 102 GPIO_ACTIVE_HIGH>;
+		lan1 {
+			label = "LED_EPHY1";
+			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
 		};
-		usb1 {
-			label = "LED_USB1";
-			gpios = <&gpio0 101 GPIO_ACTIVE_HIGH>;
+		lan2 {
+			label = "LED_EPHY2";
+			gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;
+		};
+		lan3 {
+			label = "LED_EPHY3";
+			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
 		};
 	};
 EOF
