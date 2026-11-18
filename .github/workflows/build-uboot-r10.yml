@@ -96,6 +96,13 @@ jobs:
                 -mstrict-align -x c - -c -o /dev/null
           echo "CROSS_OK=True"
 
+      - name: Assert factory volume is 64 KiB
+        run: |
+          set -eu
+          grep -q 'CONFIG_RTK_FACTORY_SIZE=0x10000' configs/pt1570-r10_defconfig \
+            || { echo "::error::R10 defconfig 的 factory 卷不是 64 KiB"; exit 1; }
+          echo "R10_FACTORY_64K=True"
+
       - name: Build BL33 + signed FIP
         run: |
           set -eu
