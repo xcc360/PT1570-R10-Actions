@@ -808,29 +808,45 @@ jobs:
           # PON mode 纠正逻辑必须在（防 sysupgrade 保留旧配置时 mode 仍是错的）
           grep -qF "uci -q set pon.pon.mode='xgpon'" "$H10WAN" \
             || { echo "::error::镜像里 H10 WAN 脚本缺 PON mode=xgpon 纠正逻辑"; exit 1; }
-          # 面板灯：探测版 —— 27 个候选引脚各注册成一颗独立 LED
-          # ★ 2026-11-18：run#11/run#12 的两套换算（按原厂 DTB 5-bank、按
-          #   U-Boot 灯表）实测都对不上 —— 原厂 DTB 是产品线通用模板，
-          #   U-Boot 的 pin 编号与 refactor 的 flat 编号也不是恒等关系。
-          #   改为探测：label = PROBE_<pin>，刷上后跑跑马灯一次即可读出
-          #   面板各盏灯的真实 flat 编号。
-          #   排除 flat 8（复位键）与 flat 15（USB tx-disable），二者会被
-          #   别的驱动 gpio_request，冲突会让整个 leds 节点 probe 失败。
+          # 面板灯：镜像 DTB 必须是按原厂 DTB 换算后的 GPIO 编号 + 极性 ACTIVE_HIGH
+          # （上游 DTS 编号未按原厂 5-bank 换算，且极性写成 ACTIVE_LOW；
+          #  实机 run#11 "只有电源灯亮" = 极性反了，原厂 flags 全 0x00=ACTIVE_HIGH）
           DTB_SRC="$GITHUB_WORKSPACE/wrt/target/linux/rtl9617c/dts/${DTS}.dts"
           if [ -f "$DTB_SRC" ]; then
-            nprobe=0
-            for pin in 0 1 2 3 4 5 6 7 9 10 11 12 13 14 \
-                        96 97 98 99 100 101 102 103 104 105 106 107 108; do
-              grep -A2 "label = \"PROBE_$pin\"" "$DTB_SRC" \
+            for pair in 'LED_PPP_G 96' 'LED_LOS 11' 'LED_PON 108' 'LED_PWR_G 6' \
+                        'LED_FXS 12' 'LED_EPHY1 103' 'LED_EPHY2 97' 'LED_EPHY3 100' \
+                        'LED_USB0 99' 'LED_EPHY0 102' 'LED_USB1 101'; do
+              lbl=${pair% *}; pin=${pair#* }
+              # 编号 + 极性必须同时正确：gpios = <&gpio0 PIN GPIO_ACTIVE_HIGH>
+              grep -A3 "label = \"$lbl\"" "$DTB_SRC" \
                 | grep -q "gpios = <&gpio0 $pin GPIO_ACTIVE_HIGH>" \
-                || { echo "::error::探测 LED PROBE_$pin 缺失或引脚不符"; exit 1; }
-              nprobe=$((nprobe + 1))
+                || { echo "::error::DTS 灯 $lbl 应为 gpio0 $pin GPIO_ACTIVE_HIGH（编号/极性修复未生效？）"; exit 1; }
             done
-            [ "$nprobe" = 27 ] || { echo "::error::探测 LED 数量 $nprobe != 27"; exit 1; }
-            echo "  OK   DTS 探测灯 27 个候选引脚全部就位（跑马灯扫描用）"
+            echo "  OK   DTS 面板灯 11 盏 GPIO 编号 + ACTIVE_HIGH 极性全部核对通过"
           else
-            echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过探测灯校验"
+            echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过灯 GPIO/极性校验"
           fi
+          # LuCI 修复注入：型号纠正 / CPU 温度首页 / 调频字段缺失兜底
+          for f in usr/share/rpcd/ucode/luci.rtl9617c-system \
+                   www/luci-static/resources/rtl9617c/ui.js \
+                   www/luci-static/resources/view/rtl9617c/overview.js \
+                   www/luci-static/resources/view/system/rtl9617c-cpu.js; do
+            [ -f "$ROOT/$f" ] \
+              || { echo "::error::镜像缺少 LuCI 修复文件 $f"; exit 1; }
+          done
+          grep -q 'transition_error == null ? 0 : transition_error' \
+            "$ROOT/usr/share/rpcd/ucode/luci.rtl9617c-system" \
+            || { echo "::error::调频状态字段兜底补丁未生效"; exit 1; }
+          grep -q 'CPU 温度' \
+            "$ROOT/www/luci-static/resources/view/rtl9617c/overview.js" \
+            || { echo "::error::首页 CPU 温度补丁未生效"; exit 1; }
+          grep -q 'PT1500-H10 2.5G' \
+            "$ROOT/www/luci-static/resources/rtl9617c/ui.js" \
+            || { echo "::error::PT1500 型号纠正补丁未生效"; exit 1; }
+          grep -q 'transition_error!=null&&next.cpu.transition_error!==0' \
+            "$ROOT/www/luci-static/resources/view/system/rtl9617c-cpu.js" \
+            || { echo "::error::CPU 频率页面 null 容错补丁未生效"; exit 1; }
+          echo "  OK   LuCI 型号 / CPU 温度 / 调频字段补丁均已注入"
           # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
           LED_SCRIPT="$UCI/93-pt1500-h10-leds"
           [ -f "$LED_SCRIPT" ] \

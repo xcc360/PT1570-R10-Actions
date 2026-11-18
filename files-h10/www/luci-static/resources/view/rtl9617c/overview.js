@@ -1,0 +1,65 @@
+'use strict';
+'require view';
+'require rpc';
+'require rtl9617c.status as status';
+'require rtl9617c.ui as ui';
+
+var callSystem = rpc.declare({object: 'luci.rtl9617c-system', method: 'status', expect: {'': {}}, reject: true});
+
+function readAll() {
+	return Promise.all([
+		ui.snapshot(),
+		callSystem().catch(function() { return null; })
+	]);
+}
+
+function cpuTemperature(sys) {
+	var mC = sys && sys.temperature_mC;
+	return mC == null || !isFinite(Number(mC)) ? '—' : (Number(mC) / 1000).toFixed(1) + ' °C';
+}
+
+function renderCards(result) {
+	var data = result[0], sys = result[1];
+	var pon = data.pon || {}, optical = pon.optical || {}, bosa = pon.bosa || {};
+	var model = data.board.model || '';
+	var hasWifi = (data.wifi || []).length > 0 && !/PT1500/i.test(model);
+
+	return E('div', {}, [
+		data.pon ? status.ponCard(pon) : E('p', {class: 'alert-message warning'}, 'PON 状态读取失败。'),
+		ui.grid([
+			ui.tile('运行协议', status.modes[(pon.serdes || {}).mode] || '未提供', '来自驱动实际运行模式'),
+			ui.tile('CPU 温度', cpuTemperature(sys), '来自 cpu-thermal / 系统状态'),
+			ui.tile('光模块温度', status.temperature(pon.transceiver), '来自 A2h 0x60/0x61'),
+			ui.tile('收 / 发光功率', status.power((pon.transceiver || {}).rx_power_raw) + ' / ' + status.power((pon.transceiver || {}).tx_power_raw), 'A2h 0x66~0x69'),
+			ui.tile('光口发射', optical.tx_disabled == null ? '未提供' : optical.tx_disabled === '1' ? '已关闭' : '已允许', 'A2h 光模块遥测'),
+			ui.tile('光学校准', bosa.configured == null ? '未提供' : bosa.configured === '1' ? '已配置' : '未就绪', 'A2H 模块已识别，DDMI 可用')
+		]),
+		status.card('注册与认证', null, ui.authentication(pon)),
+		status.offloadCard(pon),
+		status.card('业务网络', null, [ui.networks(data), ui.link('管理上网', 'admin/onu/internet')]),
+		hasWifi ? status.card('无线网络', null, [
+			data.wifiError ? ui.note('无线状态读取失败。') : ui.grid(data.wifi.map(function(wifi) {
+				return status.card(wifi.ssid || wifi.name, status.badge(wifi.up ? '运行中' : '未运行', wifi.up ? 'good' : 'muted'), status.rows([
+					['接口', wifi.name],
+					['信道', status.value(wifi.channel)],
+					['频率', wifi.frequency ? wifi.frequency + ' GHz' : '—'],
+					['当前 PHY 速率', wifi.bitrate ? wifi.bitrate + ' Mbit/s' : '—']
+				]));
+			})),
+			ui.link('管理 Wi-Fi 6', 'admin/network/wireless')
+		]) : null,
+		ui.fold('物理端口与累计流量', 'ports', ui.ports(pon)),
+		ui.fold('OLT 下发的 GEM 业务通道', 'paths', ui.services(pon)),
+		ui.note((data.board.model || 'PT1500') + ' · ' + ((data.board.release || {}).description || '固件信息未提供'))
+	]);
+}
+
+return view.extend({
+	load: readAll,
+	render: function(initial) {
+		return ui.page('运行状态', '光链路、业务网络与无线，集中查看。接口连接不等于互联网可达。', initial, readAll, renderCards);
+	},
+	handleSaveApply: null,
+	handleSave: null,
+	handleReset: null
+});
