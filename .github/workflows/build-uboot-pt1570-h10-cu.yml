@@ -337,4 +337,4 @@ jobs:
           TAG="PT1570-H10-2P5G-CU-uboot-${{ github.run_number }}"
           gh release create "$TAG" output-cu-uboot/* \
             --title "PT1570-H10-2P5G-CU-uboot (run ${{ github.run_number }})" \
-            --notes "联通版专用（1x2.5GE + 3xGE）：stock 用本机联通 mtd0 备份，GPT/BL2/BL31 原样保留，仅替换 BL33；BL33 沿用 CT-2P5G 板级描述。factory 卷 64 KiB。"
+            --notes 'PT1570-R10/H10无FPGA负担，factory分区按上游调整为64K大小，需要重建UBI，如无必要请勿无需更新！！！'

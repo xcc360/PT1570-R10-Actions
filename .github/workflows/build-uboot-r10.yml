@@ -159,5 +159,5 @@ jobs:
         run: |
           set -eu
           tag="PT1570-R10-4GE-CU-uboot-${{ github.run_number }}"
-          gh release create "$tag" --title "$tag" --generate-notes --target "$GITHUB_SHA" || true
+          gh release create "$tag" --title "$tag" --notes 'PT1570-R10/H10无FPGA负担，factory分区按上游调整为64K大小，需要重建UBI，如无必要请勿无需更新！！！' --target "$GITHUB_SHA" || true
           gh release upload "$tag" dist/*.bin dist/*.json dist/*.txt --clobber || true
