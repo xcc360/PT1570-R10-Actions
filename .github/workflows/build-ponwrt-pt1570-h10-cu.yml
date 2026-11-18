@@ -407,6 +407,18 @@ jobs:
             echo "custom packages repo: $URL/targets/rtl9617c/generic/packages/packages.adb"
           fi
 
+      # 2026-11-16：SSID 按「型号 + 频段」区分，禁用双频合一。
+      # radio0=5G / radio1=2.4G 改为 PT1570-H10-CU-5G / PT1570-H10-CU-2.4G。
+      # 在注入后的 files overlay 上执行（幂等），确保镜像内 conffile 就是分频 SSID。
+      - name: Set band-specific SSIDs (no dual-band unify)
+        run: |
+          set -e
+          WF="$GITHUB_WORKSPACE/wrt/files/etc/config/wireless"
+          [ -f "$WF" ] || { echo "::error::缺少注入后的 $WF"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/scripts/set-band-ssids.py" "$WF" "PT1570-H10-CU"
+          echo "--- SSID in image overlay ---"
+          grep -n "option ssid" "$WF"
+
       # 2026-11-15：把 PonWRT-TYFZA1 v0.8.5 的 WiFi 修复整合进 CU，与 R10
       # run35 同一套。驱动副本 cu-h10/fw/board/wifi/rtl_ax_ap/power-tables.c
       # 已同步 0xd208/0xd21c 厂商限制位清零（信号弱的总闸）；这里再补
@@ -553,6 +565,43 @@ jobs:
             *) echo "::error::未知 fem_profile=$FEM_PROFILE"; exit 1 ;;
           esac
           echo "FEM_PROFILE_SELECTED=${FEM_PROFILE:-yh1570}"
+
+      - name: Guard 2.4G RFE50 front-end fix (always runs)
+        if: ${{ inputs.wifi_diag != true }}
+        env:
+          WRT: ${{ github.workspace }}/wrt
+        run: |
+          set -e
+          D="$WRT/target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap"
+          # 8192XB must select RFE50 params (no external FEM), 8852C keeps RFE54.
+          grep -q 'const char \*rfe = chip == RTL_AX_8852C ? "RFE54" : "RFE50";' "$D/phy.c" \
+            || { echo "::error::2.4G RFE50 路径选择缺失 (phy.c)"; exit 1; }
+          grep -q 'const char \*rfe = chip == RTL_AX_8852C ? "RFE54" : "RFE50";' "$D/limits.c" \
+            || { echo "::error::2.4G RFE50 路径选择缺失 (limits.c)"; exit 1; }
+          grep -q 'const char \*rfe = chip == RTL_AX_8852C ? "RFE54" : "RFE50";' "$D/power-tables.c" \
+            || { echo "::error::2.4G RFE50 路径选择缺失 (power-tables.c)"; exit 1; }
+          # No external FEM for 8192XB (fem=""), and FEM GPIO only for 8852C.
+          grep -q 'const char \*fem = chip == RTL_AX_8852C ? "RTK66587_BPF" : "";' "$D/phy.c" \
+            || { echo "::error::8192XB 仍被当作有外置 FEM (phy.c)"; exit 1; }
+          grep -q 'if (chip == RTL_AX_8852C) {' "$D/bb-dm.h" \
+            || { echo "::error::FEM GPIO 未按芯片限制为 8852C (bb-dm.h)"; exit 1; }
+          grep -q 'rtl_ax_xb_gain2g(io, &phy->gain\[RTL_AX_PHY_FEM\]);' "$D/xb-channel.h" \
+            || { echo "::error::2.4G FEM 增益补偿未应用 (xb-channel.h)"; exit 1; }
+          # RPQ 8192XB stock agg=121 (0x00ff0079)
+          grep -q '0x00ff0079' "$D/mac-runtime.h" \
+            || { echo "::error::8192XB RPQ agg=121 缺失 (mac-runtime.h)"; exit 1; }
+          # Old rfe50_8192xb module-param approach must be gone.
+          ! grep -rq 'rfe50_8192xb' "$D" \
+            || { echo "::error::旧的 rfe50_8192xb 开关残留"; exit 1; }
+          # Complete RFE50 tables must ship in rootfs.
+          R="$WRT/files/lib/firmware/realtek/tyfza1/rtl8192xbe/RFE50"
+          for f in PHY_REG.txt PHY_REG_GAIN.txt RadioA.txt RadioB.txt \
+                   TXPWR_ByRate.txt TXPWR_LMT.txt TXPWR_LMT_RU.txt TXPWR_TrackTSSI.txt; do
+            [ -f "$R/$f" ] || { echo "::error::缺 2.4G RFE50 表: $f"; exit 1; }
+          done
+          [ "$(wc -c < "$R/PHY_REG.txt")" -gt 20000 ] \
+            || { echo "::error::RFE50/PHY_REG.txt 不是完整表（<20KB）"; exit 1; }
+          echo "PT1570_2G_RFE50_GUARD_OK=True"
 
       - name: Configure
         working-directory: wrt
@@ -1017,6 +1066,32 @@ jobs:
           [ ! -e "$UCI/95-pt1570-wan-default" ] \
             || { echo "::error::镜像混入 R10 的 95-pt1570-wan-default"; exit 1; }
           echo "UCI_DEFAULTS_OK=True WAN_FE_FIX_OK=True"
+
+          # ---- SSID 按型号+频段区分，禁用双频合一（2026-11-16）----
+          [ -f "$ROOT/etc/config/wireless" ] \
+            || { echo "::error::镜像缺少默认 /etc/config/wireless"; exit 1; }
+          grep -q "^[[:space:]]*option ssid 'PT1570-H10-CU-5G'$" "$ROOT/etc/config/wireless" \
+            || { echo "::error::镜像缺 5G SSID PT1570-H10-CU-5G"; exit 1; }
+          grep -q "^[[:space:]]*option ssid 'PT1570-H10-CU-2.4G'$" "$ROOT/etc/config/wireless" \
+            || { echo "::error::镜像缺 2.4G SSID PT1570-H10-CU-2.4G"; exit 1; }
+          [ "$(grep -c "option ssid 'PT1570-H10-CU'" "$ROOT/etc/config/wireless")" = 0 ] \
+            || { echo "::error::镜像仍有双频合一 SSID PT1570-H10-CU"; exit 1; }
+          ssn=$(grep -c "option ssid" "$ROOT/etc/config/wireless")
+          [ "$ssn" = 2 ] || { echo "::error::镜像 SSID 数 $ssn != 2"; exit 1; }
+          echo "SSID_PER_BAND_OK=True (PT1570-H10-CU-5G / PT1570-H10-CU-2.4G, no dual-band unify)"
+
+          # ---- hostapd 断流缓解参数（2026-11-17，移植自 lu-1991 CI）----
+          [ "$(grep -c "option skip_inactivity_poll '1'" "$ROOT/etc/config/wireless")" = 2 ] \
+            || { echo "::error::镜像两个 VAP 缺 skip_inactivity_poll=1"; exit 1; }
+          [ "$(grep -c "option disassoc_low_ack '0'" "$ROOT/etc/config/wireless")" = 2 ] \
+            || { echo "::error::镜像两个 VAP 缺 disassoc_low_ack=0"; exit 1; }
+          [ -x "$ROOT/etc/uci-defaults/99-pt1570-h10-cu-wifi-stability" ] \
+            || { echo "::error::99-pt1570-h10-cu-wifi-stability 未进镜像或丢了可执行位"; exit 1; }
+          grep -q 'skip_inactivity_poll' "$ROOT/etc/uci-defaults/99-pt1570-h10-cu-wifi-stability" \
+            || { echo "::error::CU stability 脚本缺 skip_inactivity_poll"; exit 1; }
+          grep -q 'disassoc_low_ack' "$ROOT/etc/uci-defaults/99-pt1570-h10-cu-wifi-stability" \
+            || { echo "::error::CU stability 脚本缺 disassoc_low_ack"; exit 1; }
+          echo "HOSTAPD_STABILITY_OK=True (skip_inactivity_poll=1 / disassoc_low_ack=0 on 2 VAPs)"
 
           # ---- factory 提取脚本修补 + 校准软链接 ----
           grep -q 'mv "\$tmp" "\$3"' "$ROOT/etc/init.d/tyfza1-factory" \

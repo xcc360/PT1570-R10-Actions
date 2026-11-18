@@ -4,6 +4,12 @@
 #   机器层 PROFILE / BOARD_NAME / DTS / SUPPORTED_DEVICES / Config target 符号
 #   一律不动（uci-defaults 门控与 sysupgrade 白名单依赖它们），workflow 文件名
 #   也保留，避免 GitHub 按路径重建 workflow、丢失 run 历史。
+#
+# WiFi SSID 约定（2026-11-16，全 R10 workflow 统一）：
+#   出厂 SSID 按「型号 + 频段」区分、不启用双频合一：
+#     5GHz -> PT1570-R10-5G / 2.4GHz -> PT1570-R10-2.4G
+#   本 workflow 只打包 U-Boot，不含无线配置；SSID 由固件 workflow
+#   build-pt1570-fit.yml + scripts/set-band-ssids.py 落地并断言。
 name: PT1570-R10-4GE-CU-uboot
 
 # The U-Boot source tree (upstream qwe-qaq/rtl9617c-uboot@1570 plus the

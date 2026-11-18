@@ -64,9 +64,6 @@ static bool prepare_ap_role;
 bool rtl_ax_datapath_profile;
 module_param_named(datapath_profile, rtl_ax_datapath_profile, bool, 0644);
 MODULE_PARM_DESC(datapath_profile, "Measure host RX delivery and TX descriptor preparation time");
-bool rtl_ax_rfe50_8192xb;
-module_param_named(rfe50_8192xb, rtl_ax_rfe50_8192xb, bool, 0644);
-MODULE_PARM_DESC(rfe50_8192xb, "RTL_AX_8192XB (2.4G) uses integrated FEM (RFE50) instead of external FEM (RFE54): skips RFE54 external PA/LNA gain and uses the non-inverted LNA standby byte");
 static unsigned int beacon_tx_ant;
 static unsigned int edcca_mode;
 static unsigned int hw_rts_time, hw_rts_length;
@@ -1037,7 +1034,7 @@ static int rtl_ax_load_firmware(struct rtl_ax_ap *radio, const struct firmware *
 	if (ret)
 		return ret;
 	radio->cmac_registers_ready = true;
-	rtl_ax_mac_trx_registers(&radio->io);
+	rtl_ax_mac_trx_registers(&radio->io, radio->chip);
 	radio->trx_registers_ready = true;
 	ret = rtl_ax_phy_load(&radio->pdev->dev, radio->chip, &radio->phy);
 	if (ret)

@@ -87,10 +87,22 @@ ok(wire.count("option he_su_beamformer '1'") == 2,
    "两个 radio 都带原厂 HE beamforming 配置")
 ok("option country 'CN'" in wire and "country_code=US" not in wire,
    "regdomain 保持 CN（不跟随原厂 US）")
+# SSID 按型号+频段区分，禁用双频合一（2026-11-16）
+ok("option ssid 'PT1570-R10-5G'" in wire, "5G SSID = PT1570-R10-5G")
+ok("option ssid 'PT1570-R10-2.4G'" in wire, "2.4G SSID = PT1570-R10-2.4G")
+ok("option ssid 'PT1570-R10'" not in wire, "无双频合一 SSID PT1570-R10")
+# hostapd 断流缓解（2026-11-17，移植自 lu-1991 CI）
+ok(wire.count("option skip_inactivity_poll '1'") == 2,
+   "两个 VAP 都带 skip_inactivity_poll=1")
+ok(wire.count("option disassoc_low_ack '0'") == 2,
+   "两个 VAP 都带 disassoc_low_ack=0")
 
 tune = ROOT / "files/etc/uci-defaults/96-pt1570-wifi-tuning"
 ok(tune.is_file(), "96-pt1570-wifi-tuning 存在")
-ok('board_name)" = "youhua,pt1570-r10"' in tune.read_text("utf-8", "replace"),
+_tune_txt = tune.read_text("utf-8", "replace")
+ok('board_name)" = "youhua,pt1570-r10"' in _tune_txt,
    "tuning 脚本只对 R10 生效")
+ok('skip_inactivity_poll' in _tune_txt and 'disassoc_low_ack' in _tune_txt,
+   "tuning 脚本为 sysupgrade 保留配置补 hostapd 断流两项")
 
 print("  STOCK_WIFI_OK=True checks=%d" % ok_count)

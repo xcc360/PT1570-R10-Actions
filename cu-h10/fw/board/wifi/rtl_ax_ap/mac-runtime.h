@@ -363,7 +363,7 @@ static inline int rtl_ax_mac_cmac_start(const struct rtl_ax_io *io,
 	return 0;
 }
 
-static inline void rtl_ax_mac_trx_registers(const struct rtl_ax_io *io)
+static inline void rtl_ax_mac_trx_registers(const struct rtl_ax_io *io, unsigned int chip)
 {
 	const struct {
 		unsigned int address, keep, enable;
@@ -422,7 +422,12 @@ static inline void rtl_ax_mac_trx_registers(const struct rtl_ax_io *io)
 	if (value != next)
 		io->write32(io->ctx, 0x9410, next);
 	value = io->read32(io->ctx, 0x9414);
-	next = (value & 0xff00ff00) | 0x00ff000c;
+	/* R_AX_RLSRPT0_CFG1: byte0=WP agg threshold, byte2=release timeout.
+	 * 8192XB stock agg=121/tmr=255; 8852C known-good agg=12. */
+	if (chip == RTL_AX_8192XB)
+		next = (value & 0xff00ff00) | 0x00ff0079;
+	else
+		next = (value & 0xff00ff00) | 0x00ff000c;
 	if (value != next)
 		io->write32(io->ctx, 0x9414, next);
 	/* set_l2_status changes a host state byte,not a hardware register.
