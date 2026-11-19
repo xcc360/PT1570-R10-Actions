@@ -24,16 +24,18 @@
 #     tianyi/tyfza1/desc-2p5g.c（pin 11/12 高有效 + 3/4 低有效）。本机实机
 #     只看到 3 个千兆灯在动，正是旧映射造成的。cu-h10/uboot/board/desc-2p5g.c
 #     取两套映射的并集（极性逐项一致，全在 GPIO bank 0、避开 reset 键 pin 8），
-#     列出 10 盏 SoC 状态灯：上电扫灯 / 恢复页流水 / 刷机进度条都能看全。
+#     列出 11 盏 U-Boot 可驱动状态灯（2026-11-19 补入 WPS pin5）：上电扫灯 /
+#     恢复页流水 / 刷机进度条都能看全。
 #   * 2026-11-14 面板序修正：failsafe/led.c 的 boot sweep / IDLE runner /
 #     BUSY 进度条全部严格沿 lamp[] 数组索引跑，数组顺序 = 面板物理左右顺序。
 #     run #4 沿用了 PT1500 面板序（USB/电话/宽带排在 4 个网口灯前面），而本机
 #     真实面板是「电源 注册 光信号 5G 2.4G 千兆4 千兆3 千兆2 2.5G口 电话
 #     宽带 WPS USB」，GE 灯在电话/宽带/USB 之前 —— 正好相反，runner 因此
-#     zig-zag。本版把 10 盏灯重排为面板物理序
-#     11,9,10,0,1,3,4,12,2,7（pin 集合/极性不变，BL33 体积不变，零回归风险）。
-#     面板另 4 位（5G / 2.4G / 2.5G口 / WPS）分别由 PCIe WiFi 卡、RTL8221B
-#     外置 PHY、WPS 按钮驱动，不是 SoC GPIO，U-Boot 阶段无法点亮，故不认领。
+#     zig-zag。本版把 11 盏灯重排为面板物理序
+#     11,9,10,0,1,3,4,12,2,5,7（原 10 盏 pin/极性不变，新增 WPS pin5 高有效）。
+#     面板另 3 位（5G / 2.4G / 2.5G口）分别由 PCIe WiFi 卡、RTL8221B 外置 PHY
+#     驱动，U-Boot 阶段无法点亮，故不认领。WPS 不是按钮：DTS 定义 gpio0 pin5
+#     为 LED_WPS_G（高有效），同平台 PT1570-R10 已实机证明按钮是 8/99/103。
 #   * cu-h10/uboot/tools/verify_cu_leds.py 现在既查 pin 集合/极性/越界/reset，
 #     也把「面板物理左→右顺序」作为硬断言锁死（run #4 缺的正是这一条）。
 #   * 固件由 build-ponwrt-pt1570-h10-cu.yml 产出，两者配套使用。

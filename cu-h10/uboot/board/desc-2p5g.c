@@ -18,28 +18,26 @@
  *    9  2.5G口      LED_EPHY0      4    low     RTL8221B PHY  (long off)
  *   10  电话        LED_FXS       12    high    SoC GPIO  [U-Boot]
  *   11  宽带        LED_PPP_G      2    low     SoC GPIO  [U-Boot]
- *   12  WPS         LED_WPS_G      5    high    WPS button / OS  (long off)
+ *   12  WPS         LED_WPS_G      5    high    SoC GPIO  [U-Boot] (2026-11-19 补入)
  *   13  USB         LED_USB0       7    high    SoC GPIO  [U-Boot]
  *
- * The user reports #4/#5 (5G, 2.4G), #9 (2.5G jack) and #12 (WPS) are
- * "permanently dark". Two different reasons, handled differently:
- *   - #4/#5 (5G / 2.4G) and #12 (WPS) have NO SoC status GPIO driving them:
- *     the two WiFi lamps hang off the PCIe radio cards (dead in U-Boot), and
- *     WPS (pin 5) is a button/OS lamp. Claiming them would only insert dark
- *     frames into the runner and could steal a button pin, so they are left
- *     out entirely. pin 5 (WPS), pin 6 (usb1) stay with the OS; pin 8 is the
- *     reset key and must never be claimed.
- *   - #9 (2.5G jack) is different: a real SoC GPIO (pin 4, LED_EPHY0) DOES
- *     sit at that panel position, so it is kept in the array at its physical
- *     index (right after the three GE lamps) so the runner passes over it in
- *     order. On this board the jack LED is wired to the external RTL8221B PHY,
- *     so that one step may read dark — which is exactly what the panel shows.
- *     It is NOT dropped: removing it would make the runner skip a physical
- *     lamp position and look gapped. All other nine lamps are true SoC GPIO
- *     status lamps (verified lit by run #4).
- * Net effect: 10 lamps = 9 always-lit + 1 PHY-wired may-dark, in exact panel
- * order. The 4 "permanently dark" positions are therefore a hardware fact,
- * not something this U-Boot build can or should try to light.
+ * The user reports #4/#5 (5G, 2.4G) and #9 (2.5G jack) are "permanently dark".
+ * WPS (#12) used to be in that list too, but that was a wrong diagnosis:
+ *   - #4/#5 (5G / 2.4G) are PCIe radio-card LEDs with no SoC GPIO in U-Boot,
+ *     so they are physically impossible to drive at this stage. They are
+ *     skipped (no dark frames).
+ *   - #12 WPS is a REAL SoC GPIO LED: DTS defines gpio0 pin5 active-high
+ *     LED_WPS_G, and the same RTL9617C platform (PT1570-R10) proved by real
+ *     hardware on 2026-11-19 that buttons are pin8/pin99/pin103 while pin5 is
+ *     the WPS lamp. Claiming pin5 does NOT steal a button. It is therefore
+ *     added back at its physical panel index (between 宽带 and USB) so the
+ *     boot sweep / IDLE runner / progress bar light it in order.
+ *   - #9 (2.5G jack) is a real SoC GPIO (pin 4, LED_EPHY0) wired to the
+ *     external RTL8221B PHY, so that step may read dark. It is kept in place
+ *     so the runner does not skip a physical position.
+ * Net effect: 11 lamps = 10 SoC GPIO status lamps + 1 PHY-wired may-dark, in
+ * exact panel order. Only 5G / 2.4G (and possibly the 2.5G jack) remain dark
+ * in U-Boot; those are hardware limits, not something this build can fix.
  *
  * Why the order matters (failsafe/led.c, do NOT "simplify" this):
  *   rtk_board_boot_leds() sweeps lamp[0..n] once at power-on;
@@ -58,10 +56,11 @@
  *   * struct rtk_led.pin is a GLOBAL GPIO number (u8) and active_low is the
  *     electrical polarity (DTSI: &gpio0 <N> <1=low/0=high>).
  *   * rtl9617c_gpio_group_select() rejects a lamp set spanning more than one
- *     32-pin bank; all ten pins here live in bank 0 (pin < 32).
- *   * The pin set and polarities are UNCHANGED from run #4 (already proven to
- *     light the panel); only the ORDER is fixed. Zero regression risk on the
- *     BL33 size, geometry, FIP UUIDs or the CU stock GPT.
+ *     32-pin bank; all eleven pins here live in bank 0 (pin < 32).
+ *   * The ten original pins/polarities are unchanged from run #4; the only
+ *     addition is pin5 (WPS, active high), which is a real LED and does not
+ *     touch reset pin8 or usb1 pin6. BL33 size, geometry, FIP UUIDs and the
+ *     CU stock GPT are unaffected.
  *
  * Only this board description is replaced at build time; geometry, FIP UUIDs,
  * BL2/BL31 and the CU stock GPT are untouched by the lamp change.
@@ -81,7 +80,7 @@ static const struct rtk_led pt1570_h10_cu_2p5g_lamps[] = {
 	{ .pin = 4,  .active_low = true },	/*  9 2.5G口  LED_EPHY0  (PHY, 长灭) */
 	{ .pin = 12 },				/* 10 电话    LED_FXS    (high) */
 	{ .pin = 2,  .active_low = true },	/* 11 宽带    LED_PPP_G  (low)  */
-	/* 12 WPS: 按钮灯 pin 5，无 failsafe 状态，留给 OS */
+	{ .pin = 5 },				/* 12 WPS     LED_WPS_G  (high) */
 	{ .pin = 7 },				/* 13 USB     LED_USB0   (high) */
 };
 
