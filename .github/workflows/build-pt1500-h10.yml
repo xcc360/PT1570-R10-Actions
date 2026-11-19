@@ -103,9 +103,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 refactor HEAD d8f2e9522063，与 PT1570-H10-CU 同步；2.5G 正解架构 + OMCI/PON 加固）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 refactor HEAD ae4aeac45a70，与 PT1570-H10-CU 同步；2.5G 正解架构 + RTL8221B 灯驱动根治 + napi rx_lock 修复）'
         required: false
-        default: 'd8f2e9522063'
+        default: 'ae4aeac45a70be1bdf68af65cbbacb360f201b27'
         type: string
       test_only:
         description: '只生成并上传 .config / 校验报告，不编译'
@@ -231,7 +231,7 @@ jobs:
         run: |
           set -e
           # 2026-11-17 基线切到 refactor（2.5G 正解架构，实机验证可用）
-          REF="${{ inputs.source_ref || 'd8f2e9522063' }}"
+          REF="${{ inputs.source_ref || 'ae4aeac45a70be1bdf68af65cbbacb360f201b27' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -869,15 +869,17 @@ jobs:
           grep -q 'transition_error!=null&&next.cpu.transition_error!==0' \
             "$ROOT/www/luci-static/resources/view/system/rtl9617c-cpu.js" \
             || { echo "::error::CPU 频率页面 null 容错补丁未生效"; exit 1; }
-          [ -f "$ROOT/etc/uci-defaults/94-pt1500-h10-phy-leds" ] \
-            || { echo "::error::镜像缺 94-pt1500-h10-phy-leds（2.5G PHY 灯驱动）"; exit 1; }
-          [ -x "$ROOT/usr/bin/pt1500-2p5g-blink" ] \
-            || { echo "::error::镜像缺 pt1500-2p5g-blink（2.5G 灯 link/activity 驱动）"; exit 1; }
-          [ -f "$ROOT/etc/init.d/pt1500-2p5g-blink" ] \
-            || { echo "::error::镜像缺 pt1500-2p5g-blink init.d 服务"; exit 1; }
-          grep -q 'pt1500-2p5g-blink' "$ROOT/etc/uci-defaults/94-pt1500-h10-phy-leds" \
-            || { echo "::error::94 脚本未启用 2.5G 灯闪烁驱动"; exit 1; }
-          echo "  OK   LuCI 型号(含频率) / 首页温度(CPU+PON) / 调频字段 / 端口映射 / 2.5G 灯 link+activity 均已注入"
+          # 2.5G 灯：上游 refactor 已从驱动层根治（标准 color/function binding + 极性修复），
+          # board.d/01_leds 原生用 netdev trigger 绑 lan1，link+收发闪烁开箱即用。
+          # 因此不再注入任何自定义 blink 守护脚本（会覆盖上游 netdev trigger）。
+          [ ! -e "$ROOT/usr/bin/pt1500-2p5g-blink" ] \
+            || { echo "::error::镜像残留自定义 2.5G 灯 blink 脚本，会覆盖上游 netdev trigger"; exit 1; }
+          [ ! -e "$UCI/94-pt1500-h10-phy-leds" ] \
+            || { echo "::error::镜像残留 94-pt1500-h10-phy-leds（旧强制常亮方案）"; exit 1; }
+          grep -q '4f4329118.mdio:06:blue:lan' \
+            "target/linux/rtl9617c/base-files/etc/board.d/01_leds" \
+            || { echo "::error::上游 01_leds 缺 2.5G 灯 netdev 绑定（source_ref 未切到 ae4aeac45a70？）"; exit 1; }
+          echo "  OK   LuCI 型号(含频率) / 首页温度(CPU+PON) / 调频字段 / 端口映射均已注入；2.5G 灯走上游原生 netdev trigger"
           # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
           LED_SCRIPT="$UCI/93-pt1500-h10-leds"
           [ -f "$LED_SCRIPT" ] \
@@ -987,9 +989,9 @@ jobs:
             echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
             echo "dts=$DTS (refactor upstream @ $SOURCE_HASH; 面板灯 GPIO 已按原厂 DTB 覆盖)"
-            echo "source_ref=$SOURCE_REF (baseline=refactor d8f2e9522063, 与 PT1570-H10-CU 同步, 2.5G 正解架构 + OMCI/PON 加固)"
+            echo "source_ref=$SOURCE_REF (baseline=refactor ae4aeac45a70, 与 PT1570-H10-CU 同步, 2.5G 正解架构 + RTL8221B 灯驱动根治 + napi rx_lock 修复)"
             echo "source_commit=$SOURCE_HASH"
-            echo "baseline=refactor d8f2e9522063 — HisGMII PHY + SerDes PHY + 按速切 2500BASEX/SGMII（run#6 实机验证 2.5G 可用）"
+            echo "baseline=refactor ae4aeac45a70 — HisGMII PHY + SerDes PHY + RTL8221B netdev 灯 + napi rx_lock 修复（2.5G 原生可用）"
             echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
             echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs, 标准 fit_do_upgrade)"
             echo "bootloader=lyq1996/rtl9617c-uboot@3a709714e551 (2026-11-10, pt1500-h10-2p5g_defconfig)"
