@@ -46,8 +46,9 @@
 # 本脚本只改**顶层**那个（紧跟 "/ {" 之后、缩进一级的 leds）。
 #
 # 幂等：已是目标内容则跳过；匹配不到唯一的顶层 leds 节点则 fail（提示上游改版需复核）。
-# ★ 2026-11-19 恢复实机验证过的 run#12 灯表（原厂 flat 编号 + ACTIVE_HIGH）。
-#   run#17 探测版（27 个 PROBE 灯）仅用于定 pin，不作为最终固件。
+# ★ 2026-11-19 按 run#17 实机定 pin 灯表覆盖（U-Boot 引脚 + 实测极性）。
+#   依据 run#17 实机对应（面板序->pin）：电源11 光纤9 光信号10 宽带2 电话12 未标记1=7 千兆4=0 千兆3=1 iTV=3 未标记2=6；2.5G 口无 GPIO。
+   极性：ALL ON 亮电源/电话/未标记1 = ACTIVE_HIGH；ALL OFF 亮其余 7 盏 = ACTIVE_LOW。
 #   同时保留方案 B：删除 /aliases 中 4 行 led-* = &led_power 引用，
 #   避免上游结构变化时 dtc path_references 再报 led_power 未定义。
 #
@@ -66,51 +67,47 @@ TARGET_FILE="$WRT/target/linux/rtl9617c/dts/.pt1500-leds-target.dtsi"
 cat > "$TARGET_FILE" <<'EOF'
 	leds {
 		compatible = "gpio-leds";
-		internet {
-			label = "LED_PPP_G";
-			gpios = <&gpio0 96 GPIO_ACTIVE_HIGH>;
-			default-state = "off";
-		};
-		los {
-			label = "LED_LOS";
+		led_power: power {
+			label = "LED_PWR_G";
 			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
 		};
 		pon {
 			label = "LED_PON";
-			gpios = <&gpio0 108 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
 		};
-		led_power: power {
-			label = "LED_PWR_G";
-			gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
-			default-state = "on";
+		los {
+			label = "LED_LOS";
+			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+		};
+		internet {
+			label = "LED_PPP_G";
+			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+			default-state = "off";
 		};
 		phone {
 			label = "LED_FXS";
 			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
 		};
-		lan1 {
-			label = "LED_EPHY1";
-			gpios = <&gpio0 103 GPIO_ACTIVE_HIGH>;
-		};
-		lan2 {
-			label = "LED_EPHY2";
-			gpios = <&gpio0 97 GPIO_ACTIVE_HIGH>;
-		};
-		lan3 {
-			label = "LED_EPHY3";
-			gpios = <&gpio0 100 GPIO_ACTIVE_HIGH>;
-		};
 		usb0 {
 			label = "LED_USB0";
-			gpios = <&gpio0 99 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
 		};
-		ephy0 {
-			label = "LED_EPHY0";
-			gpios = <&gpio0 102 GPIO_ACTIVE_HIGH>;
+		lan4 {
+			label = "LED_EPHY3";
+			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+		};
+		lan3 {
+			label = "LED_EPHY2";
+			gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;
+		};
+		lan2 {
+			label = "LED_EPHY1";
+			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
 		};
 		usb1 {
 			label = "LED_USB1";
-			gpios = <&gpio0 101 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
 		};
 	};
 EOF
@@ -152,9 +149,9 @@ if changed or nalias:
     open(path, 'w', encoding='utf-8').write(text)
 if changed:
     n = target.count('label = "LED_')
-    print('  OK   DTS 面板灯已恢复为 run#12 已知良好表（%d 盏，原厂 flat + ACTIVE_HIGH）' % n)
+    print('  OK   DTS 面板灯已按 run#17 实机定 pin 覆盖（%d 盏，U-Boot pin + 实测极性）' % n)
 else:
-    print('  OK   DTS 面板灯已是 run#12 已知良好表（幂等跳过）')
+    print('  OK   DTS 面板灯已是 run#17 实机定 pin 表（幂等跳过）')
 if nalias:
     print('  OK   已按方案 B 删除 %d 行指向 led_power 的 /aliases 引用' % nalias)
 

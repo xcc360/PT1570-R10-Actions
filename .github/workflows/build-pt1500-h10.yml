@@ -808,21 +808,30 @@ jobs:
           # PON mode 纠正逻辑必须在（防 sysupgrade 保留旧配置时 mode 仍是错的）
           grep -qF "uci -q set pon.pon.mode='xgpon'" "$H10WAN" \
             || { echo "::error::镜像里 H10 WAN 脚本缺 PON mode=xgpon 纠正逻辑"; exit 1; }
-          # 面板灯：镜像 DTB 必须是按原厂 DTB 换算后的 GPIO 编号 + 极性 ACTIVE_HIGH
-          # （上游 DTS 编号未按原厂 5-bank 换算，且极性写成 ACTIVE_LOW；
-          #  实机 run#11 "只有电源灯亮" = 极性反了，原厂 flags 全 0x00=ACTIVE_HIGH）
+          # 面板灯：run#17 实机定 pin 结果（面板序 -> pin -> 极性）
+          #  电源11(H) 光纤9(L) 光信号10(L) 宽带2(L) 电话12(H)
+          #  未标记1=7(H) 千兆4=0(L) 千兆3=1(L) iTV=3(L) 未标记2=6(L)
+          #  2.5G 口无 GPIO（PHY 自带灯），不注册。
           DTB_SRC="$GITHUB_WORKSPACE/wrt/target/linux/rtl9617c/dts/${DTS}.dts"
           if [ -f "$DTB_SRC" ]; then
-            for pair in 'LED_PPP_G 96' 'LED_LOS 11' 'LED_PON 108' 'LED_PWR_G 6' \
-                        'LED_FXS 12' 'LED_EPHY1 103' 'LED_EPHY2 97' 'LED_EPHY3 100' \
-                        'LED_USB0 99' 'LED_EPHY0 102' 'LED_USB1 101'; do
-              lbl=${pair% *}; pin=${pair#* }
-              # 编号 + 极性必须同时正确：gpios = <&gpio0 PIN GPIO_ACTIVE_HIGH>
+            for triple in 'LED_PWR_G 11 GPIO_ACTIVE_HIGH' \
+                          'LED_PON 9 GPIO_ACTIVE_LOW' \
+                          'LED_LOS 10 GPIO_ACTIVE_LOW' \
+                          'LED_PPP_G 2 GPIO_ACTIVE_LOW' \
+                          'LED_FXS 12 GPIO_ACTIVE_HIGH' \
+                          'LED_USB0 7 GPIO_ACTIVE_HIGH' \
+                          'LED_EPHY3 0 GPIO_ACTIVE_LOW' \
+                          'LED_EPHY2 1 GPIO_ACTIVE_LOW' \
+                          'LED_EPHY1 3 GPIO_ACTIVE_LOW' \
+                          'LED_USB1 6 GPIO_ACTIVE_LOW'; do
+              lbl=${triple% * *}; rest=${triple#* }; pin=${rest% *}; pol=${rest#* }
               grep -A3 "label = \"$lbl\"" "$DTB_SRC" \
-                | grep -q "gpios = <&gpio0 $pin GPIO_ACTIVE_HIGH>" \
-                || { echo "::error::DTS 灯 $lbl 应为 gpio0 $pin GPIO_ACTIVE_HIGH（编号/极性修复未生效？）"; exit 1; }
+                | grep -q "gpios = <&gpio0 $pin $pol>" \
+                || { echo "::error::DTS 灯 $lbl 应为 gpio0 $pin $pol（实机定 pin 未生效？）"; exit 1; }
             done
-            echo "  OK   DTS 面板灯 11 盏 GPIO 编号 + ACTIVE_HIGH 极性全部核对通过"
+            ! grep -q 'label = "LED_EPHY0"' "$DTB_SRC" \
+              || { echo "::error::DTS 仍注册 LED_EPHY0，但实机 2.5G 口无 GPIO"; exit 1; }
+            echo "  OK   DTS 面板灯 10 盏 GPIO 编号 + 极性（run#17 实机定 pin）全部核对通过"
           else
             echo "::warning::找不到 DTS 源文件 $DTB_SRC，跳过灯 GPIO/极性校验"
           fi
