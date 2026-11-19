@@ -128,6 +128,12 @@ on:
         required: false
         default: false
         type: boolean
+      wifi_port:
+        description: '上游单 PE 兼容 WiFi 修复移植（定向子集，默认 off 不改行为）：off / scan-rssi / scan-rssi+ra'
+        required: false
+        default: 'off'
+        type: choice
+        options: ['off', scan-rssi, scan-rssi+ra]
       fem_profile:
         description: '5G 射频参数表 profile：yh1570=原厂 PT1570 专用 v52（默认）；ponwrt085=PonWRT 0.8.5 实机验证的 v51 全套；generic=上游通用 v51 回滚'
         required: false
@@ -486,6 +492,23 @@ jobs:
             || { echo "::error::旧的 0xd208 置位逻辑残留"; exit 1; }
           echo "PONWRT085_POWER_FIX_OK=True (power_limit MIB=0, TX no longer capped below by-rate)"
 
+      # 上游单 PE 兼容 WiFi 修复移植（C1/C2）：overlay + txpower fix 之后、Configure 之前。
+      # 锚点是我们的参考版驱动；脚本内置单 PE1 硬护栏，任何锚点 !=1 直接失败。
+      - name: Port upstream single-PE WiFi fixes
+        if: ${{ inputs.wifi_diag != true && inputs.wifi_port != 'off' }}
+        env:
+          WIFI_PORT: ${{ inputs.wifi_port }}
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/scripts/apply-upstream-wifi-port.sh"
+
+      - name: Verify upstream WiFi port (compile tree)
+        if: ${{ inputs.wifi_diag != true }}
+        env:
+          WIFI_PORT: ${{ inputs.wifi_port }}
+          WRT: ${{ github.workspace }}/wrt
+        run: python3 "$GITHUB_WORKSPACE/scripts/verify-upstream-wifi-port.py" check-tree "$WRT" "$WIFI_PORT"
+
       # 2.4G 速率控制回归护栏。与 H10-CU workflow 同源：driver 源码在
       # board/wifi/rtl_ax_ap/ 与 cu-h10/fw/board/wifi/rtl_ax_ap/ 两处副本，
       # 补丁必须同时落到两份，否则 R10 会静默缺失修复。
@@ -775,6 +798,7 @@ jobs:
         env:
           ASSETS: ${{ github.workspace }}
           FEM_PROFILE: ${{ inputs.fem_profile }}
+          WIFI_PORT: ${{ inputs.wifi_port }}
         run: |
           set -e
           ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
@@ -996,6 +1020,15 @@ jobs:
             || { echo "::error::96 tuning 缺 disassoc_low_ack(sysupgrade 保留配置不会补)"; exit 1; }
           echo "HOSTAPD_STABILITY_OK=True (skip_inactivity_poll=1 / disassoc_low_ack=0 on 2 VAPs)"
 
+          # ---- 上游单 PE WiFi 移植：镜像内符号/统计名断言（仅 wifi_port != off）----
+          if [ "${WIFI_PORT:-off}" != "off" ]; then
+            KO=$(find "$ROOT/lib/modules" -name "rtl_ax_ap.ko" 2>/dev/null | head -1)
+            [ -n "$KO" ] || { echo "::error::镜像缺 rtl_ax_ap.ko"; exit 1; }
+            grep -aq "scan_RSSI_matched" "$KO" \
+              || { echo "::error::rtl_ax_ap.ko 缺 scan RSSI 统计符号（B1 未编入）"; exit 1; }
+            echo "WIFI_PORT_IMAGE_OK=True (port=${WIFI_PORT}, rtl_ax_ap.ko has scan stats)"
+          fi
+
           # ---- 原厂 PT1570 专用 FEM 表 + hostapd 高级参数（2026-11-14）----
           # 资产层：sha256 / 版本注释 / 回滚目录 / 溯源目录 / uci-defaults 全查
           python3 "$ASSETS/scripts/verify-stock-wifi-assets.py"
@@ -1133,6 +1166,7 @@ jobs:
           PUBLISH_PACKAGES: ${{ inputs.publish_packages }}
           DTS_STATUS: ${{ inputs.dts_status }}
           FEM_PROFILE: ${{ inputs.fem_profile }}
+          WIFI_PORT: ${{ inputs.wifi_port }}
         run: |
           set -e
           OUT="$GITHUB_WORKSPACE/artifact"
@@ -1172,6 +1206,12 @@ jobs:
             echo "ponwrt085_power_fix=power_limit MIB=0; 0xd208/0xd21c vendor limit bits cleared (was capping TX below by-rate)"
             echo "ponwrt085_txpower_ucode=wifi-scripts mac80211.sh txpower!=null + setup_failed on iw failure"
             echo "ponwrt085_profile=RFE54_PONWRT085/ (26 v51 tables from v0.8.5-beta sysupgrade.bin, dispatch fem_profile to switch)"
+            echo "wifi_port=${WIFI_PORT:-off} (off=stock / scan-rssi / scan-rssi+ra)"
+            if [ "${WIFI_PORT:-off}" != "off" ]; then
+              echo "wifi_port_source=LeoooChen/PonWRT-TYFZA1@6077a9a+{f74af178} (single-PE subset)"
+              echo "wifi_port_pe_engine=PE1/4076words/md5=7eb49893 (unchanged)"
+              echo "wifi_port_skipped=pe-tx-code.h / rx-geometry WD-retain / pe-core.c (dual-PE incompatible)"
+            fi
           } > "$OUT/BUILD_INFO.txt"
 
           if [ "${DTS_STATUS:-experimental}" != "verified" ]; then
@@ -1270,3 +1310,5 @@ jobs:
             ⚠️ 刷机前 U-Boot env 应保持编译默认（pt1570.env 无 bootargs）；清空动作执行一次即可。
             ⚠️ 本固件 bootargs 不含 root=，挂根由内核 MTD_ROOTFS_ROOT_DEV + fitblk 驱动自设 ROOT_DEV 完成。
             ⚠️ 本仓库当前为 R10-only 范围，产物仅适用于 PT1570-R10。
+            上游单 PE WiFi 移植：本产物 wifi_port 设置见 BUILD_INFO.txt（off / scan-rssi / scan-rssi+ra）。
+            scan-rssi/scan-rssi+ra 在已验证的单 PE1 参考驱动上定向移植上游 6077a9a 的扫描/站点 RSSI 解码（iwinfo/station dump 上报真实负 dBm、sw_scan 回调）与 6077a9a/f74af178 的 RA 信号解析结构；严格跳过双 PE 微码、pe-core.c 与 WD 保留位（与本平台不兼容）。迁移仅取可验证子集，上游公开资料中 WiFi 吞吐根因尚未闭环，本版不承诺追平原厂私有驱动速率。

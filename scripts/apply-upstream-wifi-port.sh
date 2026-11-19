@@ -43,12 +43,326 @@ echo "guard: PE1/4076words/md5=7eb49893 OK, no pe-core.c, no WD-retain"
 
 python3 - "$DST" "$WIFI_PORT" <<'PY'
 import pathlib, sys
-DST = pathlib.Path(sys.argv[1]); PORT = sys.argv[2]
-# C0 skeleton: PE baseline guards enforced by shell section above.
-# B1/B2 porting lands in C1/C2; refuse to silently no-op if enabled early.
-if PORT != 'off':
-    raise SystemExit('ERROR: wifi_port=%s requested but porting code lands in C1/C2' % PORT)
-print('UPSTREAM_WIFI_PORT_SKELETON_OK (port=off, baseline guards passed)')
+
+DST = pathlib.Path(sys.argv[1])
+PORT = sys.argv[2]
+MARK_SCAN = 'RTL_AX_AP_SCAN_H'          # scan.h include guard / presence marker
+MARK_RA   = 'struct rtl_ax_ra_rssi {'    # B2 marker in rate.h
+
+def load(name):
+    return DST / name
+
+def replace_exact(path, old, new, label, marker):
+    """幂等：marker（插入内容里的唯一串）已存在即跳过；否则锚点必须恰好 1 次。
+    marker 与 old/new 分离，避免 new 含 old 时幂等检测失效导致重复插入。"""
+    p = load(path)
+    text = p.read_text(encoding='utf-8')
+    if marker in text:
+        print('%s: %s already applied, skip' % (path, label))
+        return
+    c = text.count(old)
+    if c != 1:
+        raise SystemExit('ERROR: %s 中锚点[%s]出现 %d 次（期望 1）:\n%r'
+                         % (path, label, c, old[:120]))
+    p.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+    print('%s: %s applied' % (path, label))
+
+# ============ B1: scan / station RSSI (6077a9a single-PE subset) ============
+scan_h = r'''/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef RTL_AX_AP_SCAN_H
+#define RTL_AX_AP_SCAN_H
+
+/* Ported from PonWRT-TYFZA1 6077a9a (0.8.4) single-PE subset.
+ * MAC PPDU header precedes the PHY header, even for unassociated BSSes.
+ * RPL in PHY IE0/1 is U8.1 with a -110 dBm origin (not header TD RSSI). */
+static inline int rtl_ax_scan_rpl(const u8 *data, unsigned int bytes)
+{
+	u32 first, second, users, offset;
+	const u8 *phy;
+	unsigned int length, id, page;
+
+	if (bytes < 8) return -EINVAL;
+	first = get_unaligned_le32(data);
+	second = get_unaligned_le32(data + 4);
+	users = first & 15;
+	if (users > 8) return -EINVAL;
+	offset = 8 + ((users + 1) & ~1U) * 4 +
+		(first & BIT(29) ? 96 : 0) + ((second >> 16) & 255) * 8;
+	if (offset > bytes || bytes - offset < 8) return -EINVAL;
+	phy = data + offset;
+	length = phy[1] * 8;
+	page = phy[0] & 31;
+	if (!(phy[0] & BIT(7)) || length < 24 || length > bytes - offset)
+		return -EINVAL;
+	if (page < 11 || page > 15) return -EINVAL;
+	id = phy[8] & 31;
+	if (id != (page == 11 ? 0 : 1) || (id == 1 && length < 40)) return -EINVAL;
+	return phy[9];
+}
+
+static inline bool rtl_ax_scan_ppdu_match(u32 frame0, u32 frame1,
+	u32 report0, u32 report1)
+{
+	/* Original C/XB WD: BB22, PPDU type0:3/count4:6, rate16:24,
+	 * GI25:27 and BW29:31. Never reuse an RSSI from a different PPDU. */
+	return !((frame0 ^ report0) & BIT(22)) &&
+		!((frame1 ^ report1) & 0xefff007f);
+}
+#endif
+'''
+
+# -- scan.h 新文件 --
+sh = load('scan.h')
+if not sh.exists():
+    sh.write_text(scan_h, encoding='utf-8', newline='\n')
+    print('scan.h: created')
+elif MARK_SCAN in sh.read_text(encoding='utf-8'):
+    print('scan.h: already present, skip')
+else:
+    raise SystemExit('ERROR: scan.h 存在但不是本补丁的版本')
+
+# -- pci.c --
+replace_exact('pci.c',
+    '#include "rate.h"\n#include "port0.h"',
+    '#include "rate.h"\n#include "scan.h"\n#include "port0.h"',
+    'include scan.h',
+    '#include "scan.h"')
+
+replace_exact('pci.c',
+    '\tbool ra_sampling;\n\tu64 station_added, station_removed;',
+    '\tbool ra_sampling;\n'
+    '\t/* Ported scan-RSSI decode state (6077a9a single-PE subset). */\n'
+    '\tbool scanning;\n'
+    '\tstruct sk_buff *scan_pending;\n'
+    '\tu32 scan_word0, scan_word1;\n'
+    '\tu64 scan_received_ns;\n'
+    '\tu64 scan_matched, scan_unmatched;\n'
+    '\tu8 scan_last_bssid[6], scan_last_rpl;\n'
+    '\tu64 station_added, station_removed;',
+    'struct scan fields',
+    'Ported scan-RSSI decode state (6077a9a single-PE subset)')
+
+replace_exact('pci.c',
+    'static int rtl_ax_monitor_receive(struct rtl_ax_ap *radio,\n'
+    '\tconst struct rtl_ax_rx_packet *packet);\n',
+    'static int rtl_ax_monitor_receive(struct rtl_ax_ap *radio,\n'
+    '\tconst struct rtl_ax_rx_packet *packet);\n'
+    'static void rtl_ax_scan_complete_frame(struct rtl_ax_ap *radio,\n'
+    '\tconst struct rtl_ax_rx_packet *report);\n',
+    'scan_complete_frame forward decl',
+    'static void rtl_ax_scan_complete_frame(struct rtl_ax_ap *radio,')
+
+replace_exact('pci.c',
+    '\tif (packet->type == 0 && READ_ONCE(radio->monitor_started))\n'
+    '\t\treturn rtl_ax_monitor_receive(radio, packet);\n'
+    '\tif (packet->type == 1) {',
+    '\tif (packet->type == 0 && READ_ONCE(radio->monitor_started)) {\n'
+    '\t\trtl_ax_scan_complete_frame(radio, NULL);\n'
+    '\t\treturn rtl_ax_monitor_receive(radio, packet);\n'
+    '\t}\n'
+    '\tif (packet->type == 1) {',
+    'type0 scan flush',
+    'rtl_ax_scan_complete_frame(radio, NULL);\n\t\treturn rtl_ax_monitor_receive')
+
+replace_exact('pci.c',
+    '\t\tunsigned int i;\n\n'
+    '\t\tif (!(rtl_ax_ap_read32(packet->descriptor) & BIT(23))) return 0;\n'
+    '\t\tret = rtl_ax_ppdu_signal(packet->payload, packet->bytes, signals);',
+    '\t\tunsigned int i;\n\n'
+    '\t\trtl_ax_scan_complete_frame(radio, packet);\n'
+    '\t\tif (!(rtl_ax_ap_read32(packet->descriptor) & BIT(23))) return 0;\n'
+    '\t\tret = rtl_ax_ppdu_signal(packet->payload, packet->bytes, signals);',
+    'type1 scan match',
+    'rtl_ax_scan_complete_frame(radio, packet);')
+
+replace_exact('pci.c',
+    '\trtl_ax_rx_close(radio->rx);\n'
+    '\tret = rtl_ax_dfs_stop_locked(radio);\n'
+    '\t/* CAC and a failed detector configuration both keep the MAC quiet. */',
+    '\trtl_ax_rx_close(radio->rx);\n'
+    '\tret = rtl_ax_dfs_stop_locked(radio);\n'
+    '\trtl_ax_scan_complete_frame(radio, NULL);\n'
+    '\t/* CAC and a failed detector configuration both keep the MAC quiet. */',
+    'CAC scan flush',
+    'rtl_ax_dfs_stop_locked(radio);\n\trtl_ax_scan_complete_frame(radio, NULL);')
+
+replace_exact('pci.c',
+    '\tstruct rtl_ax_ap *radio = dev_get_drvdata(dev);\n'
+    '\tunsigned int bytes = 0, i;\n'
+    '\tunsigned long flags;\n\n'
+    '\tspin_lock_irqsave(&radio->command_lock, flags);\n'
+    '\tfor (i = 1; i < 128 && bytes < PAGE_SIZE - 180; i++) {',
+    '\tstruct rtl_ax_ap *radio = dev_get_drvdata(dev);\n'
+    '\tunsigned int bytes = 0, i;\n'
+    '\tunsigned long flags;\n\n'
+    '\tbytes += sysfs_emit_at(buffer, bytes, "scan_RSSI_matched=%llu unmatched=%llu\\n",\n'
+    '\t\tradio->scan_matched, radio->scan_unmatched);\n'
+    '\tbytes += sysfs_emit_at(buffer, bytes, "scan_last_BSSID=%pM RPL_U8_1=%u signal_dBm=%d\\n",\n'
+    '\t\tradio->scan_last_bssid, radio->scan_last_rpl,\n'
+    '\t\t(int)(radio->scan_last_rpl >> 1) - 110);\n'
+    '\tspin_lock_irqsave(&radio->command_lock, flags);\n'
+    '\tfor (i = 1; i < 128 && bytes < PAGE_SIZE - 180; i++) {',
+    'radio_ra_show scan stats',
+    'scan_RSSI_matched=%llu unmatched=%llu')
+
+# -- monitor.h --
+replace_exact('monitor.h',
+    '\trtl_ax_rx_close(radio->rx);\n'
+    '\tradio->dfs.error = rtl_ax_dfs_stop_locked(radio);',
+    '\trtl_ax_rx_close(radio->rx);\n'
+    '\trtl_ax_scan_complete_frame(radio, NULL);\n'
+    '\tradio->dfs.error = rtl_ax_dfs_stop_locked(radio);',
+    'monitor_stop scan flush',
+    'rtl_ax_rx_close(radio->rx);\n\trtl_ax_scan_complete_frame(radio, NULL);\n\tradio->dfs.error')
+
+replace_exact('monitor.h',
+    '\tmutex_lock(&radio->command_mutex);\n'
+    '\trtl_ax_receive_mode(&radio->io, radio->ap_started ? 4 : 0);\n'
+    '\tmutex_unlock(&radio->command_mutex);\n'
+    '}\n\n'
+    'static void rtl_ax_monitor_tx(struct ieee80211_hw *hw,',
+    '\tmutex_lock(&radio->command_mutex);\n'
+    '\trtl_ax_receive_mode(&radio->io, radio->ap_started && !radio->scanning ? 4 : 0);\n'
+    '\tmutex_unlock(&radio->command_mutex);\n'
+    '}\n\n'
+    'static void rtl_ax_sw_scan_start(struct ieee80211_hw *hw,\n'
+    '\tstruct ieee80211_vif *vif, const u8 *mac_addr)\n'
+    '{\n'
+    '\tstruct rtl_ax_ap *radio = rtl_ax_monitor_radio(hw);\n\n'
+    '\tmutex_lock(&radio->command_mutex);\n'
+    '\tradio->scanning = true;\n'
+    '\t/* Include foreign beacons, not only address-1 matches. */\n'
+    '\trtl_ax_update32(&radio->io, 0xce40, BIT(4), BIT(0));\n'
+    '\tmutex_unlock(&radio->command_mutex);\n'
+    '}\n\n'
+    'static void rtl_ax_sw_scan_complete(struct ieee80211_hw *hw,\n'
+    '\tstruct ieee80211_vif *vif)\n'
+    '{\n'
+    '\tstruct rtl_ax_ap *radio = rtl_ax_monitor_radio(hw);\n\n'
+    '\tmutex_lock(&radio->command_mutex);\n'
+    '\tradio->scanning = false;\n'
+    '\trtl_ax_update32(&radio->io, 0xce40, BIT(0) | BIT(4),\n'
+    '\t\tBIT(4) | (radio->ra_sampling ? BIT(0) : 0));\n'
+    '\trtl_ax_receive_mode(&radio->io, radio->ap_started ? 4 : 0);\n'
+    '\tmutex_unlock(&radio->command_mutex);\n'
+    '}\n\n'
+    'static void rtl_ax_monitor_tx(struct ieee80211_hw *hw,',
+    'sw_scan callbacks',
+    'rtl_ax_sw_scan_start')
+
+replace_exact('monitor.h',
+    '\trtl_ax_update32(&radio->io, 0xce40, BIT(0), 0);\n'
+    '\tradio->ra_sampling = false;',
+    '\tif (!radio->scanning)\n'
+    '\t\trtl_ax_update32(&radio->io, 0xce40, BIT(0), 0);\n'
+    '\tradio->ra_sampling = false;',
+    'ra_work scan guard',
+    'if (!radio->scanning)')
+
+replace_exact('monitor.h',
+    '\t.configure_filter = rtl_ax_monitor_filter,\n'
+    '\t.add_chanctx = ieee80211_emulate_add_chanctx,',
+    '\t.configure_filter = rtl_ax_monitor_filter,\n'
+    '\t.sw_scan_start = rtl_ax_sw_scan_start,\n'
+    '\t.sw_scan_complete = rtl_ax_sw_scan_complete,\n'
+    '\t.add_chanctx = ieee80211_emulate_add_chanctx,',
+    'ops.sw_scan callbacks',
+    '.sw_scan_start = rtl_ax_sw_scan_start')
+
+replace_exact('monitor.h',
+    '};\n\n'
+    'static int rtl_ax_monitor_receive(struct rtl_ax_ap *radio,\n'
+    '\tconst struct rtl_ax_rx_packet *packet)',
+    '};\n\n'
+    'static void rtl_ax_scan_complete_frame(struct rtl_ax_ap *radio,\n'
+    '\tconst struct rtl_ax_rx_packet *report)\n'
+    '{\n'
+    '\tstruct sk_buff *skb = radio->scan_pending;\n'
+    '\tstruct ieee80211_rx_status *status;\n'
+    '\tint rpl = -EINVAL;\n\n'
+    '\tif (!skb) return;\n'
+    '\tradio->scan_pending = NULL;\n'
+    '\t/* Do not match a wrapped PPDU ID after a report-sampling gap. */\n'
+    '\tif (report && ktime_get_ns() - radio->scan_received_ns < 20000000 &&\n'
+    '\t    !report->crc_error &&\n'
+    '\t    (rtl_ax_ap_read32(report->descriptor) & BIT(23)) &&\n'
+    '\t    rtl_ax_scan_ppdu_match(radio->scan_word0, radio->scan_word1,\n'
+    '\t\trtl_ax_ap_read32(report->descriptor),\n'
+    '\t\trtl_ax_ap_read32(report->descriptor + 4)))\n'
+    '\t\trpl = rtl_ax_scan_rpl(report->payload, report->bytes);\n'
+    '\tstatus = IEEE80211_SKB_RXCB(skb);\n'
+    '\tif (rpl >= 0) {\n'
+    '\t\tstatus->signal = (rpl >> 1) - 110;\n'
+    '\t\tstatus->flag &= ~RX_FLAG_NO_SIGNAL_VAL;\n'
+    '\t\tradio->scan_last_rpl = rpl;\n'
+    '\t\tmemcpy(radio->scan_last_bssid, skb->data + 16, 6);\n'
+    '\t\tradio->scan_matched++;\n'
+    '\t} else {\n'
+    '\t\t/* Keep unknown samples out of the BSS cache: a zero signal would\n'
+    '\t\t * overwrite a real measurement and become -256 in iwinfo. */\n'
+    '\t\tstatus->flag |= RX_FLAG_ONLY_MONITOR;\n'
+    '\t\tradio->scan_unmatched++;\n'
+    '\t}\n'
+    '\tieee80211_rx_ni(radio->hw, skb);\n'
+    '}\n\n'
+    'static int rtl_ax_monitor_receive(struct rtl_ax_ap *radio,\n'
+    '\tconst struct rtl_ax_rx_packet *packet)',
+    'scan_complete_frame definition',
+    'radio->scan_last_bssid, skb->data + 16, 6')
+
+# monitor.h: 本地帧控制用 *(__le16 *)payload，没有 frame_control 变量。
+# 这里新增局部变量并以 get_unaligned 读取（与上游一致），供 beacon/probe_resp 判断。
+replace_exact('monitor.h',
+    '\tu16 rate = (word >> 16) & 0x1ff;\n'
+    '\tu8 bandwidth = word >> 29, gi_ltf = (word >> 25) & 7;\n'
+    '\tbool profile = READ_ONCE(rtl_ax_datapath_profile);',
+    '\tu16 rate = (word >> 16) & 0x1ff;\n'
+    '\t__le16 frame_control;\n'
+    '\tu8 bandwidth = word >> 29, gi_ltf = (word >> 25) & 7;\n'
+    '\tbool profile = READ_ONCE(rtl_ax_datapath_profile);',
+    'frame_control decl',
+    '__le16 frame_control;')
+
+replace_exact('monitor.h',
+    '\tif (packet->bytes < 2 + FCS_LEN)\n'
+    '\t\treturn -EINVAL;\n'
+    '\t/* Actual hal_parsing_rx_wd_C/XB word1 carries rate16:24,',
+    '\tif (packet->bytes < 2 + FCS_LEN)\n'
+    '\t\treturn -EINVAL;\n'
+    '\tframe_control = get_unaligned((const __le16 *)packet->payload);\n'
+    '\t/* Actual hal_parsing_rx_wd_C/XB word1 carries rate16:24,',
+    'frame_control init',
+    'frame_control = get_unaligned((const __le16 *)packet->payload);')
+
+replace_exact('monitor.h',
+    '\tieee80211_rx_ni(radio->hw, skb);\n'
+    '\tif (profile)\n'
+    '\t\tradio->rx_mac80211_ns += ktime_get_ns() - delivered;',
+    '\tif (packet->bytes >= 36 + FCS_LEN && !packet->crc_error &&\n'
+    '\t    (ieee80211_is_beacon(frame_control) ||\n'
+    '\t     ieee80211_is_probe_resp(frame_control))) {\n'
+    '\t\tradio->scan_pending = skb;\n'
+    '\t\tradio->scan_word0 = rtl_ax_ap_read32(packet->descriptor);\n'
+    '\t\tradio->scan_word1 = rtl_ax_ap_read32(packet->descriptor + 4);\n'
+    '\t\tradio->scan_received_ns = ktime_get_ns();\n'
+    '\t} else {\n'
+    '\t\tieee80211_rx_ni(radio->hw, skb);\n'
+    '\t}\n'
+    '\tif (profile)\n'
+    '\t\tradio->rx_mac80211_ns += ktime_get_ns() - delivered;',
+    'beacon/probe_resp scan暂存',
+    'radio->scan_pending = skb;')
+
+replace_exact('monitor.h',
+    '\tieee80211_hw_set(hw, RX_INCLUDES_FCS);\n'
+    '\t/* mac80211 handles BIP and SW_MGMT_TX; RX retains the CCMP IV/MIC. */',
+    '\tieee80211_hw_set(hw, RX_INCLUDES_FCS);\n'
+    '\tieee80211_hw_set(hw, SIGNAL_DBM);\n'
+    '\t/* mac80211 handles BIP and SW_MGMT_TX; RX retains the CCMP IV/MIC. */',
+    'SIGNAL_DBM',
+    'ieee80211_hw_set(hw, SIGNAL_DBM)')
+
+print('UPSTREAM_WIFI_PORT_APPLIED=True (port=%s)' % PORT)
 PY
 
-echo "UPSTREAM_WIFI_PORT_SCRIPT_OK=True (port=$WIFI_PORT, skeleton)"
+echo "UPSTREAM_WIFI_PORT_SCRIPT_OK=True (port=$WIFI_PORT)"
