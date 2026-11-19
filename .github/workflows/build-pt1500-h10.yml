@@ -840,7 +840,8 @@ jobs:
                    www/luci-static/resources/rtl9617c/ui.js \
                    www/luci-static/resources/view/rtl9617c/overview.js \
                    www/luci-static/resources/view/system/rtl9617c-cpu.js \
-                   www/luci-static/resources/view/status/include/10_system.js; do
+                   www/luci-static/resources/view/status/include/10_system.js \
+                   www/luci-static/resources/view/status/include/29_ports.js; do
             [ -f "$ROOT/$f" ] \
               || { echo "::error::镜像缺少 LuCI 修复文件 $f"; exit 1; }
           done
@@ -856,6 +857,12 @@ jobs:
           grep -q "PON:'+(ponC" \
             "$ROOT/www/luci-static/resources/view/status/include/10_system.js" \
             || { echo "::error::首页温度行缺 PON 温度数据源"; exit 1; }
+          grep -q "lan2:'iTV',lan3:'网口3',lan4:'网口4'" \
+            "$ROOT/www/luci-static/resources/view/status/include/29_ports.js" \
+            || { echo "::error::端口状态页面板映射（iTV/网口3/网口4）未生效"; exit 1; }
+          grep -q 'LAN_ORDER={lan1:0,lan2:1,lan3:2,lan4:3}' \
+            "$ROOT/www/luci-static/resources/view/status/include/29_ports.js" \
+            || { echo "::error::端口状态页排序（2.5G/iTV/网口3/网口4）未生效"; exit 1; }
           grep -q 'PT1500-H10 2.5G' \
             "$ROOT/www/luci-static/resources/rtl9617c/ui.js" \
             || { echo "::error::PT1500 型号纠正补丁未生效"; exit 1; }
@@ -863,8 +870,14 @@ jobs:
             "$ROOT/www/luci-static/resources/view/system/rtl9617c-cpu.js" \
             || { echo "::error::CPU 频率页面 null 容错补丁未生效"; exit 1; }
           [ -f "$ROOT/etc/uci-defaults/94-pt1500-h10-phy-leds" ] \
-            || { echo "::error::镜像缺 94-pt1500-h10-phy-leds（2.5G PHY 面板灯常亮）"; exit 1; }
-          echo "  OK   LuCI 型号(含频率) / 首页温度(CPU+PON) / 调频字段 / 2.5G PHY 灯补丁均已注入"
+            || { echo "::error::镜像缺 94-pt1500-h10-phy-leds（2.5G PHY 灯驱动）"; exit 1; }
+          [ -x "$ROOT/usr/bin/pt1500-2p5g-blink" ] \
+            || { echo "::error::镜像缺 pt1500-2p5g-blink（2.5G 灯 link/activity 驱动）"; exit 1; }
+          [ -f "$ROOT/etc/init.d/pt1500-2p5g-blink" ] \
+            || { echo "::error::镜像缺 pt1500-2p5g-blink init.d 服务"; exit 1; }
+          grep -q 'pt1500-2p5g-blink' "$ROOT/etc/uci-defaults/94-pt1500-h10-phy-leds" \
+            || { echo "::error::94 脚本未启用 2.5G 灯闪烁驱动"; exit 1; }
+          echo "  OK   LuCI 型号(含频率) / 首页温度(CPU+PON) / 调频字段 / 端口映射 / 2.5G 灯 link+activity 均已注入"
           # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
           LED_SCRIPT="$UCI/93-pt1500-h10-leds"
           [ -f "$LED_SCRIPT" ] \

@@ -1,9 +1,11 @@
 #!/bin/sh
-# PT1500-H10 2.5G：强制点亮 2.5G 口面板灯（RTL8221B PHY LED）。
-# 该灯不接 SoC GPIO，PROBE_*/LED_EPHY0 都控制不了；由 PHY 驱动导出
-# /sys/class/leds/4f4329118.mdio:06:blue:lan（DTS label 会被驱动改名）。
-# DTS default-state=on 在某些内核
-# 不会真正写亮度，这里在首启再强制一次，保证面板 2.5G 口灯常亮。
+# PT1500-H10 2.5G panel LED: replace force-on with a link/activity driver.
+#
+# 该灯不接 SoC GPIO，由 RTL8221B PHY 导出为
+# /sys/class/leds/4f4329118.mdio:06:blue:lan。原实现强制 none+brightness=1
+# 常亮；现改为由 /usr/bin/pt1500-2p5g-blink 按 lan1 链路+流量驱动，
+# 行为与普通网口灯一致（插线亮/传数据闪/拔线灭）。
+# 常驻进程交给 init.d 服务，本脚本仅首启注册并使能它。
 
 [ -x /usr/bin/board_name ] && bn=$(board_name 2>/dev/null)
 [ -z "${bn:-}" ] && bn=$(grep -qa pt1500-h10 /proc/device-tree/compatible 2>/dev/null && echo youhua,pt1500-h10-2p5g)
@@ -12,20 +14,9 @@ case "$bn" in
   *) exit 0 ;;
 esac
 
-# PHY LED 可能比 uci-defaults 晚注册，最多等 10 秒
-i=0
-while [ "$i" -lt 10 ]; do
-  found=0
-  for d in /sys/class/leds/LED_8221B_P6_* /sys/class/leds/*mdio:06*; do
-    [ -d "$d" ] || continue
-    found=1
-    printf '%s' 'none' > "$d/trigger" 2>/dev/null
-    printf '%s' '1' > "$d/brightness" 2>/dev/null
-  done
-  [ "$found" = "1" ] && break
-  i=$((i + 1))
-  sleep 1
-done
+# 注册并立即启动常驻服务（init.d 负责开机自启）
+/etc/init.d/pt1500-2p5g-blink enable 2>/dev/null
+/etc/init.d/pt1500-2p5g-blink start 2>/dev/null
 
-logger -t pt1500-phy-leds "RTL8221B panel LEDs forced on (2.5G port)"
+logger -t pt1500-phy-leds "RTL8221B 2.5G panel LED: link/activity driver enabled"
 exit 0
