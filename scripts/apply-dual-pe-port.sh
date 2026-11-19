@@ -126,8 +126,7 @@ else:
          '\trtl_ax_update32(io, 0xd208, 0x00300000, 0);\n'
          '\trtl_ax_update32(io, 0xd21c, 0x00040000, 0);\n'
          '\tif ((io->read32(io->ctx, 0xd208) & 0x00300000) ||\n'
-         '\t    (io->read32(io->ctx, 0xd21c) & 0x00040000))\n'
-         '\t\treturn -EIO;\n'),
+         '\t    (io->read32(io->ctx, 0xd21c) & 0x00040000))\n'),
     ]
     for old, new in subs:
         c = text.count(old)
