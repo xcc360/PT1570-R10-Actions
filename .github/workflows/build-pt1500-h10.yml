@@ -839,16 +839,23 @@ jobs:
           for f in usr/share/rpcd/ucode/luci.rtl9617c-system \
                    www/luci-static/resources/rtl9617c/ui.js \
                    www/luci-static/resources/view/rtl9617c/overview.js \
-                   www/luci-static/resources/view/system/rtl9617c-cpu.js; do
+                   www/luci-static/resources/view/system/rtl9617c-cpu.js \
+                   www/luci-static/resources/view/status/include/10_system.js; do
             [ -f "$ROOT/$f" ] \
               || { echo "::error::镜像缺少 LuCI 修复文件 $f"; exit 1; }
           done
           grep -q 'transitionError == null ? 0 : transitionError' \
             "$ROOT/usr/share/rpcd/ucode/luci.rtl9617c-system" \
             || { echo "::error::调频状态字段兜底补丁未生效"; exit 1; }
-          grep -q 'CPU 温度' \
-            "$ROOT/www/luci-static/resources/view/rtl9617c/overview.js" \
-            || { echo "::error::首页 CPU 温度补丁未生效"; exit 1; }
+          grep -q 'RTL9617C UBI , ' \
+            "$ROOT/www/luci-static/resources/view/status/include/10_system.js" \
+            || { echo "::error::首页型号未显示 CPU 频率（10_system.js）"; exit 1; }
+          grep -q "_('温度')" \
+            "$ROOT/www/luci-static/resources/view/status/include/10_system.js" \
+            || { echo "::error::首页「温度」行（CPU+PON）未生效"; exit 1; }
+          grep -q "PON:'+(ponC" \
+            "$ROOT/www/luci-static/resources/view/status/include/10_system.js" \
+            || { echo "::error::首页温度行缺 PON 温度数据源"; exit 1; }
           grep -q 'PT1500-H10 2.5G' \
             "$ROOT/www/luci-static/resources/rtl9617c/ui.js" \
             || { echo "::error::PT1500 型号纠正补丁未生效"; exit 1; }
@@ -857,7 +864,7 @@ jobs:
             || { echo "::error::CPU 频率页面 null 容错补丁未生效"; exit 1; }
           [ -f "$ROOT/etc/uci-defaults/94-pt1500-h10-phy-leds" ] \
             || { echo "::error::镜像缺 94-pt1500-h10-phy-leds（2.5G PHY 面板灯常亮）"; exit 1; }
-          echo "  OK   LuCI 型号 / CPU 温度 / 调频字段 / 2.5G PHY 灯补丁均已注入"
+          echo "  OK   LuCI 型号(含频率) / 首页温度(CPU+PON) / 调频字段 / 2.5G PHY 灯补丁均已注入"
           # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
           LED_SCRIPT="$UCI/93-pt1500-h10-leds"
           [ -f "$LED_SCRIPT" ] \
