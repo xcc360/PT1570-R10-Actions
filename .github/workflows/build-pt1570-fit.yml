@@ -134,6 +134,12 @@ on:
         default: 'off'
         type: choice
         options: ['off', scan-rssi, scan-rssi+ra]
+      wifi_pe_engine:
+        description: 'PE 引擎：single=已验证单 PE1 参考版（默认）；dual=实验性双 PE core + cached IRAM 别名修复。dual 会跳过 overlay/2.4G RA 护栏，需实机验证'
+        required: false
+        default: 'single'
+        type: choice
+        options: [single, dual]
       fem_profile:
         description: '5G 射频参数表 profile：yh1570=原厂 PT1570 专用 v52（默认）；ponwrt085=PonWRT 0.8.5 实机验证的 v51 全套；generic=上游通用 v51 回滚'
         required: false
@@ -259,6 +265,15 @@ jobs:
           test -f package/utils/fitblk/files/fit.sh
           grep -n 'rootdisk' target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi | head -3
           echo "source: $(git rev-parse HEAD)"
+
+      # 2026-11-19 双 PE 实验分支：必须在 Build PE firmware 之前把上游
+      # 物理 IRAM 别名 (0x0fc0/32KiB/ATU5) 改成已验证的 cached 别名
+      # (0x9fc0/64KiB/5 窗口)，否则 PE 不写 PEWD -> probe -110。
+      - name: Patch dual-PE engine to cached IRAM alias (experimental)
+        if: ${{ inputs.wifi_pe_engine == 'dual' }}
+        env:
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/scripts/apply-dual-pe-port.sh"
 
       - name: Build PE firmware (pe-tx-code.h)
         working-directory: wrt
@@ -464,7 +479,7 @@ jobs:
       # 诊断模式（wifi_diag=true）保留上游驱动 + 原有寄存器打点，便于对照；
       # 此时不覆盖 pci.c，否则 step 20 的 "diag 打点已注入" 断言会失败。
       - name: Overlay known-good PT1570 WiFi driver (PE IRAM revert)
-        if: ${{ inputs.wifi_diag != true }}
+        if: ${{ inputs.wifi_diag != true && inputs.wifi_pe_engine != 'dual' }}
         env:
           ASSETS: ${{ github.workspace }}
           WRT: ${{ github.workspace }}/wrt
@@ -478,12 +493,18 @@ jobs:
         env:
           ASSETS: ${{ github.workspace }}
           WRT: ${{ github.workspace }}/wrt
+          WIFI_PE_ENGINE: ${{ inputs.wifi_pe_engine }}
         run: |
           set -e
           bash "$ASSETS/scripts/apply-ponwrt-txpower-fixes.sh"
           D="$WRT/target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap"
-          grep -q "TYFZA1's original power_limit MIB defaults to 0" "$D/power-tables.c" \
-            || { echo "::error::overlay 后的驱动缺 0.8.5 功率限制修复"; exit 1; }
+          if [ "${WIFI_PE_ENGINE:-single}" = "dual" ]; then
+            grep -q 'DUALPE-CACHED-ALIAS: power_limit MIB=0' "$D/power-tables.c" \
+              || { echo "::error::双 PE 驱动缺功率限制修复"; exit 1; }
+          else
+            grep -q "TYFZA1's original power_limit MIB defaults to 0" "$D/power-tables.c" \
+              || { echo "::error::overlay 后的驱动缺 0.8.5 功率限制修复"; exit 1; }
+          fi
           grep -q 'rtl_ax_update32(io, 0xd208, 0x00300000, 0);' "$D/power-tables.c" \
             || { echo "::error::0xd208 厂商限制位未清零"; exit 1; }
           grep -q 'rtl_ax_update32(io, 0xd21c, 0x00040000, 0);' "$D/power-tables.c" \
@@ -495,7 +516,7 @@ jobs:
       # 上游单 PE 兼容 WiFi 修复移植（C1/C2）：overlay + txpower fix 之后、Configure 之前。
       # 锚点是我们的参考版驱动；脚本内置单 PE1 硬护栏，任何锚点 !=1 直接失败。
       - name: Port upstream single-PE WiFi fixes
-        if: ${{ inputs.wifi_diag != true && inputs.wifi_port != 'off' }}
+        if: ${{ inputs.wifi_diag != true && inputs.wifi_pe_engine != 'dual' && inputs.wifi_port != 'off' }}
         env:
           WIFI_PORT: ${{ inputs.wifi_port }}
           ASSETS: ${{ github.workspace }}
@@ -503,7 +524,7 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/scripts/apply-upstream-wifi-port.sh"
 
       - name: Verify upstream WiFi port (compile tree)
-        if: ${{ inputs.wifi_diag != true }}
+        if: ${{ inputs.wifi_diag != true && inputs.wifi_pe_engine != 'dual' }}
         env:
           WIFI_PORT: ${{ inputs.wifi_port }}
           WRT: ${{ github.workspace }}/wrt
@@ -512,8 +533,8 @@ jobs:
       # 2.4G 速率控制回归护栏。与 H10-CU workflow 同源：driver 源码在
       # board/wifi/rtl_ax_ap/ 与 cu-h10/fw/board/wifi/rtl_ax_ap/ 两处副本，
       # 补丁必须同时落到两份，否则 R10 会静默缺失修复。
-      - name: Guard 2.4G rate-control patches (always runs)
-        if: ${{ inputs.wifi_diag != true }}
+      - name: Guard 2.4G rate-control patches (single-PE only)
+        if: ${{ inputs.wifi_diag != true && inputs.wifi_pe_engine != 'dual' }}
         env:
           WRT: ${{ github.workspace }}/wrt
         run: |
@@ -536,8 +557,8 @@ jobs:
             || { echo "::error::ra_rssi_level 状态缺失 (pci.c)"; exit 1; }
           echo "PT1570_2G_RATE_CONTROL_GUARD_OK=True"
 
-      - name: Guard 2.4G RFE50 front-end fix (always runs)
-        if: ${{ inputs.wifi_diag != true }}
+      - name: Guard 2.4G RFE50 front-end fix (single-PE only)
+        if: ${{ inputs.wifi_diag != true && inputs.wifi_pe_engine != 'dual' }}
         env:
           WRT: ${{ github.workspace }}/wrt
         run: |
@@ -572,6 +593,13 @@ jobs:
           [ "$(wc -c < "$R/PHY_REG.txt")" -gt 20000 ] \
             || { echo "::error::RFE50/PHY_REG.txt 不是完整表（<20KB）"; exit 1; }
           echo "PT1570_2G_RFE50_GUARD_OK=True"
+
+      # 双 PE 编译树断言：确认双核保留、cached 别名生效、PE 程序已换。
+      - name: Verify dual-PE port (compile tree)
+        if: ${{ inputs.wifi_diag != true && inputs.wifi_pe_engine == 'dual' }}
+        env:
+          WRT: ${{ github.workspace }}/wrt
+        run: python3 "$GITHUB_WORKSPACE/scripts/verify-dual-pe-port.py" check-tree "$WRT"
 
       - name: Configure
         working-directory: wrt
@@ -799,6 +827,7 @@ jobs:
           ASSETS: ${{ github.workspace }}
           FEM_PROFILE: ${{ inputs.fem_profile }}
           WIFI_PORT: ${{ inputs.wifi_port }}
+          WIFI_PE_ENGINE: ${{ inputs.wifi_pe_engine }}
         run: |
           set -e
           ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
@@ -1042,12 +1071,21 @@ jobs:
           # 资产层：sha256 / 版本注释 / 回滚目录 / 溯源目录 / uci-defaults 全查
           python3 "$ASSETS/scripts/verify-stock-wifi-assets.py"
           # ---- PonWRT 0.8.5 功率限制位修复 + 射频表 profile（2026-11-15）----
-          python3 "$ASSETS/scripts/verify-ponwrt085-wifi.py"
+          WIFI_PE_ENGINE="${WIFI_PE_ENGINE:-single}" python3 "$ASSETS/scripts/verify-ponwrt085-wifi.py"
+          if [ "${WIFI_PE_ENGINE:-single}" = "dual" ]; then
+            TREE="$(pwd)"
+            python3 "$ASSETS/scripts/verify-dual-pe-port.py" check-image "$TREE"
+          fi
           WFW="$ROOT/lib/firmware/realtek/tyfza1"
           # 0.8.5 驱动修复必须真的进了编译树（源码不进 rootfs，只能查 build tree）
           PT="target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap/power-tables.c"
-          grep -q "TYFZA1's original power_limit MIB defaults to 0" "$PT" \
-            || { echo "::error::编译树驱动缺 0.8.5 功率限制修复（信号会被厂商表压低）"; exit 1; }
+          if [ "${WIFI_PE_ENGINE:-single}" = "dual" ]; then
+            grep -q 'DUALPE-CACHED-ALIAS: power_limit MIB=0' "$PT" \
+              || { echo "::error::双 PE 编译树驱动缺功率限制修复"; exit 1; }
+          else
+            grep -q "TYFZA1's original power_limit MIB defaults to 0" "$PT" \
+              || { echo "::error::编译树驱动缺 0.8.5 功率限制修复（信号会被厂商表压低）"; exit 1; }
+          fi
           grep -q 'rtl_ax_update32(io, 0xd208, 0x00300000, 0);' "$PT" \
             || { echo "::error::编译树驱动 0xd208 限制位未清零"; exit 1; }
           ! grep -q '0x00300000, 0x00300000' "$PT" \
@@ -1176,6 +1214,7 @@ jobs:
           DTS_STATUS: ${{ inputs.dts_status }}
           FEM_PROFILE: ${{ inputs.fem_profile }}
           WIFI_PORT: ${{ inputs.wifi_port }}
+          WIFI_PE_ENGINE: ${{ inputs.wifi_pe_engine }}
         run: |
           set -e
           OUT="$GITHUB_WORKSPACE/artifact"
@@ -1216,6 +1255,10 @@ jobs:
             echo "ponwrt085_txpower_ucode=wifi-scripts mac80211.sh txpower!=null + setup_failed on iw failure"
             echo "ponwrt085_profile=RFE54_PONWRT085/ (26 v51 tables from v0.8.5-beta sysupgrade.bin, dispatch fem_profile to switch)"
             echo "wifi_port=${WIFI_PORT:-off} (off=stock / scan-rssi / scan-rssi+ra)"
+            echo "wifi_pe_engine=${WIFI_PE_ENGINE:-single} (single=proven PE1/4076words; dual=experimental 2-core cached-alias)"
+            if [ "${WIFI_PE_ENGINE:-single}" = "dual" ]; then
+              echo "wifi_pe_warning=dual-PE is EXPERIMENTAL: 2.4G RA/RFE50 guards skipped; validate on real hardware"
+            fi
             if [ "${WIFI_PORT:-off}" != "off" ]; then
               echo "wifi_port_source=LeoooChen/PonWRT-TYFZA1@6077a9a+{f74af178} (single-PE subset)"
               echo "wifi_port_pe_engine=PE1/4076words/md5=7eb49893 (unchanged)"

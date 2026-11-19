@@ -21,6 +21,7 @@
 ucode 发射功率修复脚本在位。
 """
 import hashlib
+import os
 import pathlib
 import sys
 
@@ -54,6 +55,7 @@ YH1570_SHA = {
     "TXPWR_ByRate.txt": "dba95b9fb0d7a7dbeda69e4aee377ef13834593c33c67179d8338f18ad9b7dab",
 }
 
+PE_ENGINE = os.environ.get("WIFI_PE_ENGINE", "single")
 count = 0
 
 
@@ -92,18 +94,23 @@ ok((CU_DRV / "power-tables.c").is_file()
    and sha(CU_DRV / "power-tables.c") == sha(pt),
    "CU H10 驱动副本同步了同一修复")
 
-# ---- 2. 不能整套换成 0.8.5 双 PE 架构 ----
-ok(not (DRV / "pe-core.c").exists(), "未引入 0.8.5 的 pe-core.c（会破坏单 PE1 引擎）")
-ok(len(list(DRV.glob("*"))) < 73, "驱动仍是 60 文件参考版，不是 0.8.5 的 73 文件版")
-pe = DRV / "pe-tx-code.h"
-ok(pe.is_file()
-   and hashlib.md5(pe.read_bytes()).hexdigest() == "7eb49893f43b897bf03fa82ae2323984",
-   "pe-tx-code.h 仍是已验证的单 PE1 版（4076 words）")
-ok(len([x for x in txt(pe).splitlines() if "0x" in x]) == 4076,
-   "PE 程序指令数 4076（0.8.5 是 6904，不能混用）")
-ov = txt(ROOT / "scripts/overlay-wifi-driver.sh")
-ok("EXP_PE_MD5=7eb49893f43b897bf03fa82ae2323984" in ov,
-   "overlay-wifi-driver.sh 仍强校验单 PE1 引擎")
+# ---- 2. PE 架构护栏 ----
+# 默认 single： insist on the proven single-PE1 reference build.
+# dual (experimental branch): skip these; verify-dual-pe-port.py covers it.
+if PE_ENGINE == "dual":
+    print("  SKIP  单 PE1 架构断言（WIFI_PE_ENGINE=dual，改由 verify-dual-pe-port.py 把关）")
+else:
+    ok(not (DRV / "pe-core.c").exists(), "未引入 0.8.5 的 pe-core.c（会破坏单 PE1 引擎）")
+    ok(len(list(DRV.glob("*"))) < 73, "驱动仍是 60 文件参考版，不是 0.8.5 的 73 文件版")
+    pe = DRV / "pe-tx-code.h"
+    ok(pe.is_file()
+       and hashlib.md5(pe.read_bytes()).hexdigest() == "7eb49893f43b897bf03fa82ae2323984",
+       "pe-tx-code.h 仍是已验证的单 PE1 版（4076 words）")
+    ok(len([x for x in txt(pe).splitlines() if "0x" in x]) == 4076,
+       "PE 程序指令数 4076（0.8.5 是 6904，不能混用）")
+    ov = txt(ROOT / "scripts/overlay-wifi-driver.sh")
+    ok("EXP_PE_MD5=7eb49893f43b897bf03fa82ae2323984" in ov,
+       "overlay-wifi-driver.sh 仍强校验单 PE1 引擎")
 
 # ---- 3. 0.8.5 完整射频表作为可切换 profile ----
 ok(P085.is_dir(), "RFE54_PONWRT085 profile 目录存在")
