@@ -843,7 +843,7 @@ jobs:
             [ -f "$ROOT/$f" ] \
               || { echo "::error::镜像缺少 LuCI 修复文件 $f"; exit 1; }
           done
-          grep -q 'transition_error == null ? 0 : transition_error' \
+          grep -q 'transitionError == null ? 0 : transitionError' \
             "$ROOT/usr/share/rpcd/ucode/luci.rtl9617c-system" \
             || { echo "::error::调频状态字段兜底补丁未生效"; exit 1; }
           grep -q 'CPU 温度' \
@@ -855,7 +855,9 @@ jobs:
           grep -q 'transition_error!=null&&next.cpu.transition_error!==0' \
             "$ROOT/www/luci-static/resources/view/system/rtl9617c-cpu.js" \
             || { echo "::error::CPU 频率页面 null 容错补丁未生效"; exit 1; }
-          echo "  OK   LuCI 型号 / CPU 温度 / 调频字段补丁均已注入"
+          [ -f "$ROOT/etc/uci-defaults/94-pt1500-h10-phy-leds" ] \
+            || { echo "::error::镜像缺 94-pt1500-h10-phy-leds（2.5G PHY 面板灯常亮）"; exit 1; }
+          echo "  OK   LuCI 型号 / CPU 温度 / 调频字段 / 2.5G PHY 灯补丁均已注入"
           # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
           LED_SCRIPT="$UCI/93-pt1500-h10-leds"
           [ -f "$LED_SCRIPT" ] \
