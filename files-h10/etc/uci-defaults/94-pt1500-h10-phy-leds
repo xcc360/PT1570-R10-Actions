@@ -1,7 +1,8 @@
 #!/bin/sh
 # PT1500-H10 2.5G：强制点亮 2.5G 口面板灯（RTL8221B PHY LED）。
 # 该灯不接 SoC GPIO，PROBE_*/LED_EPHY0 都控制不了；由 PHY 驱动导出
-# /sys/class/leds/LED_8221B_P6_0..2。DTS default-state=on 在某些内核
+# /sys/class/leds/4f4329118.mdio:06:blue:lan（DTS label 会被驱动改名）。
+# DTS default-state=on 在某些内核
 # 不会真正写亮度，这里在首启再强制一次，保证面板 2.5G 口灯常亮。
 
 [ -x /usr/bin/board_name ] && bn=$(board_name 2>/dev/null)
@@ -15,7 +16,7 @@ esac
 i=0
 while [ "$i" -lt 10 ]; do
   found=0
-  for d in /sys/class/leds/LED_8221B_P6_*; do
+  for d in /sys/class/leds/LED_8221B_P6_* /sys/class/leds/*mdio:06*; do
     [ -d "$d" ] || continue
     found=1
     printf '%s' 'none' > "$d/trigger" 2>/dev/null
