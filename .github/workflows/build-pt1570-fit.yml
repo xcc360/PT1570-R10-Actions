@@ -1020,6 +1020,15 @@ jobs:
             || { echo "::error::96 tuning 缺 disassoc_low_ack(sysupgrade 保留配置不会补)"; exit 1; }
           echo "HOSTAPD_STABILITY_OK=True (skip_inactivity_poll=1 / disassoc_low_ack=0 on 2 VAPs)"
 
+          # ---- C3: 硬件流量卸载默认关闭（rtl_ax_ap WiFi 兼容，2026-11-19）----
+          U98="$ROOT/etc/uci-defaults/98-pt1570-wifi-offload-default"
+          [ -x "$U98" ] || { echo "::error::镜像缺 98-pt1570-wifi-offload-default 或丢可执行位"; exit 1; }
+          grep -q "flow_offloading_hw=.0." "$U98" \
+            || { echo "::error::98-offload 未关闭 flow_offloading_hw"; exit 1; }
+          grep -q "flow_offloading=.1." "$U98" \
+            || { echo "::error::98-offload 未保留软件 offload（PON FE 需要）"; exit 1; }
+          echo "WIFI_OFFLOAD_DEFAULT_OK=True (hw offload off, sw offload kept for PON FE)"
+
           # ---- 上游单 PE WiFi 移植：镜像内符号/统计名断言（仅 wifi_port != off）----
           if [ "${WIFI_PORT:-off}" != "off" ]; then
             KO=$(find "$ROOT/lib/modules" -name "rtl_ax_ap.ko" 2>/dev/null | head -1)
@@ -1211,6 +1220,7 @@ jobs:
               echo "wifi_port_source=LeoooChen/PonWRT-TYFZA1@6077a9a+{f74af178} (single-PE subset)"
               echo "wifi_port_pe_engine=PE1/4076words/md5=7eb49893 (unchanged)"
               echo "wifi_port_skipped=pe-tx-code.h / rx-geometry WD-retain / pe-core.c (dual-PE incompatible)"
+            echo "wifi_offload_hw_default=0 (98-pt1570-wifi-offload-default; sw offload kept for PON FE)"
             fi
           } > "$OUT/BUILD_INFO.txt"
 
@@ -1312,3 +1322,4 @@ jobs:
             ⚠️ 本仓库当前为 R10-only 范围，产物仅适用于 PT1570-R10。
             上游单 PE WiFi 移植：本产物 wifi_port 设置见 BUILD_INFO.txt（off / scan-rssi / scan-rssi+ra）。
             scan-rssi/scan-rssi+ra 在已验证的单 PE1 参考驱动上定向移植上游 6077a9a 的扫描/站点 RSSI 解码（iwinfo/station dump 上报真实负 dBm、sw_scan 回调）与 6077a9a/f74af178 的 RA 信号解析结构；严格跳过双 PE 微码、pe-core.c 与 WD 保留位（与本平台不兼容）。迁移仅取可验证子集，上游公开资料中 WiFi 吞吐根因尚未闭环，本版不承诺追平原厂私有驱动速率。
+            B3 配置固化：新增 98-pt1570-wifi-offload-default，默认关闭 firewall 硬件流量卸载（flow_offloading_hw=0，与 rtl_ax_ap WiFi 不兼容导致断流/BA 刷屏），保留软件 flow_offloading=1（PON 单播上行所需 FE），sysupgrade 保留配置时不重跑，可手工改回。
