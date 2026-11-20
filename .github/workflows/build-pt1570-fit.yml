@@ -1043,6 +1043,9 @@ jobs:
           python3 "$ASSETS/scripts/verify-stock-wifi-assets.py"
           # ---- PonWRT 0.8.5 功率限制位修复 + 射频表 profile（2026-11-15）----
           python3 "$ASSETS/scripts/verify-ponwrt085-wifi.py"
+          # ---- 跨板 WiFi 资产一致性护栏（R10 <-> CU 单 PE1 参考驱动逐字节相同）----
+          python3 "$ASSETS/scripts/verify-wifi-parity.py" "$ASSETS" \
+            || { echo "::error::两板 WiFi 资产漂移（驱动/overlay 不一致）"; exit 1; }
           WFW="$ROOT/lib/firmware/realtek/tyfza1"
           # 0.8.5 驱动修复必须真的进了编译树（源码不进 rootfs，只能查 build tree）
           PT="target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap/power-tables.c"
