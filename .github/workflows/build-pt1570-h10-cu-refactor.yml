@@ -1,0 +1,566 @@
+# SPDX-License-Identifier: MIT
+# PT1570-H10-CU（联通版，1x2.5GE + 3xGE + 双 PCIe WiFi6 / XGPON）refactor 基线云编译。
+#
+# ★ 2026-11-17 架构级重构（feature/pt1570-h10-cu-refactor 分支专用 workflow）：
+#   * 源码基线：lyq1996/rtl9617c-openwrt @refactor（ae4aeac45a70be1bdf68af65cbbacb360f201b27），
+#     遵循上游/OpenWrt 规范（rtl9617c-* 命名、DTS nvmem-layout、procd/ucode、a53）。
+#   * 2.5G/PON/XGPON：refactor 上游白拿（HisGMII + SerDes + 2500base-x，
+#     RTL9617C Rust pon daemon + 完整 XGPON），无需回移植。
+#   * WiFi：refactor 上游主动删除了 rtl9617c 的整个 PCIe/WiFi 子系统，故本
+#     workflow 用 refactor/scripts/apply-board-h10-cu-refactor.sh 把已验证驱动
+#     回移植到 OpenWrt 规范位置（files-6.18/drivers/...，包名 kmod-rtl-ax-ap），
+#     摒弃旧 tyfza1 私有脚本/命名。CU 板级 DTS 自建 PCIe 控制器节点。
+#   * WiFi 5G 修复（本轮诊断固化）：HE80 + 非 DFS 信道 149 + psk2+ccmp，
+#     规避 ch36 DFS CAC（搜不到）与驱动不支持 SAE/WPA3（连不上）。
+#
+# 与 PT1500-H10 refactor workflow 完全隔离：独立 concurrency group / artifact /
+# release / profile，不改 R10 与 PT1500 的任何文件。
+#
+# 编译架构沿用 PT1500 已验证顺序：最小 .config -> customize -> defconfig ->
+# 重断言 -> defconfig（切勿空配置先 defconfig，会选中 mediatek 默认机型）。
+# Actions: checkout@v5 / upload-artifact@v6 / action-gh-release@v3。
+
+name: PT1570-H10-CU-WIFI-refactor-sysupgrade
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'lyq1996/rtl9617c-openwrt 的 commit/分支（默认 refactor HEAD ae4aeac45a70，与 PT1500-H10 一致）'
+        required: false
+        default: 'ae4aeac45a70be1bdf68af65cbbacb360f201b27'
+        type: string
+      test_only:
+        description: '只生成并上传 .config / 校验报告，不编译'
+        required: false
+        default: false
+        type: boolean
+      create_release:
+        description: '发布到 GitHub Release'
+        required: false
+        default: false
+        type: boolean
+      publish_packages:
+        description: '同期收集并发布配套 packages（默认关闭，只出固件）'
+        required: false
+        default: false
+        type: boolean
+      apk_mirror_base:
+        description: '可选：覆盖内置 apk 源根 URL（默认北大镜像 aarch64_cortex-a53）'
+        required: false
+        default: ''
+        type: string
+      apk_repo_key_url:
+        description: '可选：外部 apk 源公钥 URL'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pt1570-h10-cu-wifi-refactor-sysupgrade-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  FORCE_UNSAFE_CONFIGURE: 1
+
+jobs:
+  build:
+    name: PT1570-H10-CU-WIFI-refactor / build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+
+    steps:
+      - name: Checkout build assets
+        uses: actions/checkout@v5
+        with:
+          ref: feature/pt1570-h10-cu-refactor
+
+      - name: Resolve board parameters
+        run: |
+          echo "PROFILE=youhua_pt1570_h10_cu"       >> "$GITHUB_ENV"
+          echo "BOARD_NAME=youhua,pt1570-h10-cu"    >> "$GITHUB_ENV"
+          echo "DTS=rtl9617c-pt1570-h10-cu"         >> "$GITHUB_ENV"
+          echo "MODEL=PT1570-H10-CU"                 >> "$GITHUB_ENV"
+          echo "board=pt1570-h10-cu profile=youhua_pt1570_h10_cu dts=rtl9617c-pt1570-h10-cu"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift
+          sudo apt-get clean
+          df -h /
+          sudo mkdir -p /mnt/build_wrt
+          sudo chown "$USER:$USER" /mnt/build_wrt
+          ln -s /mnt/build_wrt "$GITHUB_WORKSPACE/wrt"
+          df -h /mnt
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -yqq
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang clang-18 cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld lld-18 llvm llvm-18 ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+          if command -v rustup >/dev/null 2>&1; then
+            rustup target add aarch64-unknown-linux-musl
+            rustup target list --installed
+          else
+            echo "::error::runner 缺 rustup，无法补 aarch64-unknown-linux-musl std" >&2
+            exit 1
+          fi
+
+      - name: Clone rtl9617c-openwrt source (refactor)
+        run: |
+          set -e
+          REF="${{ inputs.source_ref || 'ae4aeac45a70be1bdf68af65cbbacb360f201b27' }}"
+          cd /mnt/build_wrt
+          git init -q
+          git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
+          if ! git fetch -q --depth=1 origin "$REF"; then
+            echo "WARN: 按 commit 拉取失败，回退到 refactor 分支 HEAD" >&2
+            git fetch -q --depth=1 origin refactor
+          fi
+          git checkout -q FETCH_HEAD
+          echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
+          # refactor 布局断言（2.5G/PON 白拿，无 tyfza1 base 残留）
+          test -f target/linux/rtl9617c/dts/rtl9617c.dtsi
+          test -f target/linux/rtl9617c/dts/rtl9617c-pt1500-h10-2p5g.dts
+          test -f target/linux/rtl9617c/files-6.18/drivers/net/phy/realtek/realtek_hisgmii.c
+          test -f target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c
+          test -d package/rtl9617c/rtl9617c-pon-control
+          [ ! -e target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi ] \
+            || { echo "::error::source_ref 串回 base（发现 tyfza1.dtsi）" >&2; exit 1; }
+          echo "source: $(git rev-parse HEAD) (refactor)"
+
+      - name: Pin APK signing key (optional)
+        working-directory: wrt
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          if [ -n "$APK_SIGNING_KEY" ]; then
+            umask 077
+            printf '%s\n' "$APK_SIGNING_KEY" > private-key.pem
+            openssl ec -in private-key.pem -pubout -out public-key.pem
+            echo "APK build key pinned:"; sha256sum public-key.pem
+          else
+            echo "no APK_SIGNING_KEY: ephemeral key"
+          fi
+
+      - name: Update and install feeds
+        working-directory: wrt
+        run: |
+          set -e
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          chmod -R go-w feeds/luci feeds/packages 2>/dev/null || true
+          find feeds/luci -path '*/root/usr/share/rpcd/ucode/*' -type f -exec chmod 0755 {} + 2>/dev/null || true
+          find feeds/luci -path '*/root/usr/share/rpcd/acl.d/*.json' -type f -exec chmod 0644 {} + 2>/dev/null || true
+          find feeds -path '*/root/usr/libexec/rpcd/*' -type f -print 2>/dev/null | while IFS= read -r f; do
+            [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ] || continue
+            tr -d '\r' < "$f" > "$f.lf" && cat "$f.lf" > "$f" && rm -f "$f.lf"
+            chmod 0755 "$f"
+          done || true
+          echo "  OK   feeds + rpcd exec 插件权限归一化"
+
+      - name: Apply CU board fixes (DTS/Device/platform + PCIe/WiFi overlay + PON mode)
+        env:
+          ASSETS: ${{ github.workspace }}
+          WRT: ${{ github.workspace }}/wrt
+        run: bash "$GITHUB_WORKSPACE/refactor/scripts/apply-board-h10-cu-refactor.sh"
+
+      - name: Apply custom rootfs files (refactor/files)
+        env:
+          PACKAGES_REPO_URL: ${{ inputs.packages_repo_url }}
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/wrt/files"
+          cp -a "$GITHUB_WORKSPACE/refactor/files/." "$GITHUB_WORKSPACE/wrt/files/"
+          chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
+          chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
+          echo "refactor/files injected:"
+          find "$GITHUB_WORKSPACE/refactor/files" -type f -printf '  %P\n'
+
+      - name: Configure
+        working-directory: wrt
+        env:
+          ASSETS: ${{ github.workspace }}
+          APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
+          APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
+        run: |
+          set -e
+          # 顺序敏感：先写最小配置再 defconfig（切勿空配置先 defconfig）
+          rm -f .config
+          cat "$GITHUB_WORKSPACE/refactor/Config-PT1570-H10-CU.txt" >> .config
+          bash "$GITHUB_WORKSPACE/refactor/scripts/customize-h10-cu.sh"
+
+          sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
+
+          make defconfig
+          cat "$GITHUB_WORKSPACE/refactor/Config-PT1570-H10-CU.txt" >> .config
+          make defconfig
+
+          # 重断言（defconfig 会丢未被 profile 点名的包）
+          for sym in rtl9617c-pon-control luci-app-rtl9617c-pon luci-ssl uhttpd fitblk \
+                     luci-theme-argon kmod-rtl-ax-ap wpad-mbedtls wifi-scripts wireless-regdb; do
+            if ! grep -q "^CONFIG_PACKAGE_${sym}=y$" .config; then
+              sed -i "/^# CONFIG_PACKAGE_${sym} is not set$/d; /^CONFIG_PACKAGE_${sym}=/d" .config
+              echo "CONFIG_PACKAGE_${sym}=y" >> .config
+              echo "  re-asserted $sym"
+            fi
+          done
+          make defconfig
+
+          USER_PKGS="tailscale luci-app-tailscale-community luci-i18n-tailscale-community-zh-cn"
+          for p in $USER_PKGS; do
+            if ! grep -q "^CONFIG_PACKAGE_${p}=y$" .config; then
+              sed -i "/^# CONFIG_PACKAGE_${p} is not set$/d; /^CONFIG_PACKAGE_${p}=/d" .config
+              echo "CONFIG_PACKAGE_${p}=y" >> .config
+            fi
+          done
+          make defconfig
+
+          echo "===== hard assertions ====="
+          grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config \
+            || { echo "ERROR: profile $PROFILE 未启用" >&2; exit 1; }
+          for sym in rtl9617c-pon-control luci-app-rtl9617c-pon luci-ssl uhttpd fitblk \
+                     luci-theme-argon kmod-rtl-ax-ap wpad-mbedtls wifi-scripts wireless-regdb; do
+            grep -q "^CONFIG_PACKAGE_${sym}=y$" .config \
+              || { echo "ERROR: $sym 二次 defconfig 后仍被丢弃" >&2; exit 1; }
+            echo "  OK   $sym"
+          done
+          grep -q '^# CONFIG_PACKAGE_uboot-envtools is not set$' .config \
+            || { echo "ERROR: uboot-envtools 必须关闭" >&2; exit 1; }
+
+          # FIT rootfs 内核符号
+          grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' target/linux/rtl9617c/config-6.18 \
+            || { echo "ERROR: target config 缺 CONFIG_UIMAGE_FIT_BLK=y" >&2; exit 1; }
+          grep -q '^CONFIG_MTD_ROOTFS_ROOT_DEV=y$' target/linux/generic/config-6.18 \
+            || { echo "ERROR: generic config 缺 CONFIG_MTD_ROOTFS_ROOT_DEV=y" >&2; exit 1; }
+          echo "  OK   FIT rootfs 内核符号"
+
+          # 2.5G refactor 驱动符号
+          for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
+                     CONFIG_MDIO_REALTEK_RTL9617C CONFIG_RTL9617C_NI; do
+            grep -q "^${sym}=y$" target/linux/rtl9617c/config-6.18 \
+              || { echo "ERROR: target config 缺 $sym=y（2.5G 驱动）" >&2; exit 1; }
+          done
+          echo "  OK   2.5G refactor 驱动符号"
+
+          # PCIe/WiFi 回移植内核符号（overlay 写入）
+          for sym in CONFIG_PCIE_RTL9617C=y CONFIG_PHY_RTL9617C_PCIE=y \
+                     CONFIG_PCIE_DW_HOST=y CONFIG_MAC80211=m CONFIG_CFG80211=m \
+                     CONFIG_RTL_AX_AP=m CONFIG_LEDS_TYFZA1=y; do
+            grep -q "^${sym}$" target/linux/rtl9617c/config-6.18 \
+              || { echo "ERROR: target config 缺 $sym（PCIe/WiFi overlay 未生效）" >&2; exit 1; }
+          done
+          echo "  OK   PCIe/WiFi 内核符号"
+
+          # PON mode xgpon + CU DTS 防回退
+          grep -q "option mode 'xgpon'" \
+            package/rtl9617c/rtl9617c-pon-control/files/etc/config/pon \
+            || { echo "ERROR: config/pon mode 未纠正为 xgpon" >&2; exit 1; }
+          UP_DTS="target/linux/rtl9617c/dts/${DTS}.dts"
+          for kw in 'realtek,hisgmii' 'realtek,serdes-option-mode' 'phy-mode = "2500base-x"' \
+                    'phys = <&serdes>' 'pcie0:' 'pcie1:' 'wifi-calibration@2000'; do
+            grep -qF "$kw" "$UP_DTS" \
+              || { echo "ERROR: CU DTS 缺关键项 $kw" >&2; exit 1; }
+          done
+          echo "  OK   PON mode=xgpon + CU DTS 2.5G/PCIe/cal 特征"
+
+          # 跨板 WiFi 资产一致性护栏（R10 <-> CU 单一驱动真源，逐字节一致）
+          python3 "$ASSETS/scripts/verify-wifi-parity.py" "$ASSETS" \
+            || { echo "ERROR: 两板 WiFi 资产漂移（驱动/overlay 不一致）" >&2; exit 1; }
+          echo "  OK   WIFI_PARITY_OK（R10 <-> CU 共用驱动）"
+
+          grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
+            || { echo "ERROR: image/Makefile 缺 SUPPORTED_DEVICES" >&2; exit 1; }
+          grep -q "$BOARD_NAME" target/linux/rtl9617c/base-files/lib/upgrade/platform.sh \
+            || { echo "ERROR: platform.sh 白名单缺 $BOARD_NAME" >&2; exit 1; }
+
+          # 无 mediatek 默认机型残留包
+          for bad in kmod-mt7915e kmod-mt76-core wpad-basic-mbedtls; do
+            grep -qE "^CONFIG_PACKAGE_${bad}=(y|m)$" .config \
+              && { echo "ERROR: 检测到污染包 $bad" >&2; exit 1; } || true
+          done
+          grep -q "^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$" .config \
+            || { echo "ERROR: 中文 LuCI 未启用" >&2; exit 1; }
+          echo "  OK   config sanity（无默认机型残留）"
+
+          cp .config "$GITHUB_WORKSPACE/Config-final.txt"
+
+      - name: Run static preflight (test_only)
+        if: ${{ inputs.test_only }}
+        run: |
+          set -e
+          WF="$GITHUB_WORKSPACE/.github/workflows/build-pt1570-h10-cu-refactor.yml"
+          for f in "$WF" \
+                   "$GITHUB_WORKSPACE/refactor/Config-PT1570-H10-CU.txt" \
+                   "$GITHUB_WORKSPACE/refactor/scripts/customize-h10-cu.sh" \
+                   "$GITHUB_WORKSPACE/refactor/scripts/apply-board-h10-cu-refactor.sh" \
+                   "$GITHUB_WORKSPACE/scripts/refactor/overlay-wifi-pcie.sh" \
+                   "$GITHUB_WORKSPACE/refactor/dts/rtl9617c-pt1570-h10-cu.dts" \
+                   "$GITHUB_WORKSPACE/refactor/files/etc/uci-defaults/99-pt1570-h10-cu-wifi-stability" \
+                   "$GITHUB_WORKSPACE/scripts/verify-fit-boot.py"; do
+            [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
+          done
+          echo "CU_REFACTOR_PREFLIGHT_OK=True"
+
+      - name: Upload config (test_only)
+        if: ${{ inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: PT1570-H10-CU-refactor-config-${{ github.run_number }}
+          path: Config-final.txt
+          retention-days: 14
+
+      - name: Download sources
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          make package/base-files/clean >/dev/null 2>&1 || true
+          make download -j"$(nproc)"
+
+      - name: Compile
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          set -o pipefail
+          LOG="$GITHUB_WORKSPACE/build.log"
+          : > "$LOG"
+          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+            echo "PARALLEL_BUILD_OK=True"
+          else
+            echo "::warning::并行编译失败，改用 -j1 V=s 重试"
+            if make -j1 V=s 2>&1 | tee -a "$LOG"; then
+              echo "SERIAL_BUILD_OK=True"
+            else
+              echo "::group::BUILD FAILED - last 120 lines"
+              tail -n 120 "$LOG"
+              echo "::endgroup::"
+              grep -E 'Error [0-9]|^make(\[[0-9]+\])?: \*\*\*|error:|No such file|not found|undefined reference|FATAL' "$LOG" \
+                | tail -n 8 | tr -d '\r' | while IFS= read -r l; do
+                    echo "::error::${l//%/%25}"
+                  done
+              exit 1
+            fi
+          fi
+
+      - name: Verify image payload (CU refactor)
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        env:
+          ASSETS: ${{ github.workspace }}
+          APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
+        run: |
+          set -e
+          ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
+          [ -n "$ROOT" ] || { echo "::error::找不到 rootfs 目录"; exit 1; }
+          echo "rootfs dir: $ROOT"
+
+          # apk 源 / 公钥 / a53 架构
+          KEY_SRC="$ASSETS/refactor/files/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
+          [ -f "$KEY_DST" ] || { echo "::error::镜像缺 apk 公钥"; exit 1; }
+          cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::apk 公钥不一致"; exit 1; }
+          DF="$ROOT/etc/apk/repositories.d/distfeeds.list"
+          [ -f "$DF" ] || { echo "::error::镜像缺 distfeeds.list"; exit 1; }
+          grep -q 'aarch64_cortex-a53' "$ROOT/etc/apk/arch" \
+            || { echo "::error::/etc/apk/arch 缺 aarch64_cortex-a53"; exit 1; }
+          echo "  OK   apk key + distfeeds + a53 arch"
+
+          # sysupgrade 机型校验（fit_do_upgrade）
+          UPG="$ROOT/lib/upgrade"
+          grep -q 'youhua,pt1570-h10-cu' "$UPG/platform.sh" \
+            || { echo "::error::platform.sh 白名单缺 CU board"; exit 1; }
+          grep -q 'fit_do_upgrade' "$UPG/platform.sh" \
+            || { echo "::error::platform.sh 未走 fit_do_upgrade"; exit 1; }
+          [ -f "$UPG/fit.sh" ] || { echo "::error::镜像缺 fit.sh"; exit 1; }
+          [ -s "$ROOT/usr/sbin/fitblk" ] || { echo "::error::镜像缺 fitblk"; exit 1; }
+          echo "  OK   sysupgrade fit_do_upgrade + fitblk"
+
+          # rpcd exec 插件（LF + 0755）
+          RPCD="$ROOT/usr/libexec/rpcd"
+          n=0
+          for f in "$ASSETS"/refactor/files/usr/libexec/rpcd/luci.argon*; do
+            base=${f##*/}; tgt="$RPCD/$base"
+            [ -f "$tgt" ] || { echo "::error::镜像缺 rpcd 插件 $base"; exit 1; }
+            [ -x "$tgt" ] || { echo "::error::rpcd 插件 $base 不可执行"; exit 1; }
+            grep -q "$(printf '\r')" "$tgt" \
+              && { echo "::error::rpcd 插件 $base 仍是 CRLF"; exit 1; } || true
+            cmp -s "$f" "$tgt" || { echo "::error::镜像内 $base 与资产不一致"; exit 1; }
+            n=$((n+1))
+          done
+          [ "$n" = 5 ] || { echo "::error::argon rpcd 插件数 $n != 5"; exit 1; }
+          echo "  OK   rpcd argon 插件 $n"
+
+          # 首启脚本（refactor 规范命名，无 tyfza1 私有脚本）
+          UCI="$ROOT/etc/uci-defaults"
+          for s in 95-pt1570-h10-cu-wan 96-pt1570-h10-cu-lan 97-pt1570-h10-cu-leds \
+                   98-pt1570-h10-cu-wifi 99-pt1570-h10-cu-wifi-stability \
+                   99-rtl9617c-wifi-cal 91-rtl9617c-rpcd-eol; do
+            [ -f "$UCI/$s" ] || { echo "::error::镜像缺首启脚本 $s"; exit 1; }
+          done
+          [ ! -e "$UCI/tyfza1-factory" ] || echo "::warning::镜像残留 tyfza1-factory（refactor 不需要）"
+          [ ! -e "$UCI/90-pon-wan" ] || { echo "::error::镜像混入 base 90-pon-wan"; exit 1; }
+          grep -q "option mode 'xgpon'" "$ROOT/etc/config/pon" \
+            || { echo "::error::镜像 /etc/config/pon mode 不是 xgpon"; exit 1; }
+          grep -qF "uci -q set pon.pon.mode='xgpon'" "$UCI/95-pt1570-h10-cu-wan" \
+            || { echo "::error::CU WAN 脚本缺 PON mode=xgpon 纠正"; exit 1; }
+          echo "  OK   首启脚本（refactor 规范命名）+ PON mode=xgpon"
+
+          # WiFi 固件 / 驱动 / cal 兜底
+          MOD="$ROOT/lib/modules"
+          ls "$MOD"/*/rtl_ax_ap.ko >/dev/null 2>&1 \
+            || { echo "::error::镜像缺 rtl_ax_ap.ko（WiFi 驱动未编入）"; exit 1; }
+          CAL5="$ROOT/lib/firmware/realtek/rtl9617c/rtl8852ce/flash-calibration.bin"
+          CAL2="$ROOT/lib/firmware/realtek/rtl9617c/rtl8192xbe/flash-calibration.bin"
+          # 5G cal 由 99 脚本首启从 factory 导出（镜像内可无），2.4G 内置兜底须在
+          [ -f "$ROOT/etc/rtl9617c/wifi-default/rtl8192xbe/flash-calibration.bin" ] \
+            || { echo "::error::镜像缺 2.4G cal 兜底 blob"; exit 1; }
+          grep -q "realtek/rtl9617c/rtl8852ce/flash-calibration.bin" \
+            "$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap/board-cal.h" \
+            || { echo "::error::驱动 cal 路径未规范化（仍含 tyfza1）"; exit 1; }
+          echo "  OK   WiFi 驱动 + cal（规范化路径，无 tyfza1）"
+
+          # wireless 出厂默认：HE80 + ch149 + psk2+ccmp（ sysupgrade 由 98 脚本纠正）
+          WL="$ROOT/etc/config/wireless"
+          grep -q "option channel '149'" "$WL" \
+            || { echo "::error::5G 默认信道不是 149"; exit 1; }
+          grep -q "option htmode 'HE80'" "$WL" \
+            || { echo "::error::5G 默认 htmode 不是 HE80"; exit 1; }
+          echo "  OK   wireless 默认 He80/ch149"
+
+          # 两板统一的 hostapd 断流缓解：出厂 conffile + sysupgrade 保留配置兜底
+          [ -x "$UCI/99-pt1570-h10-cu-wifi-stability" ] \
+            || { echo "::error::99-pt1570-h10-cu-wifi-stability 未进镜像或丢可执行位"; exit 1; }
+          grep -q 'skip_inactivity_poll' "$UCI/99-pt1570-h10-cu-wifi-stability" \
+            || { echo "::error::CU stability 脚本缺 skip_inactivity_poll"; exit 1; }
+          grep -q 'disassoc_low_ack' "$UCI/99-pt1570-h10-cu-wifi-stability" \
+            || { echo "::error::CU stability 脚本缺 disassoc_low_ack"; exit 1; }
+          echo "  OK   HOSTAPD_STABILITY_OK（两板统一稳定性兜底）"
+
+          # 内核 FIT + 2.5G + PCIe 符号
+          KCFG=$(ls -d build_dir/target-*/linux-rtl9617c/linux-*/.config 2>/dev/null | head -1)
+          if [ -n "$KCFG" ]; then
+            for sym in CONFIG_UIMAGE_FIT_BLK CONFIG_MTD_ROOTFS_ROOT_DEV CONFIG_SQUASHFS \
+                       CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
+                       CONFIG_PCIE_RTL9617C CONFIG_RTL_AX_AP; do
+              grep -q "^${sym}=[ym]$" "$KCFG" \
+                || { echo "::error::内核缺 $sym（FIT/2.5G/PCIe/WiFi）"; exit 1; }
+            done
+            echo "  OK   内核 FIT + 2.5G + PCIe + WiFi 符号"
+          else
+            echo "::warning::找不到内核 .config，跳过内核符号校验"
+          fi
+
+          ITB=$(ls bin/targets/rtl9617c/generic/*sysupgrade.itb 2>/dev/null | head -1)
+          [ -n "$ITB" ] || { echo "::error::找不到 sysupgrade.itb"; exit 1; }
+          python3 "$ASSETS/scripts/verify-fit-boot.py" "$ITB"
+
+          echo "IMAGE_PAYLOAD_OK=True"
+
+      - name: Upload build log (always)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: PT1570-H10-CU-refactor-build-log-${{ github.run_number }}
+          path: |
+            build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Refresh package index
+        if: ${{ !inputs.test_only && inputs.publish_packages }}
+        working-directory: wrt
+        run: make package/index
+
+      - name: Collect firmware + matching packages
+        if: ${{ !inputs.test_only }}
+        env:
+          PUBLISH_PACKAGES: ${{ inputs.publish_packages }}
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/artifact"
+          mkdir -p "$OUT"
+          cd "$GITHUB_WORKSPACE/wrt"
+          echo "===== bin/targets/rtl9617c/generic ====="
+          ls -lh bin/targets/rtl9617c/generic/ | head -40
+          find bin/targets/rtl9617c/generic -maxdepth 1 -type f \
+            -name "*${PROFILE}*" ! -name "*.json" -exec cp -v {} "$OUT/" \;
+          ls "$OUT/"*sysupgrade.itb >/dev/null 2>&1 \
+            || { echo "ERROR: 没有 ${PROFILE} 的 sysupgrade.itb" >&2; exit 1; }
+          cp .config "$OUT/Config-final.txt"
+          echo "$SOURCE_HASH" > "$OUT/source-commit.txt"
+          {
+            echo "board=$MODEL ($BOARD_NAME)"
+            echo "release_id=PT1570-H10-CU-WIFI-refactor-sysupgrade"
+            echo "profile=$PROFILE"
+            echo "dts=$DTS (自建 PCIe + 12 灯 + factory nvmem, refactor @ $SOURCE_HASH)"
+            echo "source_ref=$SOURCE_REF (baseline=refactor ae4aeac45a70be1bdf68af65cbbacb360f201b27)"
+            echo "baseline=refactor — 2.5G/PON/XGPON 上游白拿 + PCIe/WiFi 回移植（规范位置）"
+            echo "arch=aarch64_cortex-a53"
+            echo "lan_ip=192.168.1.1/24"
+            echo "default_wan=pon0.1101 pppoe (XGPON, PON FE on)"
+            echo "wifi=PCIe0 8852C(5G HE80/ch149) + PCIe1 8192XB(2.4G), psk2+ccmp, kmod-rtl-ax-ap"
+            echo "factory=UBI volume, cal 由 nvmem cell -> firmware 桥接（99-rtl9617c-wifi-cal）"
+            echo "naming=rtl9617c-* / kmod-rtl-ax-ap（无 tyfza1 私有命名）"
+          } > "$OUT/BUILD_INFO.txt"
+          case "$PUBLISH_PACKAGES" in
+            false) DO_PACKAGES=0 ;; *) DO_PACKAGES=1 ;;
+          esac
+          if [ "$DO_PACKAGES" = "1" ]; then
+            ROOT="$GITHUB_WORKSPACE/pkgroot"
+            rm -rf "$ROOT"
+            mkdir -p "$ROOT/targets/rtl9617c/generic/packages" "$ROOT/packages"
+            cp -a bin/targets/rtl9617c/generic/packages/. "$ROOT/targets/rtl9617c/generic/packages/" 2>/dev/null || true
+            [ -d bin/packages ] && cp -a bin/packages/. "$ROOT/packages/"
+            [ -f public-key.pem ] && cp public-key.pem "$ROOT/public-key.pem"
+            cd "$GITHUB_WORKSPACE"
+            tar --zstd -cf "artifact/PT1570-H10-CU-refactor-packages-${{ github.run_number }}.tar.zst" -C "$ROOT" .
+          fi
+          cd "$OUT"
+          find . -maxdepth 1 -type f ! -name sha256sums.txt -printf '%f\n' | sort | xargs sha256sum > sha256sums.txt
+          ls -lh
+
+      - name: Upload firmware
+        if: ${{ !inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: PT1570-H10-CU-WIFI-refactor-sysupgrade-${{ github.run_number }}
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: ${{ !inputs.test_only && inputs.create_release }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: PT1570-H10-CU-WIFI-refactor-sysupgrade-${{ github.run_number }}
+          name: PT1570-H10-CU-WIFI-refactor-sysupgrade (${{ github.run_number }})
+          files: artifact/*
+          body: |
+            Release ID `PT1570-H10-CU-WIFI-refactor-sysupgrade`
+            源码 lyq1996/rtl9617c-openwrt `${{ env.SOURCE_REF }}` @ `${{ env.SOURCE_HASH }}`（refactor 基线）
+            机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`
+            布局：factory(UBI) + fit + rootfs_data，产物 sysupgrade.itb（标准 fit_do_upgrade）
+            架构：aarch64_cortex-a53
+            2.5G/PON/XGPON：refactor 上游白拿（HisGMII + SerDes + RTL9617C Rust daemon）
+            WiFi：PCIe/WiFi 驱动回移植到 OpenWrt 规范位置（refactor 上游删了该子系统）；
+              5G=8852C HE80/ch149(非DFS) + psk2+ccmp，2.4G=8192XB；
+              cal 由 nvmem cell 桥接导出（99-rtl9617c-wifi-cal），命名无 tyfza1。
+            ⚠️ 本分支为架构级重构首版：refactor 基线与回移植 WiFi 的实机共存性（尤其
+               &serdes 与 pcie_controls 共用 lane 寄存器）需刷入后实测；若 2.5G 与 WiFi
+               互相干扰，按实施记录的可回退方案处理。
+            ⚠️ 默认 LAN 192.168.1.1，默认 WAN=pon0.1101 PPPoE（XGPON），账号自填。
+            配置见 Config-final.txt；校验见 sha256sums.txt。

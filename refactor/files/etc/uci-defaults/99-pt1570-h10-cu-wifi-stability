@@ -1,0 +1,46 @@
+#!/bin/sh
+# PT1570-H10-CU：hostapd 断流缓解（2026-11-17）
+#
+# 移植自 lu-1991 PT1570-R10-CI 的 98-pt1570-r10-wifi-stability，只取与
+# 无线协议推导无关、且不改 country/htmode/信道的两项：
+#   1) skip_inactivity_poll=1 —— hostapd 不再主动轮询空闲终端。手机/平板进
+#      省电模式漏掉几次轮询就被 deauth（logread: "inactive" / "did not
+#      acknowledge"），表现为"连着连着掉线"。
+#   2) disassoc_low_ack=0 —— 不因低 ACK 主动踢人，交由终端自己决定重连。
+#
+# 出厂 conffile（refactor/files/etc/config/wireless）已带这两项；本脚本只服务
+# "sysupgrade 保留配置"的老设备：老 conffile 没有这两项时补齐。
+# 只补缺失项，用户显式改过的值不覆盖。只在 CU 机型上执行。
+
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+# uci-defaults 可能在 wifi config 之前运行，没有配置就先生成一次
+if [ ! -f /etc/config/wireless ]; then
+	command -v wifi >/dev/null 2>&1 && wifi config >/dev/null 2>&1
+fi
+[ -f /etc/config/wireless ] || { logger -t wifi-stability-cu "no /etc/config/wireless, skip"; exit 0; }
+
+changed=0
+
+set_default() {
+	vif=$1
+	key=$2
+	value=$3
+	uci -q get "wireless.$vif" >/dev/null 2>&1 || return 0
+	[ -z "$(uci -q get "wireless.$vif.$key" 2>/dev/null)" ] || return 0
+	uci -q set "wireless.$vif.$key=$value"
+	changed=1
+}
+
+for vif in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([A-Za-z0-9_]*\)=wifi-iface$/\1/p'); do
+	set_default "$vif" skip_inactivity_poll 1
+	set_default "$vif" disassoc_low_ack 0
+done
+
+if [ "$changed" = "1" ]; then
+	uci -q commit wireless
+	logger -t wifi-stability-cu "skip_inactivity_poll=1 disassoc_low_ack=0 applied to all VAPs"
+fi
+
+# uci-defaults 由 /etc/init.d/boot 用 "." 载入，这里必须 exit 0 而不是 return
+exit 0

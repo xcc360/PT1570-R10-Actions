@@ -1,0 +1,55 @@
+#!/bin/sh
+# PT1570-H10-CU（联通版）：按真实 netdev 形态校正 br-lan。
+#
+# refactor 基线：2.5G 口走 HisGMII/SerDes + 2500base-x，驱动 netdev：
+#   lan0 = NI port0 phantom（无 RJ45，绝不入桥）
+#   lan1 = P6 XGE MAC / 2.5G 口
+#   lan2 / lan3 / lan4 = 三个 GE 口
+# board.d/02_network 按 board_name 写 br-lan；本脚本做幂等校正（驱动可能晚于
+# uci-defaults 注册 netdev，sysupgrade 可能残留 lan0/lan5）。
+
+[ "$(board_name)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+# 等 2.5G(lan1) 与最后一个 GE(lan4) 都被驱动注册，最多 15s
+i=0
+while [ "$i" -lt 15 ]; do
+	[ -e /sys/class/net/lan1 ] && [ -e /sys/class/net/lan4 ] && break
+	i=$((i + 1))
+	sleep 1
+done
+
+br=""
+j=0
+while uci -q get "network.@device[$j].type" >/dev/null; do
+	[ "$(uci -q get "network.@device[$j].type")" = "bridge" ] && { br="$j"; break; }
+	j=$((j + 1))
+done
+[ -n "$br" ] || exit 0
+
+ports=$(uci -q get "network.@device[$br].ports")
+changed=0
+
+# 剔除 phantom：lan0（无 RJ45）、lan5（旧驱动形态）
+for dev in lan0 lan5; do
+	case " $ports " in
+		*" $dev "*)
+			uci -q del_list "network.@device[$br].ports=$dev"
+			changed=1
+			logger -t pt1570-h10-cu-lan "removed phantom $dev from br-lan"
+			;;
+	esac
+done
+
+# 2.5G + 三个 GE 全部入桥（只补实际存在的 netdev）
+for dev in lan1 lan2 lan3 lan4; do
+	[ -e "/sys/class/net/$dev" ] || continue
+	case " $ports " in
+		*" $dev "*) continue ;;
+	esac
+	uci -q add_list "network.@device[$br].ports=$dev"
+	changed=1
+	logger -t pt1570-h10-cu-lan "added $dev to br-lan"
+done
+
+[ "$changed" = "1" ] && uci -q commit network
+exit 0

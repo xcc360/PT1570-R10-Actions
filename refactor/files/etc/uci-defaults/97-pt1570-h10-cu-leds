@@ -1,0 +1,47 @@
+#!/bin/sh
+# PT1570-H10-CU（联通版）：固件态面板灯 netdev 绑定 + 电源灯兜底。
+#
+# refactor 基线：LED GPIO 已在 CU DTS 按原厂低号脚配好（12 盏），
+# 本脚本只服务 sysupgrade 保留旧 /etc/config/system 的场景，按 board_name
+# 做幂等校正，保证灯的 netdev 与面板丝印一致。
+#
+# 面板左→右：电源(11H) 注册(9L) 光信号(10L) [5G][2.4G]
+#            千兆口4(0L) 千兆口3(1L) 千兆口2(3L) 2.5G口(4L)
+#            电话(12H) 宽带(2L) WPS(5H) USB0(7H) USB1(6L)
+
+[ "$(board_name)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+changed=0
+
+# 四个网口灯的 netdev 绑定：EPHY0->lan1(2.5G)、EPHY1->lan2、EPHY2->lan3、EPHY3->lan4
+e=0
+for dev in lan1 lan2 lan3 lan4; do
+	sec="led_lan$e"
+	if uci -q get "system.$sec" >/dev/null; then
+		cur=$(uci -q get "system.$sec.dev")
+		if [ "$cur" != "$dev" ]; then
+			uci -q set "system.$sec.dev=$dev"
+			changed=1
+			logger -t pt1570-h10-cu-leds "$sec.dev $cur -> $dev"
+		fi
+		uci -q set "system.$sec.sysfs=LED_EPHY$e"
+	fi
+	e=$((e + 1))
+done
+
+# USB 灯 sysfs 兜底（DTS 已是 LED_USB0）
+sysfs=$(uci -q get system.led_usb.sysfs)
+if [ "$sysfs" = "LED_USB1" ]; then
+	uci -q set system.led_usb.sysfs='LED_USB0'
+	changed=1
+fi
+
+# 电源灯兜底：DTS default-state=on，这里再写一次亮度兜住旧 overlay
+if [ -e /sys/class/leds/LED_PWR_G/brightness ]; then
+	max=$(cat /sys/class/leds/LED_PWR_G/max_brightness 2>/dev/null)
+	[ -n "$max" ] || max=1
+	echo "$max" > /sys/class/leds/LED_PWR_G/brightness 2>/dev/null || true
+fi
+
+[ "$changed" = "1" ] && uci -q commit system
+exit 0

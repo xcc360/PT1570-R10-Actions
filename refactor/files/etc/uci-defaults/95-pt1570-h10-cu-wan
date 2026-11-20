@@ -1,0 +1,120 @@
+#!/bin/sh
+# PT1570-H10-CU（联通版）：出厂默认 WAN = XGPON VLAN 1101 + PPPoE + PON FE。
+#
+# refactor 基线规范：PON WAN provisioning 收进 Rust daemon（rtl9617c-pon-control），
+# 上游 90-pon-wan/91-pon-offload 已删除。本脚本负责 CU 板级专有的：
+#   * PON mode 强制 xgpon（上游 config/pon 默认 epon-d10g，本机 XGPON 线路）
+#   * WAN VLAN 1101（上游默认 3961 EPON）+ pon0.1101 8021q 设备 mtu 1500
+#   * PPPoE / ipv6 / PON FE offload + firewall flow offloading
+#   * LAN 统一 192.168.1.1/24（三机型一致）
+#
+# 实机依据（2026-11-14 云编译 run#1）：PON FE 关闭时 PADS 后单播上行帧被静默
+# 丢弃、pppd LCP 零回应；打开 offload=1 + flow_offloading*_hw=1 后 6s 拨号成功。
+# WAN VLAN 3961 是 PT1500 EPON 布局，与本机 XGPON/1101 不符。
+# mtu 1492 压到 VLAN 子设备会让 pppd 反复告警，底层口必须 1500。
+
+[ "$(board_name)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+changed=0
+
+# ---- 1. PON mode：非 xgpon 即纠正（含 sysupgrade 保留旧配置的场景）----
+case "$(uci -q get pon.pon.mode)" in
+  ''|xgpon) : ;;
+  *)
+    uci -q set pon.pon.mode='xgpon'
+    changed=1
+    ;;
+esac
+
+# ---- 2. 上网 VLAN：上游默认 3961（EPON）-> 1101（XGPON）----
+wan_vlan=$(uci -q get pon.pon.wan_vlan)
+case "$wan_vlan" in
+  ''|3961)
+    wan_vlan=1101
+    uci -q set pon.pon.wan_vlan="$wan_vlan"
+    changed=1
+    ;;
+esac
+
+vlan_dev="pon0.$wan_vlan"
+
+# ---- 3. 删除上游按 3961 建的残留 VLAN 设备 ----
+if [ "$wan_vlan" != "3961" ]; then
+  while :; do
+    i=0; hit=
+    while uci -q get "network.@device[$i]" >/dev/null; do
+      if [ "$(uci -q get "network.@device[$i].name")" = "pon0.3961" ]; then
+        uci -q delete "network.@device[$i]"
+        hit=1; changed=1
+        break
+      fi
+      i=$((i+1))
+    done
+    [ -n "$hit" ] || break
+  done
+fi
+
+# ---- 4. 8021q 设备（mtu 1500）----
+i=0; found=0
+while uci -q get "network.@device[$i]" >/dev/null; do
+  if [ "$(uci -q get "network.@device[$i].name")" = "$vlan_dev" ]; then
+    found=1; break
+  fi
+  i=$((i+1))
+done
+if [ "$found" = "0" ]; then
+  uci -q add network device >/dev/null
+  changed=1
+fi
+# 值不能带单引号：外层双引号内的单引号会被 uci 存成字面量（R10 run17 踩过）。
+uci -q set "network.@device[$i].type=8021q"
+uci -q set "network.@device[$i].ifname=pon0"
+uci -q set "network.@device[$i].vid=$wan_vlan"
+uci -q set "network.@device[$i].name=$vlan_dev"
+[ "$(uci -q get "network.@device[$i].mtu")" = "1500" ] || {
+  uci -q set "network.@device[$i].mtu=1500"; changed=1; }
+
+# ---- 5. WAN 接口 ----
+wan_dev=$(uci -q get network.wan.device)
+[ -n "$wan_dev" ] || wan_dev=$(uci -q get network.wan.ifname)
+case "$wan_dev" in
+  ''|pon0|pon0.3961|"$vlan_dev")
+    uci -q get network.wan >/dev/null || uci -q set network.wan='interface'
+    uci -q set network.wan.device="$vlan_dev"
+    uci -q delete network.wan.ifname
+    uci -q set network.wan.proto='pppoe'
+    uci -q set network.wan.mtu='1492'
+    uci -q set network.wan.ipv6='1'
+    changed=1
+    ;;
+esac
+
+# ---- 6. PON 转发引擎：单播上行必需 ----
+[ "$(uci -q get pon.pon.offload)" = "1" ] || {
+  uci -q set pon.pon.offload='1'; changed=1; }
+[ "$(uci -q get firewall.@defaults[0].flow_offloading)" = "1" ] || {
+  uci -q set firewall.@defaults[0].flow_offloading='1'; changed=1; }
+[ "$(uci -q get firewall.@defaults[0].flow_offloading_hw)" = "1" ] || {
+  uci -q set firewall.@defaults[0].flow_offloading_hw='1'; changed=1; }
+
+# ---- 7. LAN 地址统一 + /24 掩码 ----
+lan_ip=$(uci -q get network.lan.ipaddr)
+case "$lan_ip" in
+  ''|192.168.1.1|192.168.1.1/24|192.168.18.1|192.168.18.1/24|192.168.2.1|192.168.2.1/24)
+    uci -q set network.lan.ipaddr='192.168.1.1/24'
+    changed=1 ;;
+  */*) : ;;
+  *) uci -q set network.lan.ipaddr="$lan_ip/24"; changed=1 ;;
+esac
+
+if [ "$changed" = "1" ]; then
+  uci -q commit network
+  uci -q commit pon
+  uci -q commit firewall
+  logger -t pt1570-h10-cu-wan "default WAN -> $vlan_dev (pppoe), PON mode=xgpon FE on"
+fi
+
+# 显式下发 offload（防旧配置残留导致 FE 未真正启用）
+/etc/init.d/pon offload >/dev/null 2>&1 || true
+
+exit 0

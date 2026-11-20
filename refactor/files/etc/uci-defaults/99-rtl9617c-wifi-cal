@@ -1,0 +1,83 @@
+#!/bin/sh
+# rtl9617c WiFi 校准导出（规范化，refactor 基线；摒弃旧 tyfza1-factory 脚本）。
+#
+# refactor 的 CU DTS 在 ubi-volume-factory 内声明 nvmem-layout：
+#   wifi-calibration@2000（5G, rtl8852ce）
+#   wifi-calibration@3000（2.4G, rtl8192xbe）
+# 但回移植的 rtl_ax_ap 驱动用 request_firmware 从
+#   /lib/firmware/realtek/rtl9617c/<chip>/flash-calibration.bin 读取（TYFC0003），
+# 不直接消费 nvmem cell。本脚本把 factory 卷的 cal 导出成驱动期望的固件文件，
+# 是 nvmem cell -> firmware 的规范化桥接（幂等，开机首启执行一次）。
+#
+# 优先级：
+#   1. nvmem sysfs cell（内核已导出，最规范）
+#   2. 从 factory UBI 卷设备按固定偏移 dd（0x2000/0x3000，与 DTS 一致）
+#   3. 2.4G 内置 known-good blob 兜底（@.../rtl8192xbe，带本机 LAN MAC 重标）
+# 仅当目标文件缺失或 magic 非 TYFC0003 时才写，不覆盖有效 cal。
+
+[ "$(board_name)" = "youhua,pt1570-h10-cu" ] || exit 0
+
+FWBASE=/lib/firmware/realtek/rtl9617c
+CAL_MAGIC=TYFC0003
+NEED_5G=0; NEED_2G=0
+
+valid_cal() {  # $1=file
+	[ -s "$1" ] || return 1
+	[ "$(dd if="$1" bs=1 count=8 2>/dev/null)" = "$CAL_MAGIC" ]
+}
+
+[ -d "$FWBASE/rtl8852ce" ] || mkdir -p "$FWBASE/rtl8852ce"
+[ -d "$FWBASE/rtl8192xbe" ] || mkdir -p "$FWBASE/rtl8192xbe"
+CAL5="$FWBASE/rtl8852ce/flash-calibration.bin"
+CAL2="$FWBASE/rtl8192xbe/flash-calibration.bin"
+valid_cal "$CAL5" || NEED_5G=1
+valid_cal "$CAL2" || NEED_2G=1
+[ "$NEED_5G$NEED_2G" = "00" ] && exit 0
+
+# 找 factory UBI 卷设备（volname=factory）
+factory_dev=""
+for d in /dev/ubi*_0 /dev/ubi*_1 /dev/ubi*_2 /dev/ubi*_3; do
+	[ -e "$d" ] || continue
+	vol=$(ubireader_display_info "$d" 2>/dev/null || true)  # 可选工具，缺则忽略
+	factory_dev="$d"
+	break
+done
+# 更可靠：从 sysfs 找 name=factory 的 UBI 卷
+for u in /sys/class/ubi/ubi*; do
+	[ -d "$u" ] || continue
+	case "$(basename "$u")" in ubi[0-9]*) : ;; *) continue ;; esac
+	for v in "$u"/ubi*_0 "$u"/ubi*_1 "$u"/ubi*_2 "$u"/ubi*_3 "$u"/ubi*_4; do
+		[ -e "$v/name" ] || continue
+		[ "$(cat "$v/name" 2>/dev/null)" = "factory" ] || continue
+		devn=$(cat "$v/dev" 2>/dev/null)
+		[ -n "$devn" ] && factory_dev="/dev/$devn"
+	done
+done
+
+extract_from_factory() {  # $1=offset(dec) $2=dest $3=bytes
+	[ -n "$factory_dev" ] && [ -e "$factory_dev" ] || return 1
+	dd if="$factory_dev" of="$2" bs=1 skip="$1" count="$3" conv=notrunc 2>/dev/null
+	valid_cal "$2"
+}
+
+# ---- 5G cal：偏移 0x2000（8192），整块 4096 字节（驱动放宽为 >=284）----
+if [ "$NEED_5G" = "1" ]; then
+	if extract_from_factory 8192 "$CAL5" 4096; then
+		logger -t rtl9617c-wifi-cal "5G cal exported from factory@0x2000"
+	else
+		logger -t rtl9617c-wifi-cal "WARN: 5G cal unavailable"
+	fi
+fi
+
+# ---- 2.4G cal：偏移 0x3000（12288）；失败用内置 known-good blob 兜底 ----
+if [ "$NEED_2G" = "1" ]; then
+	if extract_from_factory 12288 "$CAL2" 4096; then
+		logger -t rtl9617c-wifi-cal "2.4G cal exported from factory@0x3000"
+	elif [ -s /etc/rtl9617c/wifi-default/rtl8192xbe/flash-calibration.bin ]; then
+		cp /etc/rtl9617c/wifi-default/rtl8192xbe/flash-calibration.bin "$CAL2"
+		chmod 0644 "$CAL2"
+		logger -t rtl9617c-wifi-cal "2.4G cal fallback: baked known-good"
+	fi
+fi
+
+exit 0
