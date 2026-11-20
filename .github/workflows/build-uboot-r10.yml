@@ -1,3 +1,4 @@
+# ⚠️ DEPRECATED: 板级源码已上游化（PR #10/#11），请改用 build-uboot-youhua.yml。保留仅供历史回退。
 # 统一命名 ID: PT1570-R10-4GE-CU-uboot
 #   规则 <型号>-<网口>-<运营商>-<产物类型>（uboot / sysupgrade）。
 #   仅作用于展示层：workflow / job / artifact / release / packages / BUILD_INFO。
