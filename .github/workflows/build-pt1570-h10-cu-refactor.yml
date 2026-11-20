@@ -77,7 +77,7 @@ jobs:
       - name: Checkout build assets
         uses: actions/checkout@v5
         with:
-          ref: feature/pt1570-h10-cu-refactor
+          ref: main
 
       - name: Resolve board parameters
         run: |
@@ -428,10 +428,16 @@ jobs:
           # 5G cal 由 99 脚本首启从 factory 导出（镜像内可无），2.4G 内置兜底须在
           [ -f "$ROOT/etc/rtl9617c/wifi-default/rtl8192xbe/flash-calibration.bin" ] \
             || { echo "::error::镜像缺 2.4G cal 兜底 blob"; exit 1; }
-          grep -q "realtek/rtl9617c/rtl8852ce/flash-calibration.bin" \
-            "$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap/board-cal.h" \
-            || { echo "::error::驱动 cal 路径未规范化（仍含 tyfza1）"; exit 1; }
-          echo "  OK   WiFi 驱动 + cal（规范化路径，无 tyfza1）"
+          # 驱动 cal 路径：校验编译树里的最终形态（overlay 已把统一资产真源
+          # 的 tyfza1 路径适配为 refactor 规范路径），不是仓库里的 base 真源。
+          DRV_CAL=$(find "$GITHUB_WORKSPACE/wrt" \
+            -path '*/drivers/net/wireless/realtek/rtl_ax_ap/board-cal.h' \
+            2>/dev/null | head -1)
+          [ -n "$DRV_CAL" ] \
+            || { echo "::error::找不到编译树 board-cal.h（overlay 未生效）"; exit 1; }
+          grep -q "realtek/rtl9617c/rtl8852ce/flash-calibration.bin" "$DRV_CAL" \
+            || { echo "::error::编译树驱动 cal 路径未规范化（仍含 tyfza1）"; exit 1; }
+          echo "  OK   WiFi 驱动 + cal（编译树已适配 refactor 规范路径）"
 
           # wireless 出厂默认：HE80 + ch149 + psk2+ccmp（ sysupgrade 由 98 脚本纠正）
           WL="$ROOT/etc/config/wireless"
