@@ -1,3 +1,4 @@
+# ⚠️ DEPRECATED: 板级源码已上游化（PR #10/#11），请改用 build-uboot-youhua.yml。保留仅供历史回退。
 # 联通版 PT1570-H10-CU 专用 U-Boot（Realtek Taurus SPI-NAND loader 重打包）
 #
 # 为什么需要独立 workflow：
