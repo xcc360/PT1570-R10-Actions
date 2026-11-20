@@ -126,7 +126,14 @@ WF=.github/workflows/build-pt1570-fit.yml
 grep -q "EXPERIMENTAL-NOT-FOR-FLASH.txt" "$WF" && ok "experimental 产物带警告文件" || bad "缺实验警告"
 grep -q "inputs.dts_status == 'verified'" "$WF" && ok "Release 仅允许 verified" || bad "Release 未限制 dts_status"
 grep -q "UNVERIFIED" "$WF" && ok "workflow 会拒绝 verified 但带标记的 DTS" || bad "缺 verified 校验"
-grep -q 'pt1570-${{ matrix.board }}-fit-' "$WF" && ok "artifact 名带机型" || bad "artifact 名未隔离机型"
+# 统一展示 ID 后，产物名形如 PT1570-R10-4GE-CU-sysupgrade-{config,build-log,<run>}，
+# 比旧的 pt1570-${{ matrix.board }}-fit- 命名更严格（机型写死在名字里）。
+# 这里逐条检查 upload-artifact 的 name，不允许退回不带机型的裸产物名。
+ART_NAMES=$(grep -A2 'uses: actions/upload-artifact@' "$WF" | grep -E '^[[:space:]]+name:' || true)
+printf '%s\n' "$ART_NAMES" | grep -q . \
+  && ! printf '%s\n' "$ART_NAMES" | grep -qv 'PT1570-R10' \
+  && ok "artifact 名均隔离机型 PT1570-R10" \
+  || bad "artifact 名未隔离机型"
 grep -q '\*\${PROFILE}\*' "$WF" && ok "产物按 profile 过滤" || bad "产物未按 profile 过滤"
 
 echo "=== 6b. R10-only 范围硬断言 ==="
@@ -162,7 +169,11 @@ grep -q '#include "rtl9617c-tyfza1-4ge.dts"' "$DTS" && ok "include 4GE 板定义
 ! grep -q 'rtl9617c-tyfza1-2p5g.dts' "$DTS" && ok "未误用 2.5G 板定义" || bad "R10 DTS 误 include 2.5G 板定义"
 ! grep -qE 'phy4|realtek,hsgmii|sgmii' "$DTS" && ok "无外部 2.5G PHY 残留" || bad "DTS 含 2.5G PHY 残留"
 grep -q 'tianyi,tyfza1-4ge' "$DTS" && ok "compatible 指向 4ge" || bad "compatible 未指向 4ge"
-grep -q 'FDT_VERIFIED' "$DTS" && ok "DTS 记录了真机 FDT 依据" || bad "DTS 缺真机 FDT 依据"
+# VERIFIED 头注释 + 真机 /proc/device-tree 导出文件名 + 逐项核对说明，
+# 三者共同构成 2026-11-09 真机 FDT 依据（旧的 FDT_VERIFIED 字面量已不再使用）。
+grep -q '^// VERIFIED' "$DTS" && ok "DTS 记录 VERIFIED 结论" || bad "DTS 缺 VERIFIED 结论"
+grep -q 'r10-fdt-dump-20261109.txt' "$DTS" && ok "DTS 引用真机 FDT 导出" || bad "DTS 未引用真机 FDT 导出"
+grep -q '真机 FDT' "$DTS" && ok "DTS 记录了真机 FDT 依据" || bad "DTS 缺真机 FDT 依据"
 for pin in 'btn-reset' 'btn-wifi' 'lights-toggle'; do
   grep -q "$pin" "$DTS" && ok "按键节点 $pin 已覆盖" || bad "缺按键节点 $pin"
 done
