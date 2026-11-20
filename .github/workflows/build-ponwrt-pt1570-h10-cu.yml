@@ -801,6 +801,10 @@ jobs:
             || { echo "ERROR: CU 0.8.5 WiFi 整合护栏未通过" >&2; exit 1; }
           echo "  OK   CU 0.8.5 WiFi 整合护栏"
 
+          # 跨板 WiFi 资产一致性护栏（R10 <-> CU 单 PE1 参考驱动逐字节相同）
+          python3 "$ASSETS/scripts/verify-wifi-parity.py" "$ASSETS" \
+            || { echo "ERROR: 两板 WiFi 资产漂移（驱动/overlay 不一致）" >&2; exit 1; }
+
           echo "===== key config ====="
           grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET)=' .config || true
           echo "  =m packages: $(grep -c '^CONFIG_PACKAGE_.*=m$' .config || true)"
