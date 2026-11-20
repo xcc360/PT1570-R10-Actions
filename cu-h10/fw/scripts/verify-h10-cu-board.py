@@ -142,7 +142,7 @@ def main():
 
     print('=== 5. 三机型统一默认 LAN 192.168.1.1 ===')
     WAN = UCI / '95-pt1570-h10-cu-wan-default'
-    CUSTOMIZE = FW / 'customize-cu.sh'
+    CUSTOMIZE = FW / 'customize-pt1570-h10-cu.sh'
     ok(WAN.is_file(), '存在 95-pt1570-h10-cu-wan-default')
     if WAN.is_file():
         w = WAN.read_text(encoding='utf-8')
@@ -152,7 +152,7 @@ def main():
            '首启脚本仍会把旧默认值迁移过来（sysupgrade 保留配置）')
     ok(CUSTOMIZE.is_file()
        and 'WRT_IP="${WRT_IP:-192.168.1.1}"' in CUSTOMIZE.read_text(encoding='utf-8'),
-       'customize-cu.sh 默认 IP = 192.168.1.1')
+       'customize-pt1570-h10-cu.sh 默认 IP = 192.168.1.1')
 
     print('=== 6. 开机 WiFi 诊断脚本（run3 仍无无线，需实机证据）===')
     ok((UCI / '97-pt1570-h10-cu-wifi-diag').is_file(),

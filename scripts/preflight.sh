@@ -18,7 +18,7 @@ echo "=== 1. 资产齐全（H10 为 DORMANT 留档，不参与构建） ==="
 # 仓库里可以不存在（2026-11-10 run #5 因脚本强依赖该副本而 exit 2）。
 for f in \
   .github/workflows/build-pt1570-fit.yml \
-  Config-PT1570-FIT.txt Config-EXTRA.txt customize.sh \
+  Config-PT1570-R10.txt Config-PT1570-R10-extra.txt customize-pt1570-r10.sh \
   files/etc/uci-defaults/99-pt1570-fit \
   board/devices/pt1570-r10.mk.inc board/devices/pt1570-h10.mk.inc \
   board/dts/rtl9617c-pt1570-r10.dts board/dts/rtl9617c-pt1570-h10.dts \
@@ -70,7 +70,7 @@ else
 fi
 
 echo "=== 4. shell 语法 ==="
-for f in customize.sh files/etc/uci-defaults/99-pt1570-fit \
+for f in customize-pt1570-r10.sh files/etc/uci-defaults/99-pt1570-fit \
          scripts/apply-board.sh scripts/preflight.sh scripts/patch-upstream.sh \
          migration/device-preflight.sh; do
   if bash -n "$f" 2>/dev/null; then ok "bash -n $f"; else bad "bash -n $f"; fi
@@ -116,10 +116,10 @@ grep -q '#include' "$dts" && ok "$b DTS 复用上游 FIT dtsi" || bad "$b DTS in
 for f in board/devices/pt1570-h10.mk.inc board/dts/rtl9617c-pt1570-h10.dts; do
   grep -q 'DORMANT' "$f" && ok "H10 资产已标 DORMANT: $f" || bad "H10 资产未标 DORMANT: $f"
 done
-grep -q "CONFIG_TARGET_ARCH_PACKAGES=\"aarch64_cortex-a55\"" Config-PT1570-FIT.txt \
+grep -q "CONFIG_TARGET_ARCH_PACKAGES=\"aarch64_cortex-a55\"" Config-PT1570-R10.txt \
   && ok "arch=aarch64_cortex-a55" || bad "arch 配置错误"
-grep -q 'aarch64_cortex-a55' customize.sh && ok "customize.sh 架构一致" || bad "customize.sh 架构不一致"
-grep -q 'CONFIG_PACKAGE_fitblk=y' Config-PT1570-FIT.txt && ok "fitblk 已启用" || bad "fitblk 未启用"
+grep -q 'aarch64_cortex-a55' customize-pt1570-r10.sh && ok "customize-pt1570-r10.sh 架构一致" || bad "customize-pt1570-r10.sh 架构不一致"
+grep -q 'CONFIG_PACKAGE_fitblk=y' Config-PT1570-R10.txt && ok "fitblk 已启用" || bad "fitblk 未启用"
 
 echo "=== 6. 防止误刷 / 防混刷 ==="
 WF=.github/workflows/build-pt1570-fit.yml
@@ -141,7 +141,7 @@ MATRIX=$(grep -E '^[[:space:]]*board: \[' "$WF" | tr -d '[:space:]')
 [ "$MATRIX" = 'board:[r10]' ] && ok "matrix 仅 r10" || bad "matrix 不是 [r10]：$MATRIX"
 ! grep -q "options: \[r10, h10, both\]" "$WF" && ok "无双机型 choice 输入" || bad "仍存在双机型 choice 输入"
 grep -q 'PT1570_ALLOW_H10' scripts/apply-board.sh && ok "apply-board.sh 默认拒绝 H10" || bad "apply-board.sh 未拒绝 H10"
-grep -q 'PT1570_ALLOW_H10' customize.sh && ok "customize.sh 默认拒绝 H10" || bad "customize.sh 未拒绝 H10"
+grep -q 'PT1570_ALLOW_H10' customize-pt1570-r10.sh && ok "customize-pt1570-r10.sh 默认拒绝 H10" || bad "customize-pt1570-r10.sh 未拒绝 H10"
 grep -q "R10-only 构建不接受" "$WF" && ok "Resolve 步骤拒绝非 r10" || bad "Resolve 步骤未拒绝非 r10"
 grep -q 'Guard R10-only' "$WF" && ok "workflow 含 R10-only 防呆步骤" || bad "缺 R10-only 防呆步骤"
 
@@ -182,7 +182,7 @@ for pin in 8 99 103; do
 done
 
 echo "=== 9. 软件包基线（tailscale 三件套，vlmcsd 已移除） ==="
-EXTRA=Config-EXTRA.txt
+EXTRA=Config-PT1570-R10-extra.txt
 for p in tailscale luci-app-tailscale-community luci-i18n-tailscale-community-zh-cn; do
   grep -q "^CONFIG_PACKAGE_${p}=y$" "$EXTRA" && ok "基线含 $p" || bad "基线缺 $p"
 done
@@ -191,7 +191,7 @@ grep -q '^CONFIG_PACKAGE_kmod-tun=y$' "$EXTRA" && ok "tailscale 依赖 kmod-tun 
 ! grep -q 'immortalwrt/packages.git' "$WF" && ok "workflow 无 vlmcsd 包注入" || bad "workflow 仍含 vlmcsd 注入"
 ! grep -q 'iw-luci' "$WF" && ok "workflow 无 luci-app-vlmcsd 注入" || bad "workflow 仍含 luci 注入"
 grep -q 'user-requested packages (tailscale baseline)' "$WF" && ok "Configure 有 3 包硬断言" || bad "Configure 缺 3 包硬断言"
-grep -q 'Config-EXTRA.txt' customize.sh && ok "customize.sh 会追加基线" || bad "customize.sh 未追加基线"
+grep -q 'Config-PT1570-R10-extra.txt' customize-pt1570-r10.sh && ok "customize-pt1570-r10.sh 会追加基线" || bad "customize-pt1570-r10.sh 未追加基线"
 
 echo "=== 10. 失败可诊断性（Compile + feeds） ==="
 grep -q 'build.log' "$WF" && ok "编译日志落盘" || bad "编译日志未落盘"
@@ -252,9 +252,9 @@ if [ -n "${FIST_DEFCONFIG:-}" ] && [ -n "${CFGLINE:-}" ] \
 else
   bad "Configure 步骤缺少 rm -f .config 初始化（会在空配置上跑 defconfig）"
 fi
-# make defconfig 的第一次出现必须晚于 cat Config-PT1570-FIT.txt
+# make defconfig 的第一次出现必须晚于 cat Config-PT1570-R10.txt
 FIRST_DEF=$(grep -nE '^[[:space:]]*make defconfig[[:space:]]*$' "$WF" | head -1 | cut -d: -f1)
-FIRST_CAT=$(grep -n 'cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config' "$WF" | head -1 | cut -d: -f1)
+FIRST_CAT=$(grep -n 'cat "$GITHUB_WORKSPACE/Config-PT1570-R10.txt" >> .config' "$WF" | head -1 | cut -d: -f1)
 if [ -n "${FIRST_DEF:-}" ] && [ -n "${FIRST_CAT:-}" ] && [ "$FIRST_CAT" -lt "$FIRST_DEF" ]; then
   ok "首次 make defconfig（行 $FIRST_DEF）晚于写入基础配置（行 $FIRST_CAT）"
 else
@@ -406,19 +406,19 @@ if [ -f scripts/patch-wifi-diag.sh ]; then
 else
   bad "缺少 scripts/patch-wifi-diag.sh"
 fi
-if [ -f Config-DIAG.txt ]; then
+if [ -f Config-PT1570-R10-diag.txt ]; then
   # CONFIG_DEVMEM 属内核符号，必须由 patch-wifi-diag.sh 写进 target 的 config-6.18；
   # 写顶层 .config 会被 make defconfig 丢掉（run #13 已踩过）。
-  ! grep -q '^CONFIG_DEVMEM=y$' Config-DIAG.txt \
-    && ok "Config-DIAG 不再放内核符号（会 defconfig 丢弃）" \
-    || bad "Config-DIAG 又写回 CONFIG_DEVMEM 了，它会被 defconfig 丢掉"
+  ! grep -q '^CONFIG_DEVMEM=y$' Config-PT1570-R10-diag.txt \
+    && ok "Config-PT1570-R10-diag 不再放内核符号（会 defconfig 丢弃）" \
+    || bad "Config-PT1570-R10-diag 又写回 CONFIG_DEVMEM 了，它会被 defconfig 丢掉"
   grep -q 'target/linux/rtl9617c/config-6.18' scripts/patch-wifi-diag.sh \
     && ok "诊断脚本把 DEVMEM 写进内核 config-6.18" \
     || bad "诊断脚本没有写内核 config-6.18（/dev/mem 不会生效）"
-  grep -q '^CONFIG_BUSYBOX_CONFIG_DEVMEM=y$' Config-DIAG.txt \
-    && ok "Config-DIAG 打开 busybox devmem" || bad "Config-DIAG 缺 busybox devmem"
+  grep -q '^CONFIG_BUSYBOX_CONFIG_DEVMEM=y$' Config-PT1570-R10-diag.txt \
+    && ok "Config-PT1570-R10-diag 打开 busybox devmem" || bad "Config-PT1570-R10-diag 缺 busybox devmem"
 else
-  bad "缺少 Config-DIAG.txt"
+  bad "缺少 Config-PT1570-R10-diag.txt"
 fi
 grep -q 'name: Patch WiFi driver diagnostics' "$WF" \
   && ok "workflow 有 WiFi 诊断步骤" || bad "workflow 缺少 Patch WiFi driver diagnostics"
@@ -490,8 +490,8 @@ else
 fi
 
 # 配置文件侧的开关：UIMAGE_FIT_BLK 在 target，MTD_ROOTFS_ROOT_DEV 在 generic
-grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' Config-PT1570-FIT.txt 2>/dev/null \
-  && ok "Config-PT1570-FIT 里也有 UIMAGE_FIT_BLK=y" \
+grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' Config-PT1570-R10.txt 2>/dev/null \
+  && ok "Config-PT1570-R10 里也有 UIMAGE_FIT_BLK=y" \
   || echo "  --   UIMAGE_FIT_BLK 由 target/linux/rtl9617c/config-6.18 提供（不写顶层 config 属正常）"
 grep -q '^CONFIG_UIMAGE_FIT_BLK=y$' "${WRT:-/nonexistent}/target/linux/rtl9617c/config-6.18" 2>/dev/null \
   && ok "target config-6.18 打开 CONFIG_UIMAGE_FIT_BLK" \
@@ -519,22 +519,22 @@ if [ -f "$PK" ]; then
 else
   bad "缺少 files/etc/apk/keys/immortalwrt-25.12.pem（apk 更新会报 UNTRUSTED signature）"
 fi
-grep -q 'immortalwrt-25.12.pem' customize.sh \
-  && ok "customize.sh 注释里点明公钥依赖" || echo "  --   customize.sh 未提及公钥（仅注释，非致命）"
+grep -q 'immortalwrt-25.12.pem' customize-pt1570-r10.sh \
+  && ok "customize-pt1570-r10.sh 注释里点明公钥依赖" || echo "  --   customize-pt1570-r10.sh 未提及公钥（仅注释，非致命）"
 
 for pat in 'WRT_APK_MIRROR:-https://mirrors.pku.edu.cn/immortalwrt' \
            'WRT_APK_RELEASE:-25.12-SNAPSHOT' \
            'WRT_APK_REPO_ARCH:-aarch64_cortex-a53' ; do
-  grep -q -- "$pat" customize.sh && ok "customize.sh 默认值 $pat" || bad "customize.sh 缺 $pat"
+  grep -q -- "$pat" customize-pt1570-r10.sh && ok "customize-pt1570-r10.sh 默认值 $pat" || bad "customize-pt1570-r10.sh 缺 $pat"
 done
-grep -q 'WRT_APK_MIRROR" = "none"' customize.sh \
+grep -q 'WRT_APK_MIRROR" = "none"' customize-pt1570-r10.sh \
   && ok "可用 WRT_APK_MIRROR=none 关闭外部源" || bad "没有关闭外部源的开关"
-grep -q 'APK_MIRROR_BASE 显式指定' customize.sh \
+grep -q 'APK_MIRROR_BASE 显式指定' customize-pt1570-r10.sh \
   && ok "APK_MIRROR_BASE 仍可覆盖内置镜像" || bad "APK_MIRROR_BASE 覆盖逻辑被破坏"
-feeds=$(grep -cE '^WRT_APK_FEEDS=' customize.sh || true)
+feeds=$(grep -cE '^WRT_APK_FEEDS=' customize-pt1570-r10.sh || true)
 [ "$feeds" = "1" ] && ok "feed 列表只有一个来源（防重复）" || bad "WRT_APK_FEEDS 定义 $feeds 处"
 for f in base luci packages routing telephony; do
-  grep -qE "^WRT_APK_FEEDS=.*\b$f\b" customize.sh \
+  grep -qE "^WRT_APK_FEEDS=.*\b$f\b" customize-pt1570-r10.sh \
     && ok "默认 feed 含 $f" || bad "默认 feed 缺 $f 目录（镜像上有该 feed）"
 done
 

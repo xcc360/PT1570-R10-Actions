@@ -5,14 +5,14 @@
 #   依据见 PT1500-H10-2.5G两固件二进制比对-根因锁定与方案-20261117.md。
 #
 # 用户要求「软件包沿用 R10 那套」：本文件与 R10 的
-#   Config-PT1570-FIT.txt + Config-EXTRA.txt 保持同一基线
+#   Config-PT1570-R10.txt + Config-PT1570-R10-extra.txt 保持同一基线
 #   （国内 apk 源 / 公钥 / argon / 中文 LuCI / tailscale 三件套），
 # 唯一差异是本机 2.5G 版无 WiFi：
 #   * 不带 kmod-rtl-ax-ap / wpad-* / wifi-scripts / wireless-regdb；
 #   * 上游 youhua_pt1500_h10_2p5g 的 DEVICE_PACKAGES 本来也不含这些。
 #
 # 机型符号 CONFIG_TARGET_*_DEVICE_youhua_pt1500_h10_2p5g=y 与
-# CONFIG_TARGET_PROFILE 由 customize-h10.sh 写入，不在这里硬编码。
+# CONFIG_TARGET_PROFILE 由 customize-pt1500-h10.sh 写入，不在这里硬编码。
 # .config 会在 Configure 步骤里经历多次 make defconfig，未被 profile 点名的包
 # 会被静默丢弃，workflow 会重新断言关键包。
 

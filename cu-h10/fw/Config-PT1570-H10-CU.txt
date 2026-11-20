@@ -10,7 +10,7 @@
 # 其余沿用 R10 / PT1500-H10 已验证基线：北大镜像 apk 源 / 公钥 / argon /
 # 中文 LuCI / tailscale 三件套；统一 UBI（factory 8 MiB + fit + rootfs_data）。
 #
-# 机型符号由 customize-cu.sh 写入，不在这里硬编码。
+# 机型符号由 customize-pt1570-h10-cu.sh 写入，不在这里硬编码。
 
 # ---- target ----
 CONFIG_TARGET_rtl9617c=y

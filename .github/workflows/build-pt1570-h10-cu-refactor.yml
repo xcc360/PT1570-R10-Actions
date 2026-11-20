@@ -202,7 +202,7 @@ jobs:
           # 顺序敏感：先写最小配置再 defconfig（切勿空配置先 defconfig）
           rm -f .config
           cat "$GITHUB_WORKSPACE/refactor/Config-PT1570-H10-CU.txt" >> .config
-          bash "$GITHUB_WORKSPACE/refactor/scripts/customize-h10-cu.sh"
+          bash "$GITHUB_WORKSPACE/refactor/scripts/customize-pt1570-h10-cu-refactor.sh"
 
           sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
 
@@ -306,7 +306,7 @@ jobs:
           WF="$GITHUB_WORKSPACE/.github/workflows/build-pt1570-h10-cu-refactor.yml"
           for f in "$WF" \
                    "$GITHUB_WORKSPACE/refactor/Config-PT1570-H10-CU.txt" \
-                   "$GITHUB_WORKSPACE/refactor/scripts/customize-h10-cu.sh" \
+                   "$GITHUB_WORKSPACE/refactor/scripts/customize-pt1570-h10-cu-refactor.sh" \
                    "$GITHUB_WORKSPACE/refactor/scripts/apply-board-h10-cu-refactor.sh" \
                    "$GITHUB_WORKSPACE/scripts/refactor/overlay-wifi-pcie.sh" \
                    "$GITHUB_WORKSPACE/refactor/dts/rtl9617c-pt1570-h10-cu.dts" \

@@ -595,20 +595,20 @@ jobs:
           #   （package/install Error 1），而设备包默认值也救不回显式 n 的包。
           #   正确顺序：先写最小配置（target + 机型 + 包断言），再 defconfig。
           rm -f .config
-          cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config
+          cat "$GITHUB_WORKSPACE/Config-PT1570-R10.txt" >> .config
           # 诊断产物（wifi_diag=true）：CONFIG_DEVMEM + busybox devmem。
           # WiFi 定位完把 wifi_diag 关掉，正式产物不带 /dev/mem。
           if [ "${WIFI_DIAG:-false}" = "true" ]; then
-            cat "$GITHUB_WORKSPACE/Config-DIAG.txt" >> .config
+            cat "$GITHUB_WORKSPACE/Config-PT1570-R10-diag.txt" >> .config
             echo "  diag: CONFIG_DEVMEM + busybox devmem"
           fi
-          bash "$GITHUB_WORKSPACE/customize.sh"
+          bash "$GITHUB_WORKSPACE/customize-pt1570-r10.sh"
 
           # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
           sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
 
           make defconfig
-          cat "$GITHUB_WORKSPACE/Config-PT1570-FIT.txt" >> .config
+          cat "$GITHUB_WORKSPACE/Config-PT1570-R10.txt" >> .config
 
           # defconfig 会静默丢掉未被 profile 点名的包，照 pt1500-build.sh 跑两次并断言
           make defconfig
@@ -621,8 +621,8 @@ jobs:
           done
           make defconfig
 
-          # 用户软件包基线（Config-EXTRA.txt，tailscale 三件套；vlmcsd 已按用户
-          # 要求从 R10 移除）：customize.sh 已在前面追加，但两次 make defconfig
+          # 用户软件包基线（Config-PT1570-R10-extra.txt，tailscale 三件套；vlmcsd 已按用户
+          # 要求从 R10 移除）：customize-pt1570-r10.sh 已在前面追加，但两次 make defconfig
           # 可能把未被 profile 点名的包降级/丢弃；这里统一重新断言一次再检查。
           echo "===== user-requested packages (tailscale baseline) ====="
           USER_PKGS="tailscale luci-app-tailscale-community \

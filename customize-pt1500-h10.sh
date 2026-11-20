@@ -1,7 +1,7 @@
 #!/bin/bash
 # PT1500-H10 2.5G 专用 customize（在源码根目录、make defconfig 之前执行）。
 #
-# 与 R10 的 customize.sh 分开，独立 workflow 期间不改动 R10 任何文件；
+# 与 R10 的 customize-pt1570-r10.sh 分开，独立 workflow 期间不改动 R10 任何文件；
 # 后期合并时可把「时区 / NTP / apk 源」公共段抽到 customize-common.sh。
 #
 # 做四件事：
@@ -89,12 +89,12 @@ WRT_APK_REPO_ARCH="${WRT_APK_REPO_ARCH:-aarch64_cortex-a53}"
 mkdir -p files/etc/apk/repositories.d
 if [ "$WRT_APK_MIRROR" = "none" ] || [ "$WRT_APK_MIRROR" = "off" ]; then
   {
-    echo "# 由 customize-h10.sh 生成：不启用外部 apk 源"
+    echo "# 由 customize-pt1500-h10.sh 生成：不启用外部 apk 源"
   } > files/etc/apk/repositories.d/distfeeds.list
 elif [ -n "${APK_MIRROR_BASE:-}" ]; then
   BASE="${APK_MIRROR_BASE%/}"
   {
-    echo "# 由 customize-h10.sh 生成：APK_MIRROR_BASE 显式指定"
+    echo "# 由 customize-pt1500-h10.sh 生成：APK_MIRROR_BASE 显式指定"
     echo "$BASE/targets/$WRT_TARGET_SUBTARGET/packages/packages.adb"
     for feed in $WRT_APK_FEEDS; do
       echo "$BASE/packages/$WRT_ARCH_PACKAGES/$feed/packages.adb"
@@ -103,7 +103,7 @@ elif [ -n "${APK_MIRROR_BASE:-}" ]; then
 else
   MK="${WRT_APK_MIRROR%/}/releases/$WRT_APK_RELEASE/packages/$WRT_APK_REPO_ARCH"
   {
-    echo "# 由 customize-h10.sh 生成：北大镜像 immortalwrt $WRT_APK_RELEASE"
+    echo "# 由 customize-pt1500-h10.sh 生成：北大镜像 immortalwrt $WRT_APK_RELEASE"
     echo "# 本机架构 $WRT_ARCH_PACKAGES；镜像无该目录，改用 $WRT_APK_REPO_ARCH"
     echo "# 索引公钥 /etc/apk/keys/immortalwrt-25.12.pem"
     echo "# kmod-* 别从镜像装（内核版本不同），用同批 packages"
@@ -127,5 +127,5 @@ if [ -n "${APK_REPO_KEY_URL:-}" ]; then
   fi
 fi
 
-# 不追加 Config-EXTRA.txt：R10 的用户软件包基线（tailscale 三件套 +
+# 不追加 Config-PT1570-R10-extra.txt：R10 的用户软件包基线（tailscale 三件套 +
 # kmod-tun + zh_Hans）已直接写入 Config-PT1500-H10.txt，避免重复与耦合。

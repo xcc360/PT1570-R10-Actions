@@ -621,7 +621,7 @@ jobs:
           #   正确顺序：先写最小配置（target + 机型 + 包断言），再 defconfig。
           rm -f .config
           cat "$GITHUB_WORKSPACE/cu-h10/fw/Config-PT1570-H10-CU.txt" >> .config
-          bash "$GITHUB_WORKSPACE/cu-h10/fw/customize-cu.sh"
+          bash "$GITHUB_WORKSPACE/cu-h10/fw/customize-pt1570-h10-cu.sh"
 
           # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
           sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
@@ -792,8 +792,8 @@ jobs:
             "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/95-pt1570-h10-cu-wan-default" \
             || { echo "ERROR: 首启脚本未把默认 LAN 统一到 192.168.1.1/24" >&2; exit 1; }
           grep -qF 'WRT_IP="${WRT_IP:-192.168.1.1}"' \
-            "$GITHUB_WORKSPACE/cu-h10/fw/customize-cu.sh" \
-            || { echo "ERROR: customize-cu.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
+            "$GITHUB_WORKSPACE/cu-h10/fw/customize-pt1570-h10-cu.sh" \
+            || { echo "ERROR: customize-pt1570-h10-cu.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
           echo "  OK   LAN 192.168.1.1/24（三机型统一）"
 
           # 0.8.5 WiFi 整合护栏（驱动功率修复 / 26 张 v51 profile / 诊断脚本）
@@ -820,7 +820,7 @@ jobs:
           echo "=== 1. H10 资产齐全 ==="
           for f in "$WF" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/Config-PT1570-H10-CU.txt" \
-                   "$GITHUB_WORKSPACE/cu-h10/fw/customize-cu.sh" \
+                   "$GITHUB_WORKSPACE/cu-h10/fw/customize-pt1570-h10-cu.sh" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/apply-board-h10-cu.sh" \
                    "$GITHUB_WORKSPACE/scripts/verify-fit-boot.py" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/apk/keys/immortalwrt-25.12.pem" \
@@ -844,7 +844,7 @@ jobs:
           echo "=== 3. 与 R10 资产隔离 ==="
           # 注意：CU 现在必须自带 WiFi 驱动 overlay（cu-h10/fw/scripts/），
           # 与 R10 的 scripts/ 资产隔离是「不引用 R10 专属脚本」，不是「不许有 WiFi 修复」。
-          ! grep -qE 'scripts/(patch-upstream|patch-wifi-diag|apply-board)\.sh|[^ ]customize\.sh|Config-PT1570-FIT\.txt|Config-EXTRA\.txt|Config-DIAG\.txt' "$WF" \
+          ! grep -qE 'scripts/(patch-upstream|patch-wifi-diag|apply-board)\.sh|[^ ]customize-pt1570-r10\.sh|Config-PT1570-R10\.txt|Config-PT1570-R10-extra\.txt|Config-PT1570-R10-diag\.txt' "$WF" \
             || { echo "ERROR: H10 workflow 仍引用 R10 专属脚本 / 配置" >&2; exit 1; }
           echo "  OK   无 R10 板级注入脚本引用"
           echo "=== 3b. WiFi 驱动 overlay 必须存在（否则刷入后无 WiFi）==="

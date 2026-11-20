@@ -6,7 +6,7 @@
 #   2. 默认时区 UTC+8（Asia/Shanghai）与国内 NTP
 #   3. 生成 files/etc/apk/repositories.d/distfeeds.list
 #   4. 可选注入外部 apk 源公钥
-#   5. 追加仓库根 Config-EXTRA.txt（可选额外软件包）
+#   5. 追加仓库根 Config-PT1570-R10-extra.txt（可选额外软件包）
 #
 # 当前范围：R10-only（H10 暂缓），但保留按机型选择参数的骨架。
 #
@@ -106,13 +106,13 @@ WRT_APK_REPO_ARCH="${WRT_APK_REPO_ARCH:-aarch64_cortex-a53}"
 mkdir -p files/etc/apk/repositories.d
 if [ "$WRT_APK_MIRROR" = "none" ] || [ "$WRT_APK_MIRROR" = "off" ]; then
   {
-    echo "# 由 customize.sh 生成：WRT_APK_MIRROR=$WRT_APK_MIRROR，不启用外部源。"
+    echo "# 由 customize-pt1570-r10.sh 生成：WRT_APK_MIRROR=$WRT_APK_MIRROR，不启用外部源。"
     echo "# 配套内核模块与用户态包请用同批 packages（customfeeds.list）。"
   } > files/etc/apk/repositories.d/distfeeds.list
 elif [ -n "${APK_MIRROR_BASE:-}" ]; then
   BASE="${APK_MIRROR_BASE%/}"
   {
-    echo "# 由 customize.sh 生成：APK_MIRROR_BASE 显式指定，请自行确认路径存在。"
+    echo "# 由 customize-pt1570-r10.sh 生成：APK_MIRROR_BASE 显式指定，请自行确认路径存在。"
     echo "$BASE/targets/$WRT_TARGET_SUBTARGET/packages/packages.adb"
     for feed in $WRT_APK_FEEDS; do
       echo "$BASE/packages/$WRT_ARCH_PACKAGES/$feed/packages.adb"
@@ -121,7 +121,7 @@ elif [ -n "${APK_MIRROR_BASE:-}" ]; then
 else
   MK="${WRT_APK_MIRROR%/}/releases/$WRT_APK_RELEASE/packages/$WRT_APK_REPO_ARCH"
   {
-    echo "# 由 customize.sh 生成：北大镜像 immortalwrt $WRT_APK_RELEASE"
+    echo "# 由 customize-pt1570-r10.sh 生成：北大镜像 immortalwrt $WRT_APK_RELEASE"
     echo "# 本机架构 $WRT_ARCH_PACKAGES；镜像无该目录，改用 $WRT_APK_REPO_ARCH（同 armv8-a）"
     echo "# 索引公钥 /etc/apk/keys/immortalwrt-25.12.pem，缺则报 UNTRUSTED signature"
     echo "# kmod-* 别从镜像装（内核版本不同），用同批 packages"
@@ -146,9 +146,9 @@ if [ -n "${APK_REPO_KEY_URL:-}" ]; then
 fi
 
 # ---- 5. 可选额外配置 ----
-if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "$GITHUB_WORKSPACE/Config-EXTRA.txt" ]; then
-  echo "customize: appending Config-EXTRA.txt"
-  cat "$GITHUB_WORKSPACE/Config-EXTRA.txt" >> .config
+if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "$GITHUB_WORKSPACE/Config-PT1570-R10-extra.txt" ]; then
+  echo "customize: appending Config-PT1570-R10-extra.txt"
+  cat "$GITHUB_WORKSPACE/Config-PT1570-R10-extra.txt" >> .config
 fi
 
 # 不注入 root 密码 / PON SN / MAC / LOID / 校准数据：这些属于 factory 卷里的设备数据。

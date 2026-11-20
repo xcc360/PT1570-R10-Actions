@@ -1,5 +1,5 @@
 # 用户软件包基线（PT1570-R10）：tailscale 三件套
-# 由 customize.sh 第 5 步自动追加到 .config；workflow 的 Configure 步骤会在
+# 由 customize-pt1570-r10.sh 第 5 步自动追加到 .config；workflow 的 Configure 步骤会在
 # 最终 make defconfig 之后硬断言这 3 个包全部 =y，缺失即失败，
 # 避免编出「看似成功但少了插件」的固件。
 #

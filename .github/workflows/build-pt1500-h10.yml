@@ -391,7 +391,7 @@ jobs:
           #   正确顺序：先写最小配置（target + 机型 + 包断言），再 defconfig。
           rm -f .config
           cat "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" >> .config
-          bash "$GITHUB_WORKSPACE/customize-h10.sh"
+          bash "$GITHUB_WORKSPACE/customize-pt1500-h10.sh"
 
           # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
           sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
@@ -522,8 +522,8 @@ jobs:
 
           # 三机型统一默认 LAN 192.168.1.1/24
           grep -qF 'WRT_IP="${WRT_IP:-192.168.1.1}"' \
-            "$GITHUB_WORKSPACE/customize-h10.sh" \
-            || { echo "ERROR: customize-h10.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
+            "$GITHUB_WORKSPACE/customize-pt1500-h10.sh" \
+            || { echo "ERROR: customize-pt1500-h10.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
           grep -qF "uci -q set network.lan.ipaddr='192.168.1.1/24'" \
             "$GITHUB_WORKSPACE/files-h10/etc/uci-defaults/95-pt1500-h10-wan-default" \
             || { echo "ERROR: 首启脚本未统一 LAN 到 192.168.1.1/24" >&2; exit 1; }
@@ -618,7 +618,7 @@ jobs:
           echo "=== 1. H10 资产齐全 ==="
           for f in "$WF" \
                    "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" \
-                   "$GITHUB_WORKSPACE/customize-h10.sh" \
+                   "$GITHUB_WORKSPACE/customize-pt1500-h10.sh" \
                    "$GITHUB_WORKSPACE/scripts/apply-board-h10.sh" \
                    "$GITHUB_WORKSPACE/scripts/verify-fit-boot.py" \
                    "$GITHUB_WORKSPACE/files-h10/etc/apk/keys/immortalwrt-25.12.pem" \
@@ -633,7 +633,7 @@ jobs:
           grep -q 'Guard H10-only' "$WF" || { echo "ERROR: 缺 H10-only 防呆步骤" >&2; exit 1; }
           echo "  OK   matrix=[h10] + guard"
           echo "=== 3. 与 R10 资产隔离 ==="
-          ! grep -qE 'scripts/(patch-upstream|patch-wifi-diag|overlay-wifi-driver|apply-board)\.sh|customize\.sh|Config-PT1570-FIT\.txt|Config-EXTRA\.txt|Config-DIAG\.txt' "$WF" \
+          ! grep -qE 'scripts/(patch-upstream|patch-wifi-diag|overlay-wifi-driver|apply-board)\.sh|customize-pt1570-r10\.sh|Config-PT1570-R10\.txt|Config-PT1570-R10-extra\.txt|Config-PT1570-R10-diag\.txt' "$WF" \
             || { echo "ERROR: H10 workflow 仍引用 R10 专属脚本 / 配置" >&2; exit 1; }
           echo "  OK   无 R10 板级注入 / WiFi 资产引用"
           echo "=== 4. Config 基线关键符号 ==="
