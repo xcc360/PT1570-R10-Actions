@@ -431,7 +431,7 @@ jobs:
             || { echo "::error::镜像缺 2.4G cal 兜底 blob"; exit 1; }
           # 驱动 cal 路径：校验编译树里的最终形态（overlay 已把统一资产真源
           # 的 tyfza1 路径适配为 refactor 规范路径），不是仓库里的 base 真源。
-          DRV_CAL=$(find "$GITHUB_WORKSPACE/wrt" \
+          DRV_CAL=$(find -L "$GITHUB_WORKSPACE/wrt" \
             -path '*/drivers/net/wireless/realtek/rtl_ax_ap/board-cal.h' \
             2>/dev/null | head -1)
           [ -n "$DRV_CAL" ] \
