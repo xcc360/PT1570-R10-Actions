@@ -34,7 +34,7 @@ set -euo pipefail
 
 ASSETS="${ASSETS:-$GITHUB_WORKSPACE}"
 WRT="${WRT:-$ASSETS/wrt}"
-SRC="$ASSETS/cu-h10/fw/board/wifi/rtl_ax_ap"
+SRC="$ASSETS/board/wifi/rtl_ax_ap"
 DST="$WRT/target/linux/rtl9617c/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }

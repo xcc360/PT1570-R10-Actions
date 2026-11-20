@@ -81,7 +81,7 @@ fi
 
 # ---- 3. apk 源（沿用 R10 基线：北大镜像 immortalwrt 25.12-SNAPSHOT）----
 # refactor 编译架构 aarch64_cortex-a53，与北大镜像 aarch64_cortex-a53 目录一致。
-# 公钥由 files-h10/etc/apk/keys/ 注入。
+# 公钥由 files-common/etc/apk/keys/ 注入。
 WRT_APK_MIRROR="${WRT_APK_MIRROR:-https://mirrors.pku.edu.cn/immortalwrt}"
 WRT_APK_RELEASE="${WRT_APK_RELEASE:-25.12-SNAPSHOT}"
 WRT_APK_REPO_ARCH="${WRT_APK_REPO_ARCH:-aarch64_cortex-a53}"

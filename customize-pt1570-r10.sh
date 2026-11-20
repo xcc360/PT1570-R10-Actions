@@ -97,7 +97,7 @@ fi
 #      列了 a55 和 a53，因此指到 a53 目录是能装能跑的（apk add 已实测）。
 #   b) 镜像索引由 immortalwrt 25.12 发布密钥签名。缺公钥时 apk 会打印
 #      "WARNING: ... UNTRUSTED signature" 并整份丢弃索引（只剩本机包）。
-#      公钥随镜像走：files/etc/apk/keys/immortalwrt-25.12.pem。
+#      公钥随镜像走：files-common/etc/apk/keys/immortalwrt-25.12.pem。
 #   c) kmod-* 与本机内核版本/配置强绑定，绝不要从镜像装，用同批 packages。
 WRT_APK_MIRROR="${WRT_APK_MIRROR:-https://mirrors.pku.edu.cn/immortalwrt}"
 WRT_APK_RELEASE="${WRT_APK_RELEASE:-25.12-SNAPSHOT}"

@@ -27,7 +27,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FW = ROOT / "files/lib/firmware/realtek/tyfza1"
 DRV = ROOT / "board/wifi/rtl_ax_ap"
-CU_DRV = ROOT / "cu-h10/fw/board/wifi/rtl_ax_ap"
+CU_DRV = ROOT / "board/wifi/rtl_ax_ap"
 RFE = FW / "rtl8852ce/RFE54"
 P085 = FW / "rtl8852ce/RFE54_PONWRT085"
 DEFAULT = RFE / "RTK66587_BPF"

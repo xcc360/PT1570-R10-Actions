@@ -389,6 +389,7 @@ jobs:
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/wrt/files"
+          cp -a "$GITHUB_WORKSPACE/files-common/." "$GITHUB_WORKSPACE/wrt/files/"
           if [ -d "$GITHUB_WORKSPACE/cu-h10/fw/files-cu" ]; then
             cp -a "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/." "$GITHUB_WORKSPACE/wrt/files/"
             chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
@@ -420,7 +421,7 @@ jobs:
           grep -n "option ssid" "$WF"
 
       # 2026-11-15：把 PonWRT-TYFZA1 v0.8.5 的 WiFi 修复整合进 CU，与 R10
-      # run35 同一套。驱动副本 cu-h10/fw/board/wifi/rtl_ax_ap/power-tables.c
+      # run35 同一套。驱动副本 board/wifi/rtl_ax_ap/power-tables.c
       # 已同步 0xd208/0xd21c 厂商限制位清零（信号弱的总闸）；这里再补
       # wifi-scripts 的 txpower ucode 修复，并对编译树做源码级断言。
       - name: Apply PonWRT 0.8.5 TX power fix (CU driver + wifi-scripts)
@@ -823,8 +824,8 @@ jobs:
                    "$GITHUB_WORKSPACE/cu-h10/fw/customize-pt1570-h10-cu.sh" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/apply-board-h10-cu.sh" \
                    "$GITHUB_WORKSPACE/scripts/verify-fit-boot.py" \
-                   "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/apk/keys/immortalwrt-25.12.pem" \
-                   "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/lib/upgrade/zz-pt1570-sysupgrade.sh" \
+                   "$GITHUB_WORKSPACE/files-common/etc/apk/keys/immortalwrt-25.12.pem" \
+                   "$GITHUB_WORKSPACE/files-common/lib/upgrade/zz-pt1570-sysupgrade.sh" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/95-pt1570-h10-cu-wan-default" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/96-pt1570-h10-cu-lan5" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/files-cu/etc/uci-defaults/98-pt1570-h10-cu-leds" \
@@ -832,7 +833,7 @@ jobs:
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/overlay-wifi-driver.sh" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/verify-h10-cu-board.py" \
                    "$GITHUB_WORKSPACE/cu-h10/fw/scripts/apply-p6-mode.py" \
-                   "$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap/pe-tx-code.h"; do
+                   "$GITHUB_WORKSPACE/board/wifi/rtl_ax_ap/pe-tx-code.h"; do
             [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
           done
           echo "  OK   H10-CU 资产齐全"
@@ -857,7 +858,7 @@ jobs:
           CUDTS="$GITHUB_WORKSPACE/cu-h10/fw/board/dts/rtl9617c-pt1570-h10-cu.dts"
           grep -q '/delete-property/ read-only' "$CUDTS" \
             || { echo "ERROR: CU DTS 缺 ubi_device 可写覆盖块（刷入态会黑砖）" >&2; exit 1; }
-          DRV="$GITHUB_WORKSPACE/cu-h10/fw/board/wifi/rtl_ax_ap"
+          DRV="$GITHUB_WORKSPACE/board/wifi/rtl_ax_ap"
           [ "$(find "$DRV" -maxdepth 1 -type f | wc -l)" -ge 60 ] \
             || { echo "ERROR: PT1570 参考驱动文件不足 60" >&2; exit 1; }
           [ "$(md5sum "$DRV/pe-tx-code.h" | cut -d' ' -f1)" = "7eb49893f43b897bf03fa82ae2323984" ] \
@@ -935,7 +936,7 @@ jobs:
           echo "rootfs dir: $ROOT"
 
           # ---- apk 源与索引公钥（缺公钥会 UNTRUSTED signature）----
-          KEY_SRC="$ASSETS/cu-h10/fw/files-cu/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_SRC="$ASSETS/files-common/etc/apk/keys/immortalwrt-25.12.pem"
           KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
           [ -f "$KEY_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 immortalwrt-25.12.pem"; exit 1; }
           cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::镜像内 apk 公钥与资产不一致"; exit 1; }
@@ -991,7 +992,7 @@ jobs:
           RPCD="$ROOT/usr/libexec/rpcd"
           [ -d "$RPCD" ] || { echo "::error::镜像缺少 /usr/libexec/rpcd"; exit 1; }
           n=0
-          for f in "$ASSETS"/cu-h10/fw/files-cu/usr/libexec/rpcd/luci.argon*; do
+          for f in "$ASSETS"/files-common/usr/libexec/rpcd/luci.argon*; do
             base=${f##*/}
             tgt="$RPCD/$base"
             [ -f "$tgt" ] || { echo "::error::镜像缺少 rpcd 插件 $base"; exit 1; }

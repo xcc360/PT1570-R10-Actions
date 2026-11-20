@@ -378,6 +378,7 @@ jobs:
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/wrt/files"
+          cp -a "$GITHUB_WORKSPACE/files-common/." "$GITHUB_WORKSPACE/wrt/files/"
           if [ -d "$GITHUB_WORKSPACE/files" ]; then
             cp -a "$GITHUB_WORKSPACE/files/." "$GITHUB_WORKSPACE/wrt/files/"
             chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
@@ -510,8 +511,8 @@ jobs:
         run: python3 "$GITHUB_WORKSPACE/scripts/verify-upstream-wifi-port.py" check-tree "$WRT" "$WIFI_PORT"
 
       # 2.4G 速率控制回归护栏。与 H10-CU workflow 同源：driver 源码在
-      # board/wifi/rtl_ax_ap/ 与 cu-h10/fw/board/wifi/rtl_ax_ap/ 两处副本，
-      # 补丁必须同时落到两份，否则 R10 会静默缺失修复。
+      # board/wifi/rtl_ax_ap/ 单一真源，R10 / CU / refactor 三条通道共用，
+      # 不再存在“改一份忘一份”的风险。
       - name: Guard 2.4G rate-control patches (always runs)
         if: ${{ inputs.wifi_diag != true }}
         env:
@@ -823,7 +824,7 @@ jobs:
           echo "WIFI_FIRMWARE_OK=True files=$n"
 
           # ---- apk 源与索引公钥（2026-11-13 真机：缺公钥会 UNTRUSTED signature） ----
-          KEY_SRC="$ASSETS/files/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_SRC="$ASSETS/files-common/etc/apk/keys/immortalwrt-25.12.pem"
           KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
           [ -f "$KEY_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 immortalwrt-25.12.pem"; exit 1; }
           cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::镜像内 apk 公钥与资产不一致"; exit 1; }
@@ -891,7 +892,7 @@ jobs:
           RPCD="$ROOT/usr/libexec/rpcd"
           [ -d "$RPCD" ] || { echo "::error::镜像缺少 /usr/libexec/rpcd"; exit 1; }
           n=0
-          for f in "$ASSETS"/files/usr/libexec/rpcd/luci.argon*; do
+          for f in "$ASSETS"/files-common/usr/libexec/rpcd/luci.argon*; do
             base=${f##*/}
             tgt="$RPCD/$base"
             [ -f "$tgt" ] || { echo "::error::镜像缺少 rpcd 插件 $base"; exit 1; }

@@ -509,7 +509,7 @@ echo "=== 17. apk 源 = 北大镜像 25.12-SNAPSHOT + 索引公钥（2026-11-13 
 # 索引被整份丢弃（只剩本机 156 个包）。根因是镜像索引由 immortalwrt 25.12
 # 发布密钥签名，而镜像里只有上游 openwrt-snapshots.pem。补上
 # immortalwrt-25.12.pem 后 apk update 变 OK: 10435 distinct packages。
-PK="$ASSETS/files/etc/apk/keys/immortalwrt-25.12.pem"
+PK="$ASSETS/files-common/etc/apk/keys/immortalwrt-25.12.pem"
 if [ -f "$PK" ]; then
   sz=$(stat -c %s "$PK")
   [ "$sz" = "178" ] && ok "apk 索引公钥 immortalwrt-25.12.pem ($sz B)" \
@@ -517,7 +517,7 @@ if [ -f "$PK" ]; then
   grep -q -- '-----BEGIN PUBLIC KEY-----' "$PK" \
     && ok "公钥是 PEM 格式" || bad "公钥不是 PEM（apk 会忽略，仍报 UNTRUSTED）"
 else
-  bad "缺少 files/etc/apk/keys/immortalwrt-25.12.pem（apk 更新会报 UNTRUSTED signature）"
+  bad "缺少 files-common/etc/apk/keys/immortalwrt-25.12.pem（apk 更新会报 UNTRUSTED signature）"
 fi
 grep -q 'immortalwrt-25.12.pem' customize-pt1570-r10.sh \
   && ok "customize-pt1570-r10.sh 注释里点明公钥依赖" || echo "  --   customize-pt1570-r10.sh 未提及公钥（仅注释，非致命）"
@@ -538,7 +538,7 @@ for f in base luci packages routing telephony; do
     && ok "默认 feed 含 $f" || bad "默认 feed 缺 $f 目录（镜像上有该 feed）"
 done
 
-ARCH_UC=files/etc/uci-defaults/91-pt1570-apk-arch
+ARCH_UC=files-common/etc/uci-defaults/91-pt1570-apk-arch
 if [ -f "$ARCH_UC" ]; then
   ok "存在 $ARCH_UC"
   grep -q "aarch64_cortex-a53" "$ARCH_UC" \
@@ -559,7 +559,7 @@ echo "=== 18. rpcd exec 插件 / argon 主题设置（2026-11-14 真机实证）
 # LuCI「系统 → 主题设置」报 luci.argon/avail -32000 Object not found：
 # /usr/libexec/rpcd/luci.argon* 是 CRLF（#!/bin/sh\r 找不到解释器）且 0644，
 # rpcd 的 exec 插件一个都不加载。files/ 注入 LF+0755 覆盖，92-* 首启兜底。
-RPCD_SRC=files/usr/libexec/rpcd
+RPCD_SRC=files-common/usr/libexec/rpcd
 n=0
 for f in "$RPCD_SRC"/luci.argon*; do
   [ -f "$f" ] || continue
@@ -577,7 +577,7 @@ for f in "$RPCD_SRC"/luci.argon*; do
 done
 [ "$n" = 5 ] && ok "argon rpcd 插件 5 个齐全" || bad "argon rpcd 插件数量 $n != 5"
 
-UC=files/etc/uci-defaults/92-pt1570-rpcd-eol
+UC=files-common/etc/uci-defaults/92-pt1570-rpcd-eol
 if [ -f "$UC" ]; then
   ok "存在 $UC 兜底脚本"
   [ -x "$UC" ] && ok "兜底脚本可执行" || bad "兜底脚本没有可执行位"
@@ -598,7 +598,7 @@ echo "=== 19. sysupgrade 不保留配置 + br-lan MAC 固定（2026-11-14 真机
 #    限制恢复）+ platform_do_upgrade（先卸载 /overlay，让 ubirmvol 成功）。
 # B. 02_network 只写 network.lan.macaddr，bridge 不应用；br-lan 从 lan0
 #    继承随机 MAC，Windows 按网关 MAC 认网络 → 每次重启都是新网络。
-ZZ=files/lib/upgrade/zz-pt1570-sysupgrade.sh
+ZZ=files-common/lib/upgrade/zz-pt1570-sysupgrade.sh
 if [ -f "$ZZ" ]; then
   ok "存在 $ZZ"
   case "$ZZ" in */zz-*) ok "zz- 前缀保证 include /lib/upgrade 最后 source" ;; *) bad "文件名不是 zz- 前缀（会被 tar.sh 等覆盖）" ;; esac

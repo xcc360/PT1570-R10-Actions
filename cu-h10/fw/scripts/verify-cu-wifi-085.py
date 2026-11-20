@@ -24,7 +24,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[3]          # 仓库根
 CU = ROOT / 'cu-h10/fw'
 R10 = ROOT
-CU_DRV = CU / 'board/wifi/rtl_ax_ap'
+CU_DRV = ROOT / 'board/wifi/rtl_ax_ap'
 CU_FW = CU / 'files-cu/lib/firmware/realtek/tyfza1'
 CU_RFE = CU_FW / 'rtl8852ce/RFE54'
 CU_P085 = CU_FW / 'rtl8852ce/RFE54_PONWRT085'

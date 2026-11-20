@@ -185,6 +185,7 @@ jobs:
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/wrt/files"
+          cp -a "$GITHUB_WORKSPACE/files-common/." "$GITHUB_WORKSPACE/wrt/files/"
           cp -a "$GITHUB_WORKSPACE/refactor/files/." "$GITHUB_WORKSPACE/wrt/files/"
           chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
           chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
@@ -369,7 +370,7 @@ jobs:
           echo "rootfs dir: $ROOT"
 
           # apk 源 / 公钥 / a53 架构
-          KEY_SRC="$ASSETS/refactor/files/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_SRC="$ASSETS/files-common/etc/apk/keys/immortalwrt-25.12.pem"
           KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
           [ -f "$KEY_DST" ] || { echo "::error::镜像缺 apk 公钥"; exit 1; }
           cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::apk 公钥不一致"; exit 1; }
@@ -392,7 +393,7 @@ jobs:
           # rpcd exec 插件（LF + 0755）
           RPCD="$ROOT/usr/libexec/rpcd"
           n=0
-          for f in "$ASSETS"/refactor/files/usr/libexec/rpcd/luci.argon*; do
+          for f in "$ASSETS"/files-common/usr/libexec/rpcd/luci.argon*; do
             base=${f##*/}; tgt="$RPCD/$base"
             [ -f "$tgt" ] || { echo "::error::镜像缺 rpcd 插件 $base"; exit 1; }
             [ -x "$tgt" ] || { echo "::error::rpcd 插件 $base 不可执行"; exit 1; }
@@ -408,7 +409,7 @@ jobs:
           UCI="$ROOT/etc/uci-defaults"
           for s in 95-pt1570-h10-cu-wan 96-pt1570-h10-cu-lan 97-pt1570-h10-cu-leds \
                    98-pt1570-h10-cu-wifi 99-pt1570-h10-cu-wifi-stability \
-                   99-rtl9617c-wifi-cal 91-rtl9617c-rpcd-eol; do
+                   99-rtl9617c-wifi-cal 91-pt1570-apk-arch 92-pt1570-rpcd-eol; do
             [ -f "$UCI/$s" ] || { echo "::error::镜像缺首启脚本 $s"; exit 1; }
           done
           [ ! -e "$UCI/tyfza1-factory" ] || echo "::warning::镜像残留 tyfza1-factory（refactor 不需要）"

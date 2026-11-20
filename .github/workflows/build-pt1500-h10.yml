@@ -354,10 +354,12 @@ jobs:
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/wrt/files"
+          cp -a "$GITHUB_WORKSPACE/files-common/." "$GITHUB_WORKSPACE/wrt/files/"
           if [ -d "$GITHUB_WORKSPACE/files-h10" ]; then
             cp -a "$GITHUB_WORKSPACE/files-h10/." "$GITHUB_WORKSPACE/wrt/files/"
             # refactor 走标准 fit_do_upgrade，base 的 zz 覆盖脚本不再需要，别注入镜像
             rm -f "$GITHUB_WORKSPACE/wrt/files/lib/upgrade/zz-pt1570-sysupgrade.sh"
+            rm -f "$GITHUB_WORKSPACE/wrt/files/etc/modules.d/50-rtl-ax-ap"
             chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
             # rpcd exec 插件必须可执行，否则 rpcd 不加载，luci.argon* 对象不注册
             chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
@@ -621,8 +623,8 @@ jobs:
                    "$GITHUB_WORKSPACE/customize-pt1500-h10.sh" \
                    "$GITHUB_WORKSPACE/scripts/apply-board-h10.sh" \
                    "$GITHUB_WORKSPACE/scripts/verify-fit-boot.py" \
-                   "$GITHUB_WORKSPACE/files-h10/etc/apk/keys/immortalwrt-25.12.pem" \
-                   "$GITHUB_WORKSPACE/files-h10/lib/upgrade/zz-pt1570-sysupgrade.sh" \
+                   "$GITHUB_WORKSPACE/files-common/etc/apk/keys/immortalwrt-25.12.pem" \
+                   "$GITHUB_WORKSPACE/files-common/lib/upgrade/zz-pt1570-sysupgrade.sh" \
                    "$GITHUB_WORKSPACE/files-h10/etc/uci-defaults/95-pt1500-h10-wan-default"; do
             [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
           done
@@ -699,7 +701,7 @@ jobs:
           echo "rootfs dir: $ROOT"
 
           # ---- apk 源与索引公钥（缺公钥会 UNTRUSTED signature）----
-          KEY_SRC="$ASSETS/files-h10/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_SRC="$ASSETS/files-common/etc/apk/keys/immortalwrt-25.12.pem"
           KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
           [ -f "$KEY_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 immortalwrt-25.12.pem"; exit 1; }
           cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::镜像内 apk 公钥与资产不一致"; exit 1; }
@@ -754,7 +756,7 @@ jobs:
           RPCD="$ROOT/usr/libexec/rpcd"
           [ -d "$RPCD" ] || { echo "::error::镜像缺少 /usr/libexec/rpcd"; exit 1; }
           n=0
-          for f in "$ASSETS"/files-h10/usr/libexec/rpcd/luci.argon*; do
+          for f in "$ASSETS"/files-common/usr/libexec/rpcd/luci.argon*; do
             base=${f##*/}
             tgt="$RPCD/$base"
             [ -f "$tgt" ] || { echo "::error::镜像缺少 rpcd 插件 $base"; exit 1; }
