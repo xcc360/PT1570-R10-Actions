@@ -179,6 +179,18 @@ jobs:
           WRT: ${{ github.workspace }}/wrt
         run: bash "$GITHUB_WORKSPACE/refactor/scripts/apply-board-h10-cu-refactor.sh"
 
+      - name: Patch serdes for 2.5G + WiFi lane-register coexistence (B-line fix)
+        env:
+          WRT: ${{ github.workspace }}/wrt
+        run: |
+          set -e
+          SERDES="$WRT/target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c"
+          [ -f "$SERDES" ] || { echo "::error::serdes driver not found: $SERDES"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/scripts/refactor/fix-serdes-shared-ioremap.py" "$SERDES"
+          grep -q 'rtl9617c_serdes_ioremap_shared' "$SERDES" \
+            || { echo "::error::serdes shared-ioremap patch not applied"; exit 1; }
+          echo "  OK   serdes lane registers mapped non-exclusively (2.5G + WiFi coexist)"
+
       - name: Apply custom rootfs files (refactor/files)
         env:
           PACKAGES_REPO_URL: ${{ inputs.packages_repo_url }}
