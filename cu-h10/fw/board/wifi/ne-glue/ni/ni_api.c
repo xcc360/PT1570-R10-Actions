@@ -269,9 +269,11 @@ int rtl9617c_ni_wifi_lookup(struct device *dev, struct sk_buff *skb,
 	/* Base parity (rtl9617c-xram.c): this hook runs from NET_RX softirq while
 	 * every other tx_lock user is irqsave. Plain spin_lock leaves hardirqs
 	 * enabled and is a self-deadlock / lockup hazard on this SoC. */
+	pr_emerg_ratelimited("WB_AC lookup begin id=%u\n", id);
 	spin_lock_irqsave(&ni->tx_lock, flags);
 	ret = rtl_ni_dma_xmit_wifi(&ni->dma, ni->napi_dev, skb, id);
 	spin_unlock_irqrestore(&ni->tx_lock, flags);
+	pr_emerg_ratelimited("WB_AC lookup end id=%u ret=%d\n", id, ret);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(rtl9617c_ni_wifi_lookup);

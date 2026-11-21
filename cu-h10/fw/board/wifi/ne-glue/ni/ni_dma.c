@@ -205,9 +205,14 @@ int rtl_ni_dma_xmit_wifi(struct rtl_ni_dma *dma, struct net_device *dev,
 	    skb->ip_summed == CHECKSUM_PARTIAL)
 		return -EOPNOTSUPP;
 
+	pr_emerg_ratelimited("WB_AC dmawifi begin id=%u len=%u head=%u tail=%u\n",
+			     id, skb->len, dma->head, dma->tail);
 	rtl_ni_dma_reclaim(dma);
-	if (!rtl_ni_dma_avail(dma))
+	if (!rtl_ni_dma_avail(dma)) {
+		pr_emerg_ratelimited("WB_AC dmawifi EBUSY head=%u tail=%u\n",
+				     dma->head, dma->tail);
 		return -EBUSY;
+	}
 
 	offset = rtl_ni_dma_buf_offset(dma->head);
 	if (skb_copy_bits(skb, 0, dma->mem + offset, skb->len))
@@ -220,6 +225,7 @@ int rtl_ni_dma_xmit_wifi(struct rtl_ni_dma *dma, struct net_device *dev,
 	dma->head = (dma->head + 1) & (RTL_NI_DMA_ENTRIES - 1);
 	writel(dma->head, rtl_ni_dma_vp(dma) + DMA_VP_WRITE);
 	writel(BIT(0), rtl_ni_dma_vp(dma) + DMA_VP_MISC_IRQ);
+	pr_emerg_ratelimited("WB_AC dmawifi done id=%u head=%u\n", id, dma->head);
 	DEV_STATS_INC(dev, tx_packets);
 	DEV_STATS_ADD(dev, tx_bytes, skb->len);
 	dev_consume_skb_any(skb);

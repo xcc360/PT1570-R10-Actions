@@ -579,8 +579,15 @@ static void rtl_ni_qm_deliver_wifi(struct rtl9617c_ni *ni,
 {
 	struct rtl9617c_ni_wifi_endpoint *endpoint;
 
+	pr_emerg_ratelimited("WB_AC deliver_wifi id=%u fwd=%d\n", id, forwarded);
+	if (!id || id > RTL_WIFI_ID_MAX) {
+		pr_emerg_ratelimited("WB_AC deliver_wifi BAD id=%u drop\n", id);
+		atomic_long_inc(&ni->rx_dropped);
+		dev_kfree_skb_any(skb);
+		return;
+	}
 	rcu_read_lock();
-	endpoint = id <= RTL_WIFI_ID_MAX ? rcu_dereference(ni->wifi[id]) : NULL;
+	endpoint = rcu_dereference(ni->wifi[id]);
 	if (endpoint && netif_running(endpoint->netdev)) {
 		skb->dev = endpoint->netdev;
 		skb->priority = 0;
@@ -708,8 +715,10 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 
 				if (source == RTL_WIFI_SOURCE && (h0 & BIT(31))) {
 					u32 metadata = get_unaligned_be32(data + 12);
-					if (((metadata >> 8) & 15) != 15)
+					if (((metadata >> 8) & 15) != 15) {
 						wifi_id = metadata & 255;
+						pr_emerg_ratelimited("WB_AC qm recover id=%u\n", wifi_id);
+					}
 				}
 			}
 			if ((cmd & QM_CMD_VALID) != QM_CMD_VALID || len < ETH_HLEN ||
