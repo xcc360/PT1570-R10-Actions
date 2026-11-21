@@ -153,9 +153,9 @@ d = pathlib.Path(sys.argv[1])
 k = d / 'Kconfig'
 t = k.read_text(encoding='utf-8')
 pat = re.compile(
-    r'^depends on PCI && (?:ARCH_RTL9617C|ARCH_REALTEK_TAURUS) && MAC80211 && RTL9617C_(?:XRAM_ETH|NI)$',
+    r'^([ \t]*)depends on PCI && (?:ARCH_RTL9617C|ARCH_REALTEK_TAURUS) && MAC80211 && RTL9617C_(?:XRAM_ETH|NI)$',
     re.M)
-new = 'depends on PCI && (ARCH_RTL9617C || ARCH_REALTEK_TAURUS) && MAC80211 && RTL9617C_NI'
+new = r'\1depends on PCI && (ARCH_RTL9617C || ARCH_REALTEK_TAURUS) && MAC80211 && RTL9617C_NI'
 t, n = pat.subn(new, t)
 if n != 1:
     raise SystemExit('ERROR: Kconfig WiFi 依赖行匹配 %d 行（期望 1），需人工复核' % n)
