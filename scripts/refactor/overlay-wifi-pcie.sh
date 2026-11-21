@@ -160,6 +160,15 @@ t, n = pat.subn(new, t)
 if n != 1:
     raise SystemExit('ERROR: Kconfig WiFi 依赖行匹配 %d 行（期望 1），需人工复核' % n)
 k.write_text(t, encoding='utf-8')
+# Taurus 上即便 Kconfig 符号因上游改名/菜单变化未生效，也要保证驱动 .ko 产出
+# （modules.mk 的 FILES 按固定路径取件）。只改编译树副本，资产真源不动。
+m = d / 'Makefile'
+mt = m.read_text(encoding='utf-8')
+mt, nm = re.subn(r'^obj-\$\(CONFIG_RTL_AX_AP\)\s*\+=\s*rtl_ax_ap\.o$',
+                 'obj-m += rtl_ax_ap.o', mt, flags=re.M)
+if nm != 1:
+    raise SystemExit('ERROR: Makefile rtl_ax_ap 目标行匹配 %d 行（期望 1）' % nm)
+m.write_text(mt, encoding='utf-8')
 b = d / 'board-cal.h'
 t = b.read_text(encoding='utf-8')
 if 'realtek/tyfza1/' in t:
