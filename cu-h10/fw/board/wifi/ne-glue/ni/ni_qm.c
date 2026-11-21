@@ -699,6 +699,19 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 				len = payload;
 				hdr = RTL_WIFI_INTERNAL_BYTES;
 			}
+			/* Base parity (rtl9617c-qm.c): an NE lookup miss returns with
+			 * EPP id 0, WiFi source and the full-Header-A bit; the real ID
+			 * lives in Header A metadata byte. Without this branch every
+			 * WiFi->LAN frame is routed to the PON decoder and dropped. */
+			if (!wifi_forwarded) {
+				unsigned int source = FIELD_GET(QM_HDR_SOURCE, h1);
+
+				if (source == RTL_WIFI_SOURCE && (h0 & BIT(31))) {
+					u32 metadata = get_unaligned_be32(data + 12);
+					if (((metadata >> 8) & 15) != 15)
+						wifi_id = metadata & 255;
+				}
+			}
 			if ((cmd & QM_CMD_VALID) != QM_CMD_VALID || len < ETH_HLEN ||
 			    len > RTL_NI_QM_DATA_SIZE - hdr) {
 				atomic_long_inc(&ni->rx_errors);

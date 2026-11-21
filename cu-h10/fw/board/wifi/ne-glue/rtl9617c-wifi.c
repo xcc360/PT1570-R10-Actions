@@ -77,6 +77,10 @@ static unsigned int wifi_ingress(void *private, struct sk_buff *skb,
 	/* eth_type_trans() already retained this header in the skb. Restore the
 	 * data pointer for NI's copy without cloning an ordinary untagged frame. */
 	if (!skb_vlan_tag_present(skb)) {
+		/* skb_push() does not validate headroom; RX paths that reserved
+		 * less than one Ethernet header would corrupt skb->head. */
+		if (skb_headroom(skb) < ETH_HLEN)
+			return NF_ACCEPT;
 		skb_push(skb, ETH_HLEN);
 		ret = rtl9617c_ni_wifi_lookup(wifi_ni, skb, port->id);
 		if (!ret) return NF_STOLEN;

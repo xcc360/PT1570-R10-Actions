@@ -35,6 +35,11 @@ on:
         required: false
         default: false
         type: boolean
+      diag_lockup:
+        description: 'B线诊断：开启 hard/soft lockup detector 与 PANIC_TIMEOUT=-1，并让 WiFi 默认关闭以便 TTL 手动触发抓栈'
+        required: false
+        default: false
+        type: boolean
       create_release:
         description: '发布到 GitHub Release'
         required: false
@@ -214,6 +219,66 @@ jobs:
             "$AS/refactor/files/etc/uci-defaults/99-rtl9617c-wifi-cal" \
             || { echo "::error::99-cal 脚本缺 5G 兜底分支"; exit 1; }
           echo "  OK   WiFi_HE_TO_VHT + 5G_CAL_FALLBACK 已就绪"
+
+      - name: B-line kernel lockup diagnostics + safe WiFi default (optional)
+        env:
+          WRT: ${{ github.workspace }}/wrt
+          ASSETS: ${{ github.workspace }}
+          DIAG: ${{ inputs.diag_lockup }}
+        run: |
+          set -e
+          if [ "$DIAG" != "true" ]; then
+            echo "diag_lockup=false: normal build, no debug config"
+            exit 0
+          fi
+          GC="$WRT/target/linux/generic/config-6.18"
+          TC="$WRT/target/linux/rtl9617c/config-6.18"
+          python3 - "$GC" "$TC" <<'PY'
+          import sys, pathlib
+          generic, target = [pathlib.Path(p) for p in sys.argv[1:3]]
+          def force(path, mapping):
+              lines = path.read_text(encoding='utf-8').splitlines()
+              out, seen = [], set()
+              for line in lines:
+                  key = line.lstrip('#').split('=')[0].strip()
+                  if key in mapping:
+                      if key in seen:
+                          continue
+                      seen.add(key)
+                      out.append(mapping[key])
+                      continue
+                  out.append(line)
+              for key, val in mapping.items():
+                  if key not in seen:
+                      out.append(val)
+              path.write_text('\n'.join(out) + '\n', encoding='utf-8')
+          force(generic, {
+              'CONFIG_PERF_EVENTS': 'CONFIG_PERF_EVENTS=y',
+              'CONFIG_LOCKUP_DETECTOR': 'CONFIG_LOCKUP_DETECTOR=y',
+              'CONFIG_HARDLOCKUP_DETECTOR': 'CONFIG_HARDLOCKUP_DETECTOR=y',
+              'CONFIG_SOFTLOCKUP_DETECTOR': 'CONFIG_SOFTLOCKUP_DETECTOR=y',
+              'CONFIG_BOOTPARAM_HARDLOCKUP_PANIC': 'CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y',
+              'CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC': 'CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y',
+              'CONFIG_STACKTRACE': 'CONFIG_STACKTRACE=y',
+              'CONFIG_WQ_WATCHDOG': 'CONFIG_WQ_WATCHDOG=y',
+              'CONFIG_PANIC_TIMEOUT': 'CONFIG_PANIC_TIMEOUT=-1',
+          })
+          force(target, {
+              'CONFIG_HARDLOCKUP_DETECTOR_BUDDY': 'CONFIG_HARDLOCKUP_DETECTOR_BUDDY=y',
+              'CONFIG_FRAME_POINTER': 'CONFIG_FRAME_POINTER=y',
+          })
+          PY
+          for pair in 'CONFIG_LOCKUP_DETECTOR=y' 'CONFIG_HARDLOCKUP_DETECTOR=y' \
+                      'CONFIG_STACKTRACE=y' 'CONFIG_PANIC_TIMEOUT=-1'; do
+            grep -q "^${pair}$" "$GC" || { echo "::error::诊断配置缺失 $pair"; exit 1; }
+          done
+          echo "  OK   LOCKUP_DETECTOR + PANIC_TIMEOUT=-1 (TTL 保留完整 backtrace)"
+          # 诊断镜像必须能安全启动：出厂 radio 保持 disabled，TTL 里手动启用触发抓栈。
+          WL="$ASSETS/refactor/files/etc/config/wireless"
+          sed -i "s/option disabled '0'/option disabled '1'/" "$WL"
+          grep -q "option disabled '1'" "$WL" \
+            || { echo "::error::诊断版无线未设为默认关闭"; exit 1; }
+          echo "  OK   WiFi默认关闭（TTL: uci set wireless.radio0.disabled=0 手动触发）"
 
       - name: Apply custom rootfs files (refactor/files)
         env:
