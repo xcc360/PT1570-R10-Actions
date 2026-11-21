@@ -12,7 +12,7 @@
 # 优先级：
 #   1. nvmem sysfs cell（内核已导出，最规范）
 #   2. 从 factory UBI 卷设备按固定偏移 dd（0x2000/0x3000，与 DTS 一致）
-#   3. 2.4G 内置 known-good blob 兜底（@.../rtl8192xbe，带本机 LAN MAC 重标）
+#   3. 两频内置 known-good blob 兜底（@.../rtl{8852ce,8192xbe}，TYFC0003 284B）
 # 仅当目标文件缺失或 magic 非 TYFC0003 时才写，不覆盖有效 cal。
 
 [ "$(board_name)" = "youhua,pt1570-h10-cu" ] || exit 0
@@ -64,6 +64,10 @@ extract_from_factory() {  # $1=offset(dec) $2=dest $3=bytes
 if [ "$NEED_5G" = "1" ]; then
 	if extract_from_factory 8192 "$CAL5" 4096; then
 		logger -t rtl9617c-wifi-cal "5G cal exported from factory@0x2000"
+	elif [ -s /etc/rtl9617c/wifi-default/rtl8852ce/flash-calibration.bin ]; then
+		cp /etc/rtl9617c/wifi-default/rtl8852ce/flash-calibration.bin "$CAL5"
+		chmod 0644 "$CAL5"
+		logger -t rtl9617c-wifi-cal "5G cal fallback: baked known-good"
 	else
 		logger -t rtl9617c-wifi-cal "WARN: 5G cal unavailable"
 	fi

@@ -10,7 +10,7 @@
 #     workflow 用 refactor/scripts/apply-board-h10-cu-refactor.sh 把已验证驱动
 #     回移植到 OpenWrt 规范位置（files-6.18/drivers/...，包名 kmod-rtl-ax-ap），
 #     摒弃旧 tyfza1 私有脚本/命名。CU 板级 DTS 自建 PCIe 控制器节点。
-#   * WiFi 5G 修复（本轮诊断固化）：HE80 + 非 DFS 信道 149 + psk2+ccmp，
+#   * WiFi 5G 修复（本轮诊断固化）：VHT80 + 非 DFS 信道 149 + psk2+ccmp，
 #     规避 ch36 DFS CAC（搜不到）与驱动不支持 SAE/WPA3（连不上）。
 #
 # 与 PT1500-H10 refactor workflow 完全隔离：独立 concurrency group / artifact /
@@ -190,6 +190,30 @@ jobs:
           grep -q 'rtl9617c_serdes_ioremap_shared' "$SERDES" \
             || { echo "::error::serdes shared-ioremap patch not applied"; exit 1; }
           echo "  OK   serdes lane registers mapped non-exclusively (2.5G + WiFi coexist)"
+
+      - name: Fix WiFi for wpad without AX + add 5G cal fallback (post-run26 diagnostics)
+        run: |
+          set -e
+          AS="$GITHUB_WORKSPACE"
+          # 1) wpad v2.12 带 MLD/WiFi7 但缺 CONFIG_IEEE80211AX：HE 模式会生成 35 个
+          #    unknown configuration item（ieee80211ax/he_*）-> add_iface 失败 -> 看门狗复位。
+          #    出厂默认与 98 固化脚本已在仓库改为 VHT80/VHT20，这里二次断言防止回归。
+          WL="$AS/refactor/files/etc/config/wireless"
+          grep -q "option htmode 'VHT80'" "$WL" \
+            || { echo "::error::wireless 默认 htmode 未改 VHT80"; exit 1; }
+          grep -q "option htmode 'VHT20'" "$WL" \
+            || { echo "::error::wireless 默认 htmode 未改 VHT20"; exit 1; }
+          grep -q 'htmode=VHT80' "$AS/refactor/files/etc/uci-defaults/98-pt1570-h10-cu-wifi" \
+            || { echo "::error::98 固化脚本未改 VHT80"; exit 1; }
+          # 2) 5G cal 内置兜底 blob 必须存在且 magic 正确
+          B5="$AS/refactor/files/etc/rtl9617c/wifi-default/rtl8852ce/flash-calibration.bin"
+          [ -s "$B5" ] || { echo "::error::缺 5G cal 兜底 blob"; exit 1; }
+          [ "$(dd if="$B5" bs=1 count=8 2>/dev/null)" = "TYFC0003" ] \
+            || { echo "::error::5G cal 兜底 blob magic 不对"; exit 1; }
+          grep -q 'wifi-default/rtl8852ce/flash-calibration.bin' \
+            "$AS/refactor/files/etc/uci-defaults/99-rtl9617c-wifi-cal" \
+            || { echo "::error::99-cal 脚本缺 5G 兜底分支"; exit 1; }
+          echo "  OK   WiFi_HE_TO_VHT + 5G_CAL_FALLBACK 已就绪"
 
       - name: Apply custom rootfs files (refactor/files)
         env:
@@ -452,13 +476,13 @@ jobs:
             || { echo "::error::编译树驱动 cal 路径未规范化（仍含 tyfza1）"; exit 1; }
           echo "  OK   WiFi 驱动 + cal（编译树已适配 refactor 规范路径）"
 
-          # wireless 出厂默认：HE80 + ch149 + psk2+ccmp（ sysupgrade 由 98 脚本纠正）
+          # wireless 出厂默认：VHT80 + ch149 + psk2+ccmp（ sysupgrade 由 98 脚本纠正）
           WL="$ROOT/etc/config/wireless"
           grep -q "option channel '149'" "$WL" \
             || { echo "::error::5G 默认信道不是 149"; exit 1; }
-          grep -q "option htmode 'HE80'" "$WL" \
-            || { echo "::error::5G 默认 htmode 不是 HE80"; exit 1; }
-          echo "  OK   wireless 默认 He80/ch149"
+          grep -q "option htmode 'VHT80'" "$WL" \
+            || { echo "::error::5G 默认 htmode 不是 VHT80"; exit 1; }
+          echo "  OK   wireless 默认 VHT80/ch149"
 
           # 两板统一的 hostapd 断流缓解：出厂 conffile + sysupgrade 保留配置兜底
           [ -x "$UCI/99-pt1570-h10-cu-wifi-stability" ] \
@@ -531,7 +555,7 @@ jobs:
             echo "arch=aarch64_cortex-a53"
             echo "lan_ip=192.168.1.1/24"
             echo "default_wan=pon0.1101 pppoe (XGPON, PON FE on)"
-            echo "wifi=PCIe0 8852C(5G HE80/ch149) + PCIe1 8192XB(2.4G), psk2+ccmp, kmod-rtl-ax-ap"
+            echo "wifi=PCIe0 8852C(5G VHT80/ch149) + PCIe1 8192XB(2.4G), psk2+ccmp, kmod-rtl-ax-ap"
             echo "factory=UBI volume, cal 由 nvmem cell -> firmware 桥接（99-rtl9617c-wifi-cal）"
             echo "naming=rtl9617c-* / kmod-rtl-ax-ap（无 tyfza1 私有命名）"
           } > "$OUT/BUILD_INFO.txt"
@@ -576,7 +600,7 @@ jobs:
             架构：aarch64_cortex-a53
             2.5G/PON/XGPON：refactor 上游白拿（HisGMII + SerDes + RTL9617C Rust daemon）
             WiFi：PCIe/WiFi 驱动回移植到 OpenWrt 规范位置（refactor 上游删了该子系统）；
-              5G=8852C HE80/ch149(非DFS) + psk2+ccmp，2.4G=8192XB；
+              5G=8852C VHT80/ch149(非DFS) + psk2+ccmp，2.4G=8192XB；
               cal 由 nvmem cell 桥接导出（99-rtl9617c-wifi-cal），命名无 tyfza1。
             ⚠️ 本分支为架构级重构首版：refactor 基线与回移植 WiFi 的实机共存性（尤其
                &serdes 与 pcie_controls 共用 lane 寄存器）需刷入后实测；若 2.5G 与 WiFi

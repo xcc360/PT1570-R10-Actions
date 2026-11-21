@@ -5,6 +5,10 @@
 #   radio1 = RTL8192XBE（PCIe1，2.4GHz）
 # path 与内核 PCIe 枚举一致；换 U-Boot 版型后用 `wifi config` 重新生成。
 #
+# ★ 2026-11-21 追加：wpad 缺 CONFIG_IEEE80211AX（含 MLD/WiFi7 但无 AX），
+#   HE80/HE20 会让 hostapd 生成 ieee80211ax/he_* 共 35 个未知项 -> add_iface 失败
+#   -> 看门狗复位。故 htmode 由 HE80/HE20 降为 VHT80/VHT20（802.11ac，wpad 支持）。
+#
 # ★ 2026-11-17 5G 故障诊断结论固化（本分支核心 WiFi 修复之一）：
 #   - 5G 从 HE80 + ch36（CN 域 DFS）改为 ch149（非 DFS，手机兼容性最好）：
 #     ch36+80MHz 触发 hostapd 反复 RADAR-DETECTED->AP-DISABLED (CSA not
@@ -22,7 +26,7 @@ config wifi-device 'radio0'
 	option path 'soc/f4325000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
 	option band '5g'
 	option channel '149'
-	option htmode 'HE80'
+	option htmode 'VHT80'
 	option country 'CN'
 	option disabled '0'
 
@@ -40,7 +44,7 @@ config wifi-device 'radio1'
 	option path 'soc/f4326000.pcie/pci0001:00/0001:00:00.0/0001:01:00.0'
 	option band '2g'
 	option channel '1'
-	option htmode 'HE20'
+	option htmode 'VHT20'
 	option country 'CN'
 	option disabled '0'
 

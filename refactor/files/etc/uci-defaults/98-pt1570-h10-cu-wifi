@@ -1,6 +1,9 @@
 #!/bin/sh
 # PT1570-H10-CU：hostapd 断流缓解 + WiFi 出厂默认固化（2026-11-17）。
 #
+# ★ 2026-11-21：HT mode 由 HE80 改 VHT80（wpad 缺 CONFIG_IEEE80211AX，HE 会触发
+#   35 个 unknown configuration item -> 看门狗复位），与出厂 wireless 默认值保持一致。
+#
 # 两项：
 #   1) 出厂 wireless conffile 已在 files/etc/config/wireless 固化为
 #      HE80 + 非 DFS 信道(149) + psk2+ccmp（本轮 5G 诊断结论）：
@@ -38,7 +41,7 @@ for vif in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([A-Za-z0-
 	esac
 done
 
-# 5G radio：固化 HE80 + 非 DFS 信道（channel 36 在 CN 域是 DFS，改 149）
+# 5G radio：固化 VHT80 + 非 DFS 信道（channel 36 在 CN 域是 DFS，改 149）
 for radio in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([A-Za-z0-9_]*\)=wifi-device$/\1/p'); do
 	band=$(uci -q get "wireless.$radio.band" 2>/dev/null)
 	if [ "$band" = "5g" ]; then
@@ -47,14 +50,14 @@ for radio in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([A-Za-z
 			''|auto|36|40|44|48|52|56|60|64)
 				uci -q set "wireless.$radio.channel=149"; changed=1 ;;
 		esac
-		[ "$(uci -q get "wireless.$radio.htmode" 2>/dev/null)" = "HE80" ] || {
-			uci -q set "wireless.$radio.htmode=HE80"; changed=1; }
+		[ "$(uci -q get "wireless.$radio.htmode" 2>/dev/null)" = "VHT80" ] || {
+			uci -q set "wireless.$radio.htmode=VHT80"; changed=1; }
 	fi
 done
 
 if [ "$changed" = "1" ]; then
 	uci -q commit wireless
-	logger -t wifi-cu "WiFi defaults: HE80/ch149/psk2+ccmp, skip_inactivity_poll=1 applied"
+	logger -t wifi-cu "WiFi defaults: VHT80/ch149/psk2+ccmp, skip_inactivity_poll=1 applied"
 fi
 
 exit 0
