@@ -13,12 +13,12 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
 +
 +config LEDS_TYFZA1
 +	bool "TYFZA1 native LED controller"
-+	depends on ARCH_RTL9617C && LEDS_CLASS && GPIOLIB && OF
++	depends on (ARCH_RTL9617C || ARCH_REALTEK_TAURUS) && LEDS_CLASS && GPIOLIB && OF
 +	select LEDS_TRIGGERS
 +
 +config LEDS_TRIGGER_TYFZA1_USB
 +	tristate "TYFZA1 USB presence and activity LED"
-+	depends on ARCH_RTL9617C && USB && LEDS_TRIGGERS
++	depends on (ARCH_RTL9617C || ARCH_REALTEK_TAURUS) && USB && LEDS_TRIGGERS
  config LEDS_GPIO_REGISTER
  	bool
 --- a/drivers/leds/Makefile
