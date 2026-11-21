@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit/分支（默认 refactor HEAD ae4aeac45a70，与 PT1500-H10 一致）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit/分支（默认 Taurus 基线 968f03f52dbe：内核 6.18.64 + 平台驱动统一 taurus 命名；CU 走 OOT PCIe/WiFi 回移植）'
         required: false
-        default: 'ae4aeac45a70be1bdf68af65cbbacb360f201b27'
+        default: '968f03f52dbeb1fceea10979759c739d3532e257'
         type: string
       test_only:
         description: '只生成并上传 .config / 校验报告，不编译'
@@ -127,7 +127,7 @@ jobs:
       - name: Clone rtl9617c-openwrt source (refactor)
         run: |
           set -e
-          REF="${{ inputs.source_ref || 'ae4aeac45a70be1bdf68af65cbbacb360f201b27' }}"
+          REF="${{ inputs.source_ref || '968f03f52dbeb1fceea10979759c739d3532e257' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -138,15 +138,23 @@ jobs:
           git checkout -q FETCH_HEAD
           echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
-          # refactor 布局断言（2.5G/PON 白拿，无 tyfza1 base 残留）
-          test -f target/linux/rtl9617c/dts/rtl9617c.dtsi
+          # Taurus 布局断言（2.5G/PON 白拿，无 tyfza1 base 残留）
+          # 兼容旧 refactor（ae4aeac）与新 Taurus（f75f4ca+）：serdes 拆成 serdes/lane 两个文件
           test -f target/linux/rtl9617c/dts/rtl9617c-pt1500-h10-2p5g.dts
+          if [ -f target/linux/rtl9617c/dts/rtk-taurus.dtsi ]; then
+            echo "  BASELINE=taurus"
+          else
+            test -f target/linux/rtl9617c/dts/rtl9617c.dtsi || { echo "::error::既无 rtk-taurus.dtsi 也无 rtl9617c.dtsi"; exit 1; }
+            echo "  BASELINE=refactor(pre-taurus)"
+          fi
           test -f target/linux/rtl9617c/files-6.18/drivers/net/phy/realtek/realtek_hisgmii.c
-          test -f target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c
+          { test -f target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-taurus-serdes.c \
+              || test -f target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c; } \
+            || { echo "::error::缺 SerDes 2.5G 驱动（Taurus/refactor 均未命中）"; exit 1; }
           test -d package/rtl9617c/rtl9617c-pon-control
           [ ! -e target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi ] \
             || { echo "::error::source_ref 串回 base（发现 tyfza1.dtsi）" >&2; exit 1; }
-          echo "source: $(git rev-parse HEAD) (refactor)"
+          echo "source: $(git rev-parse HEAD) (taurus/refactor)"
 
       - name: Pin APK signing key (optional)
         working-directory: wrt
@@ -189,12 +197,19 @@ jobs:
           WRT: ${{ github.workspace }}/wrt
         run: |
           set -e
-          SERDES="$WRT/target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c"
-          [ -f "$SERDES" ] || { echo "::error::serdes driver not found: $SERDES"; exit 1; }
+          SERDES="$WRT/target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-taurus-serdes.c"
+          [ -f "$SERDES" ] || SERDES="$WRT/target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c"
+          [ -f "$SERDES" ] || { echo "::error::serdes driver not found (Taurus/refactor)"; exit 1; }
           python3 "$GITHUB_WORKSPACE/scripts/refactor/fix-serdes-shared-ioremap.py" "$SERDES"
-          grep -q 'rtl9617c_serdes_ioremap_shared' "$SERDES" \
-            || { echo "::error::serdes shared-ioremap patch not applied"; exit 1; }
-          echo "  OK   serdes lane registers mapped non-exclusively (2.5G + WiFi coexist)"
+          if grep -q 'taurus_serdes_probe' "$SERDES"; then
+            grep -q 'taurus_serdes_map(pdev, "lane-analog")' "$SERDES" \
+              || { echo "::error::Taurus serdes shared-ioremap patch not applied"; exit 1; }
+            echo "  OK   Taurus serdes lane-analog/lane-tx mapped non-exclusively (2.5G + WiFi coexist)"
+          else
+            grep -q 'rtl9617c_serdes_ioremap_shared' "$SERDES" \
+              || { echo "::error::serdes shared-ioremap patch not applied"; exit 1; }
+            echo "  OK   serdes lane registers mapped non-exclusively (2.5G + WiFi coexist)"
+          fi
 
       - name: Fix WiFi for wpad without AX + add 5G cal fallback (post-run26 diagnostics)
         run: |
@@ -382,13 +397,25 @@ jobs:
             || { echo "ERROR: generic config 缺 CONFIG_MTD_ROOTFS_ROOT_DEV=y" >&2; exit 1; }
           echo "  OK   FIT rootfs 内核符号"
 
-          # 2.5G refactor 驱动符号
-          for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
-                     CONFIG_MDIO_REALTEK_RTL9617C CONFIG_RTL9617C_NI; do
+          # 2.5G 驱动符号（Taurus 基线：SERDES/MDIO/LANE 改名；旧 refactor 保留兼容）
+          for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_RTL9617C_NI; do
             grep -q "^${sym}=y$" target/linux/rtl9617c/config-6.18 \
               || { echo "ERROR: target config 缺 $sym=y（2.5G 驱动）" >&2; exit 1; }
           done
-          echo "  OK   2.5G refactor 驱动符号"
+          if grep -q '^CONFIG_MDIO_REALTEK_TAURUS=y$' target/linux/rtl9617c/config-6.18; then
+            for sym in CONFIG_PHY_REALTEK_TAURUS_SERDES CONFIG_PHY_REALTEK_TAURUS_LANE \
+                       CONFIG_MDIO_REALTEK_TAURUS; do
+              grep -q "^${sym}=y$" target/linux/rtl9617c/config-6.18 \
+                || { echo "ERROR: Taurus config 缺 $sym=y（2.5G 驱动）" >&2; exit 1; }
+            done
+            echo "  OK   2.5G Taurus 驱动符号（serdes/lane/mdio 改名）"
+          else
+            for sym in CONFIG_PHY_RTL9617C_SERDES CONFIG_MDIO_REALTEK_RTL9617C; do
+              grep -q "^${sym}=y$" target/linux/rtl9617c/config-6.18 \
+                || { echo "ERROR: refactor config 缺 $sym=y（2.5G 驱动）" >&2; exit 1; }
+            done
+            echo "  OK   2.5G refactor 驱动符号（pre-Taurus）"
+          fi
 
           # PCIe/WiFi 回移植内核符号（overlay 写入）
           for sym in CONFIG_PCIE_RTL9617C=y CONFIG_PHY_RTL9617C_PCIE=y \
@@ -605,8 +632,7 @@ jobs:
           KCFG=$(ls -d build_dir/target-*/linux-rtl9617c/linux-*/.config 2>/dev/null | head -1)
           if [ -n "$KCFG" ]; then
             for sym in CONFIG_UIMAGE_FIT_BLK CONFIG_MTD_ROOTFS_ROOT_DEV CONFIG_SQUASHFS \
-                       CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
-                       CONFIG_PCIE_RTL9617C CONFIG_RTL_AX_AP; do
+                       CONFIG_REALTEK_PHY_HISGMII CONFIG_PCIE_RTL9617C CONFIG_RTL_AX_AP; do
               grep -q "^${sym}=[ym]$" "$KCFG" \
                 || { echo "::error::内核缺 $sym（FIT/2.5G/PCIe/WiFi）"; exit 1; }
             done
@@ -657,9 +683,9 @@ jobs:
             echo "board=$MODEL ($BOARD_NAME)"
             echo "release_id=PT1570-H10-CU-WIFI-refactor-sysupgrade"
             echo "profile=$PROFILE"
-            echo "dts=$DTS (自建 PCIe + 12 灯 + factory nvmem, refactor @ $SOURCE_HASH)"
-            echo "source_ref=$SOURCE_REF (baseline=refactor ae4aeac45a70be1bdf68af65cbbacb360f201b27)"
-            echo "baseline=refactor — 2.5G/PON/XGPON 上游白拿 + PCIe/WiFi 回移植（规范位置）"
+            echo "dts=$DTS (自建 PCIe + 12 灯 + factory nvmem, Taurus @ $SOURCE_HASH)"
+            echo "source_ref=$SOURCE_REF (baseline=Taurus 968f03f52dbe, 内核 6.18.64 + fullcone/PON UI 修复)"
+            echo "baseline=Taurus — SoC 层 rtk-taurus.dtsi + gpio_bank0/2/3；2.5G 上游白拿；PCIe/WiFi/global_config 仍走 OOT 回移植"
             echo "arch=aarch64_cortex-a53"
             echo "lan_ip=192.168.1.1/24"
             echo "default_wan=pon0.1101 pppoe (XGPON, PON FE on)"

@@ -28,17 +28,30 @@ PROFILE="youhua_pt1570_h10_cu"
 BOARD_NAME="youhua,pt1570-h10-cu"
 DTS="rtl9617c-pt1570-h10-cu"
 
-# ---- 0. refactor 基线断言（防止 source_ref 串回 base）----
-[ -f "$TGT/dts/rtl9617c.dtsi" ] || fail "缺 refactor rtl9617c.dtsi（source_ref 串回 base？）"
+# ---- 0. 基线断言（防止 source_ref 串回 base；兼容 Taurus 与 pre-Taurus refactor）----
+if [ -f "$TGT/dts/rtk-taurus.dtsi" ]; then
+  BASELINE=taurus
+  echo "  BASELINE=taurus"
+elif [ -f "$TGT/dts/rtl9617c.dtsi" ]; then
+  BASELINE=refactor
+  echo "  BASELINE=refactor(pre-taurus)"
+else
+  fail "既无 rtk-taurus.dtsi 也无 rtl9617c.dtsi（source_ref 串回 base？）"
+fi
 [ -f "$TGT/files-6.18/drivers/net/phy/realtek/realtek_hisgmii.c" ] \
-  || fail "缺 refactor HisGMII 2.5G 驱动"
-[ -f "$TGT/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c" ] \
-  || fail "缺 refactor SerDes 2.5G 驱动"
+  || fail "缺 HisGMII 2.5G 驱动"
+SERDES_C="$TGT/files-6.18/drivers/phy/realtek/phy-taurus-serdes.c"
+[ -f "$SERDES_C" ] || SERDES_C="$TGT/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c"
+[ -f "$SERDES_C" ] || fail "缺 SerDes 2.5G 驱动（Taurus/refactor 均未命中）"
+if [ "$BASELINE" = taurus ]; then
+  [ -f "$TGT/files-6.18/drivers/phy/realtek/phy-taurus-lane.c" ] \
+    || fail "Taurus 基线缺 phy-taurus-lane.c（2.5G SerDes/Lane 拆分）"
+fi
 [ -d "$WRT/package/rtl9617c/rtl9617c-pon-control" ] \
   || fail "缺 rtl9617c-pon-control 包（refactor 规范包名）"
 [ -f "$TGT/dts/rtl9617c-tyfza1.dtsi" ] \
-  && fail "检测到 base tyfza1.dtsi（refactor 基线不应有，source_ref 串了？）" || true
-echo "  OK   refactor 基线（HisGMII/SerDes + rtl9617c-pon-control，无 tyfza1 base 残留）"
+  && fail "检测到 base tyfza1.dtsi（Taurus/refactor 基线不应有，source_ref 串了？）" || true
+echo "  OK   $BASELINE 基线（HisGMII/SerDes + rtl9617c-pon-control，无 tyfza1 base 残留）"
 
 # ---- 1. 注入 CU DTS ----
 DTS_SRC="$REF/dts/${DTS}.dts"

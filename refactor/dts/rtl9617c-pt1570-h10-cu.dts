@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// PT1570-H10-CU（联通版，机型串 PT1570-H10-C）板级 DTS —— refactor 基线。
+// PT1570-H10-CU（联通版，机型串 PT1570-H10-C）板级 DTS —— Taurus 基线（2026-11-21）。
 //
-// 本文件基于上游 lyq1996/rtl9617c-openwrt @refactor 的
+// 本文件基于上游 lyq1996/rtl9617c-openwrt @refactor Taurus 基线的
 // rtl9617c-pt1500-h10-2p5g.dts，按 OpenWrt / 上游规范重写，摒弃旧 base
 // 的 rtl9617c-tyfza1-2p5g.dts include 与 tyfza1 私有覆盖模型。
 //
@@ -22,14 +22,16 @@
 //
 // ★ WiFi 是净投入（refactor 上游主动删了 rtl9617c 的整个 PCIe/WiFi 子系统）：
 //   PCIe 控制器节点在本文件 &{/soc} 自建（照 base dtsi 逐项校验地址/serdes/复位脚），
-//   驱动由 scripts/refactor/overlay-wifi-pcie.sh 回移植到规范位置。
+//   驱动由 scripts/refactor/overlay-wifi-pcie.sh 回移植到规范位置（OOT，不换上游 Taurus PCIe）。
+//   ★ 2026-11-21 跟进 Taurus：SoC 层切 rtk-taurus.dtsi + gpio_bank0/2/3；
+//     PCIe/global_config 仍用回移植资产，避免上游新 pcie-taurus.c 需要全套 reset/serdes 绑定。
 //   ⚠️ 实机验证点：&serdes（2.5G P6 lane）与 pcie_controls（PCIe lane0/1/2）
 //      共用 lane-ctrl/reset/power 等寄存器窗口，两套驱动按 bit 操作不同 lane，
 //      理论上可共存；若实机出现 2.5G 与 WiFi 互相干扰，按实施记录的可回退方案处理。
 
 /dts-v1/;
 
-#include "rtl9617c.dtsi"
+#include "rtk-taurus.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/linux-event-codes.h>
 
@@ -100,65 +102,64 @@
 
 		internet {
 			label = "LED_PPP_G";
-			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
 			default-state = "off";
 		};
 		los {
 			label = "LED_LOS";
-			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 10 GPIO_ACTIVE_LOW>;
 		};
 		pon {
 			label = "LED_PON";
-			gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 9 GPIO_ACTIVE_LOW>;
 		};
 		led_power: power {
 			label = "LED_PWR_G";
-			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 11 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 		phone {
 			label = "LED_FXS";
-			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 12 GPIO_ACTIVE_HIGH>;
 		};
 		lan0 {
 			label = "LED_EPHY0";
-			gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;   /* 2.5G 口，PHY 硬件驱动可长灭 */
+			gpios = <&gpio_bank0 4 GPIO_ACTIVE_LOW>;   /* 2.5G 口，PHY 硬件驱动可长灭 */
 		};
 		lan1 {
 			label = "LED_EPHY1";
-			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;   /* 千兆口2 */
+			gpios = <&gpio_bank0 3 GPIO_ACTIVE_LOW>;   /* 千兆口2 */
 		};
 		lan2 {
 			label = "LED_EPHY2";
-			gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;   /* 千兆口3 */
+			gpios = <&gpio_bank0 1 GPIO_ACTIVE_LOW>;   /* 千兆口3 */
 		};
 		lan3 {
 			label = "LED_EPHY3";
-			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;   /* 千兆口4 */
+			gpios = <&gpio_bank0 0 GPIO_ACTIVE_LOW>;   /* 千兆口4 */
 		};
 		usb0 {
 			label = "LED_USB0";
-			gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 7 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "usbport";
 		};
 		usb1 {
 			label = "LED_USB1";
-			gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 6 GPIO_ACTIVE_LOW>;
 		};
 		wps {
 			label = "LED_WPS_G";
-			gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 5 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
-	gpio-keys-polled {
-		compatible = "gpio-keys-polled";
-		poll-interval = <20>;
+	gpio-keys {
+		compatible = "gpio-keys";
 
 		reset {
 			label = "reset";
 			linux,code = <KEY_RESTART>;
-			gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 8 GPIO_ACTIVE_LOW>;
 			debounce-interval = <60>;
 		};
 	};
@@ -170,8 +171,8 @@
 
 &i2c0 {
 	status = "okay";
-	scl-gpios = <&gpio0 68 GPIO_ACTIVE_HIGH>;
-	sda-gpios = <&gpio0 69 GPIO_ACTIVE_HIGH>;
+	scl-gpios = <&gpio_bank2 4 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpio_bank2 5 GPIO_ACTIVE_HIGH>;
 
 	bosa0: optical-front-end@51 {
 		compatible = "realtek,rtl9617c-bosa";
@@ -258,7 +259,7 @@
 	nvmem-cells = <&epon_mac 0>, <&pon_sn>;
 	nvmem-cell-names = "mac-address", "pon-serial";
 	realtek,optical-front-end = <&bosa0>;
-	tx-disable-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+	tx-disable-gpios = <&gpio_bank0 15 GPIO_ACTIVE_HIGH>;
 	realtek,burst-polarity = <0>;
 	realtek,los-invert = <0>;
 	realtek,uni-ports = /bits/ 8 <3 2 1 0>;
@@ -389,6 +390,12 @@
 // 由两套驱动按 bit 操作不同 lane，实机验证共存性。
 // ---------------------------------------------------------------------------
 &{/soc} {
+	// Taurus dtsi 删除了 rtl9617c 的 global_config syscon；
+	// 我们回移植的 OOT PCIe PHY（phy-rtl9617c-pcie.c）仍按 phandle 读取它，补回。
+	global_config: syscon@f43200c0 {
+		compatible = "realtek,rtl9617c-global-config", "syscon";
+		reg = <0 0xf43200c0 0 4>;
+	};
 	pcie_controls: pcie-controls@f4320098 {
 		compatible = "realtek,rtl9617c-pcie-controls";
 		reg = <0 0xf4320098 0 4>, <0 0xf43200a0 0 4>,
@@ -432,7 +439,7 @@
 		reset-names = "core", "phy";
 		phys = <&pcie_controls 0>;
 		phy-names = "pcie";
-		reset-gpios = <&gpio0 101 1>;
+		reset-gpios = <&gpio_bank3 5 1>;
 		reset-delay-ms = <150>;
 		num-lanes = <1>;
 		realtek,controller-index = <0>;
@@ -500,7 +507,7 @@
 		reset-names = "core", "phy";
 		phys = <&pcie_controls 2>;
 		phy-names = "pcie";
-		reset-gpios = <&gpio0 102 1>;
+		reset-gpios = <&gpio_bank3 6 1>;
 		reset-delay-ms = <50>;
 		num-lanes = <1>;
 		realtek,controller-index = <1>;
