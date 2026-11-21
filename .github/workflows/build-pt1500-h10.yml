@@ -103,9 +103,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 refactor HEAD ae4aeac45a70，与 PT1570-H10-CU 同步；2.5G 正解架构 + RTL8221B 灯驱动根治 + napi rx_lock 修复）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 Taurus 新基线 f75f4ca32d8e；平台驱动统一 taurus 命名，2.5G 架构保留）'
         required: false
-        default: 'ae4aeac45a70be1bdf68af65cbbacb360f201b27'
+        default: 'f75f4ca32d8e5aef699c7367cd9e8d03f339cd96'
         type: string
       test_only:
         description: '只生成并上传 .config / 校验报告，不编译'
@@ -231,7 +231,7 @@ jobs:
         run: |
           set -e
           # 2026-11-17 基线切到 refactor（2.5G 正解架构，实机验证可用）
-          REF="${{ inputs.source_ref || 'ae4aeac45a70be1bdf68af65cbbacb360f201b27' }}"
+          REF="${{ inputs.source_ref || 'f75f4ca32d8e5aef699c7367cd9e8d03f339cd96' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -247,7 +247,9 @@ jobs:
           # refactor 无 tyfza1.dtsi / rtl8221b-tyfza1.h（那是 base 旧架构）
           test -f target/linux/rtl9617c/dts/rtl9617c-pt1500-h10-2p5g.dts
           test -f target/linux/rtl9617c/files-6.18/drivers/net/phy/realtek/realtek_hisgmii.c
-          test -f target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-rtl9617c-serdes.c
+          test -f target/linux/rtl9617c/dts/rtk-taurus.dtsi
+          test -f target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-taurus-serdes.c
+          test -f target/linux/rtl9617c/files-6.18/drivers/phy/realtek/phy-taurus-lane.c
           test -f package/utils/fitblk/files/fit.sh
           echo "source: $(git rev-parse HEAD)"
 
@@ -454,9 +456,10 @@ jobs:
             || { echo "ERROR: generic config-6.18 缺少 CONFIG_MTD_ROOTFS_ROOT_DEV=y" >&2; exit 1; }
           echo "  OK   CONFIG_MTD_ROOTFS_ROOT_DEV (generic config)"
 
-          # refactor 2.5G 驱动必须编进内核（比 base 多三个 HisGMII/SerDes 符号）
-          for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
-                     CONFIG_MDIO_REALTEK_RTL9617C CONFIG_RTL9617C_NI; do
+          # Taurus 2.5G 驱动符号（2026-11-21 基线：serdes/mdio 改名 + lane）
+          for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_RTL9617C_NI \
+                     CONFIG_PHY_REALTEK_TAURUS_SERDES CONFIG_PHY_REALTEK_TAURUS_LANE \
+                     CONFIG_MDIO_REALTEK_TAURUS; do
             grep -q "^${sym}=y$" target/linux/rtl9617c/config-6.18 \
               || { echo "ERROR: target config-6.18 缺 $sym=y（2.5G 驱动没编进内核）" >&2; exit 1; }
             echo "  OK   $sym (2.5G refactor 驱动)"
@@ -516,7 +519,8 @@ jobs:
           done
           DRV=target/linux/rtl9617c/files-6.18/drivers
           for f in "$DRV/net/phy/realtek/realtek_hisgmii.c" \
-                   "$DRV/phy/realtek/phy-rtl9617c-serdes.c" \
+                   "$DRV/phy/realtek/phy-taurus-serdes.c" \
+                   "$DRV/phy/realtek/phy-taurus-lane.c" \
                    "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_p6.c"; do
             test -s "$f" || { echo "ERROR: refactor 2.5G 驱动缺失 $f" >&2; exit 1; }
           done
@@ -880,7 +884,7 @@ jobs:
             || { echo "::error::镜像残留 94-pt1500-h10-phy-leds（旧强制常亮方案）"; exit 1; }
           grep -q '4f4329118.mdio:06:blue:lan' \
             "target/linux/rtl9617c/base-files/etc/board.d/01_leds" \
-            || { echo "::error::上游 01_leds 缺 2.5G 灯 netdev 绑定（source_ref 未切到 ae4aeac45a70？）"; exit 1; }
+            || { echo "::error::上游 01_leds 缺 2.5G 灯 netdev 绑定（source_ref 未切到 Taurus 基线 f75f4ca32d8e？）"; exit 1; }
           echo "  OK   LuCI 型号(含频率) / 首页温度(CPU+PON) / 调频字段 / 端口映射均已注入；2.5G 灯走上游原生 netdev trigger"
           # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
           LED_SCRIPT="$UCI/93-pt1500-h10-leds"
@@ -927,8 +931,9 @@ jobs:
             done
             echo "KERNEL_FIT_ROOTFS_OK=True ($KCFG)"
             # refactor 2.5G 驱动符号必须在编译后的内核配置里
-            for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
-                       CONFIG_MDIO_REALTEK_RTL9617C CONFIG_RTL9617C_NI; do
+            for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_RTL9617C_NI \
+                       CONFIG_PHY_REALTEK_TAURUS_SERDES CONFIG_PHY_REALTEK_TAURUS_LANE \
+                       CONFIG_MDIO_REALTEK_TAURUS; do
               grep -q "^${sym}=y$" "$KCFG" \
                 || { echo "::error::内核缺 $sym=y（2.5G refactor 驱动没编进内核）"; exit 1; }
             done
@@ -990,10 +995,10 @@ jobs:
             echo "release_id=PT1500-H10-2P5G-CT-sysupgrade"
             echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
-            echo "dts=$DTS (refactor upstream @ $SOURCE_HASH; 面板灯 GPIO 已按原厂 DTB 覆盖)"
-            echo "source_ref=$SOURCE_REF (baseline=refactor ae4aeac45a70, 与 PT1570-H10-CU 同步, 2.5G 正解架构 + RTL8221B 灯驱动根治 + napi rx_lock 修复)"
+            echo "dts=$DTS (Taurus upstream @ $SOURCE_HASH; 面板灯 GPIO 已按原厂 DTB bank0 覆盖)"
+            echo "source_ref=$SOURCE_REF (baseline=taurus f75f4ca32d8e, 平台驱动统一 taurus 命名, 2.5G 架构保留)"
             echo "source_commit=$SOURCE_HASH"
-            echo "baseline=refactor ae4aeac45a70 — HisGMII PHY + SerDes PHY + RTL8221B netdev 灯 + napi rx_lock 修复（2.5G 原生可用）"
+            echo "baseline=taurus f75f4ca32d8e — HisGMII PHY + Taurus SerDes/Lane PHY + RTL8221B netdev 灯（2.5G 架构保留，平台驱动改名重写）"
             echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
             echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs, 标准 fit_do_upgrade)"
             echo "bootloader=lyq1996/rtl9617c-uboot@3a709714e551 (2026-11-10, pt1500-h10-2p5g_defconfig)"
@@ -1005,7 +1010,7 @@ jobs:
             echo "lan_ip=192.168.1.1/24 (三机型统一；首启脚本迁移旧 192.168.2.1)"
             echo "default_wan=pon0.1101 pppoe (95 脚本负责: VLAN 1101 + mtu1500 + PON FE on)"
             echo "wifi=none (2.5G variant)"
-            echo "2p5g=refactor DTS realtek,hisgmii + serdes-option-mode + phy-mode=2500base-x + phys=&serdes；驱动 realtek_hisgmii.c + phy-rtl9617c-serdes.c + patch 700-730 (防回退断言，串回 base 会编译失败)"
+            echo "2p5g=Taurus DTS realtek,hisgmii + serdes-option-mode + phy-mode=2500base-x + phys=&serdes；驱动 realtek_hisgmii.c + phy-taurus-serdes.c/phy-taurus-lane.c + patch 700-730 (防回退断言，串回 base 会编译失败)"
             echo "packages=publish_packages=false（暂不产出同批 packages，减少下载量）"
           } > "$OUT/BUILD_INFO.txt"
 

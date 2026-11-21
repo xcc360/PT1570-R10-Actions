@@ -45,10 +45,13 @@
 # PHY LED 节点（LED_8221B_P6_*，那是 RTL8221B 芯片自己的灯，不是面板灯）。
 # 本脚本只改**顶层**那个（紧跟 "/ {" 之后、缩进一级的 leds）。
 #
+# ★ 2026-11-21 Taurus 基线适配：上游把 gpio0 拆成 gpio_bank0/1/2/...，
+#   bank0 pin n 与旧扁平 gpio0 的 n 一一对应（原厂面板灯全在 bank0），
+#   故目标节点统一改用 &gpio_bank0，pin 与极性表不变。
 # 幂等：已是目标内容则跳过；匹配不到唯一的顶层 leds 节点则 fail（提示上游改版需复核）。
 # ★ 2026-11-19 按 run#17 实机定 pin 灯表覆盖（U-Boot 引脚 + 实测极性）。
 #   依据 run#17 实机对应（面板序->pin）：电源11 光纤9 光信号10 宽带2 电话12 未标记1=7 千兆4=0 千兆3=1 iTV=3 未标记2=6；2.5G 口无 GPIO。
-   极性：ALL ON 亮电源/电话/未标记1 = ACTIVE_HIGH；ALL OFF 亮其余 7 盏 = ACTIVE_LOW。
+#   极性：ALL ON 亮电源/电话/未标记1 = ACTIVE_HIGH；ALL OFF 亮其余 7 盏 = ACTIVE_LOW。
 #   同时保留方案 B：删除 /aliases 中 4 行 led-* = &led_power 引用，
 #   避免上游结构变化时 dtc path_references 再报 led_power 未定义。
 #
@@ -69,45 +72,45 @@ cat > "$TARGET_FILE" <<'EOF'
 		compatible = "gpio-leds";
 		led_power: power {
 			label = "LED_PWR_G";
-			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 11 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 		pon {
 			label = "LED_PON";
-			gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 9 GPIO_ACTIVE_LOW>;
 		};
 		los {
 			label = "LED_LOS";
-			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 10 GPIO_ACTIVE_LOW>;
 		};
 		internet {
 			label = "LED_PPP_G";
-			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
 			default-state = "off";
 		};
 		phone {
 			label = "LED_FXS";
-			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 12 GPIO_ACTIVE_HIGH>;
 		};
 		usb0 {
 			label = "LED_USB0";
-			gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 7 GPIO_ACTIVE_HIGH>;
 		};
 		lan4 {
 			label = "LED_EPHY3";
-			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 0 GPIO_ACTIVE_LOW>;
 		};
 		lan3 {
 			label = "LED_EPHY2";
-			gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 1 GPIO_ACTIVE_LOW>;
 		};
 		lan2 {
 			label = "LED_EPHY1";
-			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 3 GPIO_ACTIVE_LOW>;
 		};
 		usb1 {
 			label = "LED_USB1";
-			gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 6 GPIO_ACTIVE_LOW>;
 		};
 	};
 EOF

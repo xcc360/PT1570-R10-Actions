@@ -28,7 +28,8 @@
 # 历史变更（2026-11-17 第一次）：源码基线从 base 20b4cf4 整体切到 refactor 分支。
 #   refactor 自带完整、实机验证的 2.5G 架构：
 #     * RTL8221B HisGMII PHY 驱动（drivers/net/phy/realtek/realtek_hisgmii.c）
-#     * 独立 SerDes PHY（drivers/phy/realtek/phy-rtl9617c-serdes.c）
+#     * 独立 SerDes PHY（Taurus: phy-taurus-serdes.c + phy-taurus-lane.c；
+#       旧 refactor: phy-rtl9617c-serdes.c）
 #     * P6 lane 按协商速率重编（ni/ni_p6.c + patch 730）
 #     * DTS 用 realtek,hisgmii + phy-mode=2500base-x + &serdes
 # base 旧基线的三步修补在 refactor 下全部作废：
@@ -86,19 +87,42 @@ grep -q 'volname = "fit"' "$DTS_FILE" \
 echo "  OK  机型定义：profile=$PROFILE board=$BOARD_NAME dts=$DTS"
 
 # ---- 2. 2.5G 驱动与 DTS 特征（核心，防回退到 base 旧架构）----
-# 驱动源码：refactor 全新拆分布局（base 的 rtl8221b-tyfza1.h 注入式已废弃）
+# 驱动源码：2026-11-21 上游 Taurus 重构后 serdes/mdio 驱动与补丁改名；
+# 保留旧 refactor 文件名做兼容，便于临时回退 source_ref 时仍能校验。
 for f in \
   "$DRV/net/phy/realtek/realtek_hisgmii.c" \
   "$DRV/net/phy/realtek/realtek_hisgmii_patch.h" \
-  "$DRV/phy/realtek/phy-rtl9617c-serdes.c" \
-  "$DRV/net/mdio/mdio-realtek-rtl9617c.c" \
   "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_p6.c"; do
-  [ -s "$f" ] || fail "refactor 2.5G 驱动文件缺失/为空：$f"
+  [ -s "$f" ] || fail "2.5G 驱动文件缺失/为空：$f"
 done
-for p in 700-net-mdio-realtek-rtl9617c.patch 710-phy-realtek-rtl9617c-serdes.patch \
-         720-net-phy-realtek-hisgmii.patch 730-net-ethernet-realtek-rtl9617c.patch; do
-  [ -s "$PATCHES/$p" ] || fail "refactor 2.5G 内核补丁缺失：$p"
+TAURUS=0
+if [ -s "$DRV/phy/realtek/phy-taurus-serdes.c" ]; then
+  TAURUS=1
+  for f in "$DRV/phy/realtek/phy-taurus-serdes.c" \
+           "$DRV/phy/realtek/phy-taurus-lane.c" \
+           "$DRV/net/mdio/mdio-realtek-taurus.c"; do
+    [ -s "$f" ] || fail "Taurus 2.5G 驱动文件缺失/为空：$f"
+  done
+else
+  for f in "$DRV/phy/realtek/phy-rtl9617c-serdes.c" \
+           "$DRV/net/mdio/mdio-realtek-rtl9617c.c"; do
+    [ -s "$f" ] || fail "refactor 2.5G 驱动文件缺失/为空：$f"
+  done
+fi
+for p in 720-net-phy-realtek-hisgmii.patch 730-net-ethernet-realtek-rtl9617c.patch; do
+  [ -s "$PATCHES/$p" ] || fail "2.5G 内核补丁缺失：$p"
 done
+if [ "$TAURUS" = 1 ]; then
+  for p in 700-net-mdio-realtek-taurus.patch 710-phy-realtek-taurus-serdes.patch; do
+    [ -s "$PATCHES/$p" ] || fail "Taurus 2.5G 内核补丁缺失：$p"
+  done
+  BASELINE=taurus
+else
+  for p in 700-net-mdio-realtek-rtl9617c.patch 710-phy-realtek-rtl9617c-serdes.patch; do
+    [ -s "$PATCHES/$p" ] || fail "refactor 2.5G 内核补丁缺失：$p"
+  done
+  BASELINE=refactor
+fi
 # DTS：2.5G 口（phy@6）必须是 hisgmii + serdes-option-mode，NI port@6 走 2500base-x
 for kw in 'realtek,hisgmii' 'realtek,serdes-option-mode' 'phy-mode = "2500base-x"' \
           'ethernet-phy@6' 'port@6' 'phys = <&serdes>' '&serdes'; do
@@ -115,12 +139,21 @@ done
 echo "  OK  2.5G 架构：HisGMII + SerDes PHY + 2500base-x + patch 700-730 齐全"
 
 # ---- 3. config-6.18 的 2.5G 驱动符号 ----
-for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
-           CONFIG_MDIO_REALTEK_RTL9617C CONFIG_UIMAGE_FIT_BLK CONFIG_RTL9617C_NI; do
-  grep -q "^${sym}=y$" "$CFG" \
-    || fail "target config-6.18 缺 $sym=y（2.5G/FIT 驱动没编进内核）"
-done
-echo "  OK  config-6.18：HisGMII/SerDes/MDIO/UIMAGE_FIT_BLK 符号齐全"
+if [ "$TAURUS" = 1 ]; then
+  for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_RTL9617C_NI CONFIG_UIMAGE_FIT_BLK \
+             CONFIG_PHY_REALTEK_TAURUS_SERDES CONFIG_PHY_REALTEK_TAURUS_LANE \
+             CONFIG_MDIO_REALTEK_TAURUS; do
+    grep -q "^${sym}=y$" "$CFG" \
+      || fail "target config-6.18 缺 $sym=y（Taurus 2.5G 驱动没编进内核）"
+  done
+else
+  for sym in CONFIG_REALTEK_PHY_HISGMII CONFIG_PHY_RTL9617C_SERDES \
+             CONFIG_MDIO_REALTEK_RTL9617C CONFIG_UIMAGE_FIT_BLK CONFIG_RTL9617C_NI; do
+    grep -q "^${sym}=y$" "$CFG" \
+      || fail "target config-6.18 缺 $sym=y（2.5G/FIT 驱动没编进内核）"
+  done
+fi
+echo "  OK  config-6.18：HisGMII/SerDes/MDIO/UIMAGE_FIT_BLK 符号齐全（$BASELINE）"
 
 # ---- 4. 首启脚本（refactor 命名 rtl9617c-*）----
 # ★ 2026-11-17：基线从 b5025a9d1c95 升到 659700cc1bbc 后，上游重构了首启脚本：
@@ -202,4 +235,4 @@ LED_SCRIPT="$ASSETS/scripts/apply-dts-leds-fix.sh"
 bash "$LED_SCRIPT" "$WRT" "$DTS"
 echo "  OK  面板灯：已按 run#17 实机定 pin 覆盖（10 盏，电源11/光纤9/光信号10/宽带2/电话12/未标记1=7/千兆4=0/千兆3=1/iTV=3/未标记2=6；2.5G口无GPIO）"
 
-echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=refactor pon_mode=xgpon wan_default_vlan=1101"
+echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=$BASELINE pon_mode=xgpon wan_default_vlan=1101"
