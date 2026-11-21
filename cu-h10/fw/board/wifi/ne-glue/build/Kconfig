@@ -2,7 +2,7 @@
 
 config RTL9617C_NI
 	tristate "Realtek RTL9617C network interface support"
-	depends on ARCH_RTL9617C || COMPILE_TEST
+	depends on ARCH_RTL9617C || ARCH_REALTEK_TAURUS || COMPILE_TEST
 	depends on OF && HAS_IOMEM && HAS_DMA
 	select PHYLINK
 	select REGMAP_MMIO
