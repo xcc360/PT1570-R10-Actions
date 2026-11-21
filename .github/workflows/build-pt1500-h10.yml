@@ -834,8 +834,8 @@ jobs:
                           'LED_USB1 6 GPIO_ACTIVE_LOW'; do
               lbl=${triple% * *}; rest=${triple#* }; pin=${rest% *}; pol=${rest#* }
               grep -A3 "label = \"$lbl\"" "$DTB_SRC" \
-                | grep -q "gpios = <&gpio0 $pin $pol>" \
-                || { echo "::error::DTS 灯 $lbl 应为 gpio0 $pin $pol（实机定 pin 未生效？）"; exit 1; }
+                | grep -qE "gpios = <&(gpio0|gpio_bank0) $pin $pol>" \
+                || { echo "::error::DTS 灯 $lbl 应为 gpio0/gpio_bank0 $pin $pol（实机定 pin 未生效？）"; exit 1; }
             done
             ! grep -q 'label = "LED_EPHY0"' "$DTB_SRC" \
               || { echo "::error::DTS 仍注册 LED_EPHY0，但实机 2.5G 口无 GPIO"; exit 1; }
