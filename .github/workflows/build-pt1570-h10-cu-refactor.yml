@@ -223,6 +223,17 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/wrt/files"
           cp -a "$GITHUB_WORKSPACE/files-common/." "$GITHUB_WORKSPACE/wrt/files/"
           cp -a "$GITHUB_WORKSPACE/refactor/files/." "$GITHUB_WORKSPACE/wrt/files/"
+          # B-line: bake the realtek WiFi main firmware tree (rtl8852c/rtl8192xb
+          # u1/u2-ap.bin + array_mp reg + RFE) into /lib/firmware. It already
+          # exists in-repo under cu-h10/fw/files-cu but was never copied by this
+          # workflow, so sysupgrade (with or without config) left the driver with
+          # no main firmware -> probe -12. Baking into squashfs makes it survive
+          # config-preserving upgrades (uci-defaults do NOT re-run on those).
+          FW_SRC="$GITHUB_WORKSPACE/cu-h10/fw/files-cu/lib/firmware"
+          [ -d "$FW_SRC/realtek/tyfza1" ] \
+            || { echo "::error::仓库缺 cu-h10 主固件树 $FW_SRC/realtek/tyfza1"; exit 1; }
+          mkdir -p "$GITHUB_WORKSPACE/wrt/files/lib/firmware"
+          cp -a "$FW_SRC/." "$GITHUB_WORKSPACE/wrt/files/lib/firmware/"
           chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
           chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
           echo "refactor/files injected:"
@@ -475,6 +486,18 @@ jobs:
           grep -q "realtek/rtl9617c/rtl8852ce/flash-calibration.bin" "$DRV_CAL" \
             || { echo "::error::编译树驱动 cal 路径未规范化（仍含 tyfza1）"; exit 1; }
           echo "  OK   WiFi 驱动 + cal（编译树已适配 refactor 规范路径）"
+
+          # B-line: main firmware blobs must be baked into /lib/firmware so a
+          # config-preserving sysupgrade doesn't lose them (probe -12 otherwise).
+          MAINFW="$ROOT/lib/firmware/realtek/tyfza1"
+          for f in rtl8852c-u1-ap.bin rtl8852c-u2-ap.bin \
+                   rtl8192xb-u1-ap.bin rtl8192xb-u2-ap.bin \
+                   array_mp_8852c_nctl_reg.bin array_mp_8852c_nctl_reg_a.bin \
+                   array_mp_8192xb_nctl_reg.bin; do
+            [ -s "$MAINFW/$f" ] \
+              || { echo "::error::镜像缺 WiFi 主固件 $f（会 probe -12）"; exit 1; }
+          done
+          echo "  OK   WiFi_MAINFW_BAKED（7 blobs in /lib/firmware/realtek/tyfza1）"
 
           # wireless 出厂默认：VHT80 + ch149 + psk2+ccmp（ sysupgrade 由 98 脚本纠正）
           WL="$ROOT/etc/config/wireless"
