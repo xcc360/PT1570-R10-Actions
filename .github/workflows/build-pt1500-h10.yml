@@ -103,9 +103,9 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 Taurus 新基线 f75f4ca32d8e；平台驱动统一 taurus 命名，2.5G 架构保留）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit / 分支（默认 Taurus 新基线 968f03f52dbe：内核 6.18.64 + fullcone NAT + PON UI/flow table 修复 + i2c-taurus pinmux；2.5G 架构保留）'
         required: false
-        default: 'f75f4ca32d8e5aef699c7367cd9e8d03f339cd96'
+        default: '968f03f52dbeb1fceea10979759c739d3532e257'
         type: string
       test_only:
         description: '只生成并上传 .config / 校验报告，不编译'
@@ -231,7 +231,7 @@ jobs:
         run: |
           set -e
           # 2026-11-17 基线切到 refactor（2.5G 正解架构，实机验证可用）
-          REF="${{ inputs.source_ref || 'f75f4ca32d8e5aef699c7367cd9e8d03f339cd96' }}"
+          REF="${{ inputs.source_ref || '968f03f52dbeb1fceea10979759c739d3532e257' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -406,8 +406,9 @@ jobs:
 
           # defconfig 会静默丢掉未被 profile 点名的包，重新断言后再次 defconfig
           # refactor 包名：rtl9617c-pon-control / luci-app-rtl9617c-pon（非 tyfza1-*）
+          # kmod-nft-fullcone：968f03f 新基线开启的 fullcone NAT（内核模块），firewall4 patch 默认 option fullcone 1
           for sym in rtl9617c-pon-control luci-app-rtl9617c-pon luci-ssl uhttpd fitblk \
-                     luci-theme-argon; do
+                     luci-theme-argon kmod-nft-fullcone; do
             if ! grep -q "^CONFIG_PACKAGE_${sym}=y$" .config; then
               sed -i "/^# CONFIG_PACKAGE_${sym} is not set$/d; /^CONFIG_PACKAGE_${sym}=/d" .config
               echo "CONFIG_PACKAGE_${sym}=y" >> .config
@@ -645,10 +646,11 @@ jobs:
           echo "=== 4. Config 基线关键符号 ==="
           C="$GITHUB_WORKSPACE/Config-PT1500-H10.txt"
           for sym in CONFIG_PACKAGE_fitblk CONFIG_PACKAGE_rtl9617c-pon-control \
-                     CONFIG_PACKAGE_luci-theme-argon CONFIG_PACKAGE_tailscale; do
+                     CONFIG_PACKAGE_luci-theme-argon CONFIG_PACKAGE_tailscale \
+                     CONFIG_PACKAGE_kmod-nft-fullcone; do
             grep -q "^${sym}=y$" "$C" || { echo "ERROR: $sym 缺失" >&2; exit 1; }
           done
-          echo "  OK   Config 关键符号"
+          echo "  OK   Config 关键符号（含 fullcone NAT 开启）"
           echo "H10_PREFLIGHT_OK=True"
 
       - name: Upload config (test_only)
@@ -884,7 +886,7 @@ jobs:
             || { echo "::error::镜像残留 94-pt1500-h10-phy-leds（旧强制常亮方案）"; exit 1; }
           grep -q '4f4329118.mdio:06:blue:lan' \
             "target/linux/rtl9617c/base-files/etc/board.d/01_leds" \
-            || { echo "::error::上游 01_leds 缺 2.5G 灯 netdev 绑定（source_ref 未切到 Taurus 基线 f75f4ca32d8e？）"; exit 1; }
+            || { echo "::error::上游 01_leds 缺 2.5G 灯 netdev 绑定（source_ref 未切到 Taurus 基线 968f03f52dbe？）"; exit 1; }
           echo "  OK   LuCI 型号(含频率) / 首页温度(CPU+PON) / 调频字段 / 端口映射均已注入；2.5G 灯走上游原生 netdev trigger"
           # refactor 删了 base 的 LAN/USB 灯驱动，补回的 93 脚本必须在镜像里
           LED_SCRIPT="$UCI/93-pt1500-h10-leds"
@@ -996,9 +998,9 @@ jobs:
             echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
             echo "dts=$DTS (Taurus upstream @ $SOURCE_HASH; 面板灯 GPIO 已按原厂 DTB bank0 覆盖)"
-            echo "source_ref=$SOURCE_REF (baseline=taurus f75f4ca32d8e, 平台驱动统一 taurus 命名, 2.5G 架构保留)"
+            echo "source_ref=$SOURCE_REF (baseline=taurus 968f03f52dbe, 平台驱动统一 taurus 命名, 2.5G 架构保留)"
             echo "source_commit=$SOURCE_HASH"
-            echo "baseline=taurus f75f4ca32d8e — HisGMII PHY + Taurus SerDes/Lane PHY + RTL8221B netdev 灯（2.5G 架构保留，平台驱动改名重写）"
+            echo "baseline=taurus 968f03f52dbe — 内核 6.18.64 + HisGMII PHY + Taurus SerDes/Lane PHY + RTL8221B netdev 灯 + fullcone NAT(POLICY fullcone,IPv4)（2.5G 架构保留）"
             echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
             echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs, 标准 fit_do_upgrade)"
             echo "bootloader=lyq1996/rtl9617c-uboot@3a709714e551 (2026-11-10, pt1500-h10-2p5g_defconfig)"

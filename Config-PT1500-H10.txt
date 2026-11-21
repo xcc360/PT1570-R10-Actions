@@ -49,6 +49,12 @@ CONFIG_PACKAGE_uhttpd-mod-ubus=y
 CONFIG_PACKAGE_firewall4=y
 CONFIG_PACKAGE_dnsmasq=y
 
+# ---- fullcone NAT（968f03f 新基线功能，开启）----
+# 上游 fullcone NAT 补丁链（firewall4/nftables/libnftnl/kernel 6.18 + hack/952）。
+# firewall4 补丁默认写入 option fullcone 1（IPv4 开、IPv6 关）；需编入内核模块
+# kmod-nft-fullcone（依赖 kmod-nft-nat，KCONFIG 打开 NF_CONNTRACK_/CHAIN_EVENTS）。
+CONFIG_PACKAGE_kmod-nft-fullcone=y
+
 # ---- argon 主题 / 中文 ----
 # refactor 上游 profile 的 DEVICE_PACKAGES 已带 luci-theme-argon、
 # luci-i18n-base-zh-cn、luci-i18n-firewall-zh-cn、luci-mod-system 等。
