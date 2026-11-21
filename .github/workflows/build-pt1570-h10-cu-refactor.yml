@@ -310,6 +310,7 @@ jobs:
           ASSETS: ${{ github.workspace }}
           APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
           APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
+          DIAG: ${{ inputs.diag_lockup }}
         run: |
           set -e
           # 顺序敏感：先写最小配置再 defconfig（切勿空配置先 defconfig）
@@ -342,6 +343,25 @@ jobs:
             fi
           done
           make defconfig
+
+          if [ "$DIAG" = "true" ]; then
+            # buildroot 侧的 CONFIG_KERNEL_* 才是最终 .config 的开关；只改
+            # target/linux/generic/config-6.18 不会反映到这里。
+            for sym in KERNEL_DEBUG_KERNEL KERNEL_PERF_EVENTS \
+                       KERNEL_SOFTLOCKUP_DETECTOR KERNEL_HARDLOCKUP_DETECTOR \
+                       KERNEL_WQ_WATCHDOG; do
+              sed -i "/^# CONFIG_${sym} is not set$/d; /^CONFIG_${sym}=/d" .config
+              echo "CONFIG_${sym}=y" >> .config
+            done
+            make defconfig
+            for sym in KERNEL_DEBUG_KERNEL KERNEL_PERF_EVENTS \
+                       KERNEL_SOFTLOCKUP_DETECTOR KERNEL_HARDLOCKUP_DETECTOR \
+                       KERNEL_WQ_WATCHDOG; do
+              grep -q "^CONFIG_${sym}=y$" .config \
+                || { echo "ERROR: 诊断 buildroot 配置缺失 CONFIG_${sym}" >&2; exit 1; }
+              echo "  OK   CONFIG_${sym}=y"
+            done
+          fi
 
           echo "===== hard assertions ====="
           grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config \
@@ -682,6 +702,7 @@ jobs:
           files: artifact/*
           body: |
             Release ID `PT1570-H10-CU-WIFI-refactor-sysupgrade`
+            诊断：diag_lockup=${{ inputs.diag_lockup }}（true 时 hard/soft lockup + PANIC_TIMEOUT=-1 + WiFi 默认关闭）
             源码 lyq1996/rtl9617c-openwrt `${{ env.SOURCE_REF }}` @ `${{ env.SOURCE_HASH }}`（refactor 基线）
             机型 ${{ env.MODEL }} / profile `${{ env.PROFILE }}` / DTS `${{ env.DTS }}`
             布局：factory(UBI) + fit + rootfs_data，产物 sysupgrade.itb（标准 fit_do_upgrade）
