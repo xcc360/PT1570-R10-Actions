@@ -13,7 +13,7 @@ by CONFIG_ARCH_RTL9617C so it is inert on all other targets.
  #ifdef CONFIG_SKB_DECRYPTED
  	__u8			decrypted:1;
  #endif
-+#ifdef CONFIG_ARCH_RTL9617C
++#if defined(CONFIG_ARCH_RTL9617C) || defined(CONFIG_ARCH_REALTEK_TAURUS)
 +	__u8			rtl9617c_wifi_miss:1;
 +#endif
  	__u8			slow_gro:1;
