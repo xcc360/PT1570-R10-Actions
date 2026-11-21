@@ -72,10 +72,26 @@ echo "  OK   PCIe host + PHY 驱动 + rtl9617c-sgmii.h + 200-native-pcie.patch"
 # 注：base 的 802/805/807/811 已排除（与 refactor 2.5G/flowtable/bridge 重写版
 #     冲突且回移植 WiFi 不需要，详见下方说明）。
 # 编号用 8xx 避开 refactor 已有的 300/400/650/700-730。
+# ---- 1b-2. Taurus 6.18.64 跳过 803 encap-tx-band patch ----
+# 803 补丁把 802.3 encap TX 的 band 从 sta 改为 sband；6.18.64 上游已在
+# ieee80211_8023_xmit() 用 chanctx_conf->def.chan->band 做了等价修复
+# （并带 MLD guard），再套 803 会 Hunk #1 FAILED at tx.c:4650。
+# pre-Taurus 基线仍需 803，故按基线条件跳过。
+SKIP_803=0
+if [ -f "$WRT/target/linux/rtl9617c/dts/rtk-taurus.dtsi" ] \
+   || grep -q '^CONFIG_MDIO_REALTEK_TAURUS=y$' \
+        "$WRT/target/linux/rtl9617c/config-6.18" 2>/dev/null; then
+  SKIP_803=1
+fi
 np=0
 for p in "$WIFI_PATCHES"/*.patch; do
   [ -f "$p" ] || continue
-  cp -f "$p" "$PDIR/$(basename "$p")"
+  base=$(basename "$p")
+  if [ "$SKIP_803" = 1 ] && [ "$base" = "803-mac80211-encap-tx-band.patch" ]; then
+    echo "  OK   skip $base（Taurus 6.18.64 已内置等价 band 修复）"
+    continue
+  fi
+  cp -f "$p" "$PDIR/$base"
   np=$((np+1))
 done
 # 排除的 base patch（已被 refactor 重写版覆盖或与 2.5G 正解架构冲突）：
@@ -85,8 +101,12 @@ done
 #   - 811-realtek-rtl8221b-private-state：base PHY private probe
 # 保留的 7 个全是 refactor 没有对应实现的纯 WiFi/mac80211/leds patch，
 # 覆盖驱动实际引用的全部 base patch 符号（804 rx_shortcut_* / 809 tyfza1_led_*）。
-[ "$np" -ge 7 ] || fail "WiFi 基础设施 patch 数 $np < 7：$WIFI_PATCHES"
-echo "  OK   WiFi/mac80211 基础设施 patch 集（$np 个，8xx 段，已排除与 refactor 冲突的 802/805/807/811）"
+MIN_PATCHES=7
+if [ "$SKIP_803" = 1 ]; then
+  MIN_PATCHES=6
+fi
+[ "$np" -ge "$MIN_PATCHES" ] || fail "WiFi 基础设施 patch 数 $np < $MIN_PATCHES：$WIFI_PATCHES"
+echo "  OK   WiFi/mac80211 基础设施 patch 集（$np 个，8xx 段；Taurus skip_803=$SKIP_803；已排除 802/805/807/811）"
 
 # ---- 1c. TYFZA1 LED 控制器 + USB trigger 源文件（809 patch 引入，refactor 树无）----
 # 809-native-leds.patch 只改 drivers/leds/{Kconfig,Makefile}，声明编译
