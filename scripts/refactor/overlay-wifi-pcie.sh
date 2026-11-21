@@ -140,29 +140,33 @@ cp -a "$WIFI_SRC/." "$WIFI_DST/"
 rm -f "$WIFI_DST/pe-core.c"
 echo "  OK   rtl_ax_ap WiFi 驱动覆盖（$n 文件）"
 
-# ---- 2a. 统一驱动资产 -> refactor 基线适配 ----
+# ---- 2a. 统一驱动资产 -> refactor/Taurus 基线适配 ----
 # 当前 board/wifi/rtl_ax_ap 是与 R10 base 共用的单一真源，Kconfig 依赖
-# RTL9617C_XRAM_ETH、cal 路径用 realtek/tyfza1/…；refactor 基线是 NI 以太网
-# + realtek/rtl9617c/… 规范路径，不适配则 CONFIG_RTL_AX_AP 选不上、镜像校验
-# 也会因 cal 路径失败。只在编译树副本上改，资产真源保持单一。
+# RTL9617C_XRAM_ETH + ARCH_RTL9617C，cal 路径用 realtek/tyfza1/…；
+# refactor 基线是 NI 以太网 + realtek/rtl9617c/… 规范路径，Taurus 又把
+# ARCH_RTL9617C 改名为 ARCH_REALTEK_TAURUS（run39 教训：不兼容时
+# CONFIG_RTL_AX_AP=m 被 Kconfig 静默忽略、rtl_ax_ap.ko 缺失）。
+# 只在编译树副本上改，资产真源保持单一。
 python3 - "$WIFI_DST" <<'PY'
-import pathlib, sys
+import pathlib, re, sys
 d = pathlib.Path(sys.argv[1])
 k = d / 'Kconfig'
 t = k.read_text(encoding='utf-8')
-old = 'depends on PCI && ARCH_RTL9617C && MAC80211 && RTL9617C_XRAM_ETH'
-new = 'depends on PCI && ARCH_RTL9617C && MAC80211 && RTL9617C_NI'
-if old in t:
-    k.write_text(t.replace(old, new, 1), encoding='utf-8')
-elif new not in t:
-    raise SystemExit('ERROR: Kconfig 既无 XRAM_ETH 也无 NI 依赖，refactor 适配失败')
+pat = re.compile(
+    r'^depends on PCI && (?:ARCH_RTL9617C|ARCH_REALTEK_TAURUS) && MAC80211 && RTL9617C_(?:XRAM_ETH|NI)$',
+    re.M)
+new = 'depends on PCI && (ARCH_RTL9617C || ARCH_REALTEK_TAURUS) && MAC80211 && RTL9617C_NI'
+t, n = pat.subn(new, t)
+if n != 1:
+    raise SystemExit('ERROR: Kconfig WiFi 依赖行匹配 %d 行（期望 1），需人工复核' % n)
+k.write_text(t, encoding='utf-8')
 b = d / 'board-cal.h'
 t = b.read_text(encoding='utf-8')
 if 'realtek/tyfza1/' in t:
     b.write_text(t.replace('realtek/tyfza1/', 'realtek/rtl9617c/'), encoding='utf-8')
 elif 'realtek/rtl9617c/' not in t:
     raise SystemExit('ERROR: board-cal.h cal 路径异常，refactor 适配失败')
-print('  OK   refactor 适配：Kconfig->RTL9617C_NI / cal->realtek/rtl9617c')
+print('  OK   refactor/Taurus 适配：Kconfig->(RTL9617C||Taurus)+NI / cal->realtek/rtl9617c')
 PY
 
 # ---- 2b. OpenWrt 包定义 modules.mk（refactor 上游删除，kmod-rtl-ax-ap 包必须）----
