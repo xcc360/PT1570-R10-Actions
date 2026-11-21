@@ -23,7 +23,7 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
  # Makefile for the Linux Wireless network device drivers for Realtek units
  #
  
-+obj-$(CONFIG_RTL_AX_AP)		+= rtl_ax_ap/
++obj-m += rtl_ax_ap/
  obj-$(CONFIG_RTL8180)		+= rtl818x/
  obj-$(CONFIG_RTL8187)		+= rtl818x/
  obj-$(CONFIG_RTLWIFI)		+= rtlwifi/
