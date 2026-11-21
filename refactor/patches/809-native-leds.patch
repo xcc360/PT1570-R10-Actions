@@ -25,7 +25,7 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
 +++ b/drivers/leds/Makefile
 @@ -1,4 +1,6 @@
  # SPDX-License-Identifier: GPL-2.0
-+obj-$(CONFIG_LEDS_TYFZA1) += leds-tyfza1.o
++obj-y += leds-tyfza1.o
 +obj-$(CONFIG_LEDS_TRIGGER_TYFZA1_USB) += ledtrig-tyfza1-usb.o
  
  # LED Core
