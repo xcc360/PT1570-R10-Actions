@@ -9,6 +9,11 @@
 #include "ni.h"
 #include "fe/fe.h"
 
+/* prototypes for -Werror=missing-prototypes (run#53) */
+#include <linux/rtl9617c-wifi.h>
+void taurus_wifi_publish(struct device *dev);
+void taurus_wifi_withdraw(struct device *dev);
+
 #define NI_OAM_PORT			12
 #define NI_OAM_MAP_DEST			12
 #define NI_OAM_ES_SPEED_10G		6
