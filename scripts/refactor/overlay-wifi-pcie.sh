@@ -231,6 +231,9 @@ want = [
     'CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y',
     'CONFIG_MAC80211_RC_MINSTREL=y',
     'CONFIG_RTL_AX_AP=m',
+    # Taurus 双 PE 三符号 glue：Kconfig 的 default y if RTL_AX_AP 在
+    # RTL_AX_AP=m 时不会自动落值，syncconfig 会把 prompt 当 (NEW) 卡住（run#52）。
+    'CONFIG_RTL9617C_WIFI_GLUE=y',
     'CONFIG_LEDS_TYFZA1=y',
     'CONFIG_LEDS_TRIGGER_TYFZA1_USB=m',
 ]
