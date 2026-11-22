@@ -278,8 +278,8 @@ lines = [l for l in lines if not any(l == k or l.startswith(k + '=') or l == '# 
 import os
 # Taurus 也用 OOT pcie-rtl9617c.c：CU DTS 的 compatible/reg-names/serdes
 # 按 OOT 布局写死；原生 pcie-taurus.c 匹配 realtek,taurus-pcie，probe 不到（run#54）。
-    lines.append('CONFIG_PCIE_RTL9617C=y')
-    lines.append('CONFIG_PHY_RTL9617C_PCIE=y')
+lines.append('CONFIG_PCIE_RTL9617C=y')
+lines.append('CONFIG_PHY_RTL9617C_PCIE=y')
 for w in want:
     lines.append(w)
 for k in unset:
