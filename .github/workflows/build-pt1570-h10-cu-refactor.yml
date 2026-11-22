@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'lyq1996/rtl9617c-openwrt 的 commit/分支（默认 Taurus 基线 968f03f52dbe：内核 6.18.64 + 平台驱动统一 taurus 命名；CU 走 OOT PCIe/WiFi 回移植）'
+        description: 'lyq1996/rtl9617c-openwrt 的 commit/分支（默认 Taurus 基线 968f03f52dbe：内核 6.18.64 + Taurus 平台驱动；路线C走原生 2.5G/PON）'
         required: false
         default: '968f03f52dbeb1fceea10979759c739d3532e257'
         type: string
@@ -35,6 +35,14 @@ on:
         required: false
         default: false
         type: boolean
+      wifi_mode:
+        description: 'off=路线C：只用 Taurus 原生 2.5G/PON（跳过 OOT WiFi ne-glue）；on=注入 OOT WiFi（历史路线，Taurus 6.18.64 下编译不过）'
+        required: false
+        default: 'off'
+        type: choice
+        options:
+          - 'off'
+          - 'on' 
       diag_lockup:
         description: 'B线诊断：开启 hard/soft lockup detector 与 PANIC_TIMEOUT=-1，并让 WiFi 默认关闭以便 TTL 手动触发抓栈'
         required: false
@@ -186,10 +194,11 @@ jobs:
           done || true
           echo "  OK   feeds + rpcd exec 插件权限归一化"
 
-      - name: Apply CU board fixes (DTS/Device/platform + PCIe/WiFi overlay + PON mode)
+      - name: Apply CU board fixes (DTS/Device/platform + PON mode + optional WiFi overlay)
         env:
           ASSETS: ${{ github.workspace }}
           WRT: ${{ github.workspace }}/wrt
+          WIFI_MODE: ${{ inputs.wifi_mode }}
         run: bash "$GITHUB_WORKSPACE/refactor/scripts/apply-board-h10-cu-refactor.sh"
 
       - name: Patch serdes for 2.5G + WiFi lane-register coexistence (B-line fix)
@@ -212,6 +221,7 @@ jobs:
           fi
 
       - name: Fix WiFi for wpad without AX + add 5G cal fallback (post-run26 diagnostics)
+        if: ${{ inputs.wifi_mode == 'on' }}
         run: |
           set -e
           AS="$GITHUB_WORKSPACE"
@@ -236,6 +246,7 @@ jobs:
           echo "  OK   WiFi_HE_TO_VHT + 5G_CAL_FALLBACK 已就绪"
 
       - name: B-line kernel lockup diagnostics + safe WiFi default (optional)
+        if: ${{ inputs.wifi_mode == 'on' }}
         env:
           WRT: ${{ github.workspace }}/wrt
           ASSETS: ${{ github.workspace }}
@@ -298,22 +309,22 @@ jobs:
       - name: Apply custom rootfs files (refactor/files)
         env:
           PACKAGES_REPO_URL: ${{ inputs.packages_repo_url }}
+          WIFI_MODE: ${{ inputs.wifi_mode }}
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/wrt/files"
           cp -a "$GITHUB_WORKSPACE/files-common/." "$GITHUB_WORKSPACE/wrt/files/"
           cp -a "$GITHUB_WORKSPACE/refactor/files/." "$GITHUB_WORKSPACE/wrt/files/"
-          # B-line: bake the realtek WiFi main firmware tree (rtl8852c/rtl8192xb
-          # u1/u2-ap.bin + array_mp reg + RFE) into /lib/firmware. It already
-          # exists in-repo under cu-h10/fw/files-cu but was never copied by this
-          # workflow, so sysupgrade (with or without config) left the driver with
-          # no main firmware -> probe -12. Baking into squashfs makes it survive
-          # config-preserving upgrades (uci-defaults do NOT re-run on those).
+          # B-line: WiFi 主固件烘焙——路线C（wifi_mode=off）跳过，无 OOT 驱动不需要
           FW_SRC="$GITHUB_WORKSPACE/cu-h10/fw/files-cu/lib/firmware"
-          [ -d "$FW_SRC/realtek/tyfza1" ] \
-            || { echo "::error::仓库缺 cu-h10 主固件树 $FW_SRC/realtek/tyfza1"; exit 1; }
-          mkdir -p "$GITHUB_WORKSPACE/wrt/files/lib/firmware"
-          cp -a "$FW_SRC/." "$GITHUB_WORKSPACE/wrt/files/lib/firmware/"
+          if [ "$WIFI_MODE" = "on" ]; then
+            [ -d "$FW_SRC/realtek/tyfza1" ] \
+              || { echo "::error::仓库缺 cu-h10 主固件树 $FW_SRC/realtek/tyfza1"; exit 1; }
+            mkdir -p "$GITHUB_WORKSPACE/wrt/files/lib/firmware"
+            cp -a "$FW_SRC/." "$GITHUB_WORKSPACE/wrt/files/lib/firmware/"
+          else
+            echo "  SKIP WiFi 主固件烘焙（wifi_mode=off）"
+          fi
           chmod +x "$GITHUB_WORKSPACE/wrt/files/etc/uci-defaults/"* 2>/dev/null || true
           chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
           echo "refactor/files injected:"
@@ -326,22 +337,35 @@ jobs:
           APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
           APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
           DIAG: ${{ inputs.diag_lockup }}
+          WIFI_MODE: ${{ inputs.wifi_mode }}
         run: |
           set -e
+          # 路线C（wifi_mode=off）：从源配置剔除 OOT WiFi 包符号，避免 defconfig
+          # 因缺 kmod-rtl-ax-ap 包定义（overlay 未注入）而报 "package not found"。
+          strip_wifi() {
+            [ "$WIFI_MODE" = "off" ] || return 0
+            sed -i -E '/^CONFIG_PACKAGE_(kmod-rtl-ax-ap|wpad-mbedtls|wifi-scripts|wireless-regdb|iw)=y$/d' .config
+          }
           # 顺序敏感：先写最小配置再 defconfig（切勿空配置先 defconfig）
           rm -f .config
           cat "$GITHUB_WORKSPACE/refactor/Config-PT1570-H10-CU.txt" >> .config
+          strip_wifi
           bash "$GITHUB_WORKSPACE/refactor/scripts/customize-pt1570-h10-cu-refactor.sh"
 
           sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
 
           make defconfig
           cat "$GITHUB_WORKSPACE/refactor/Config-PT1570-H10-CU.txt" >> .config
+          strip_wifi
           make defconfig
 
           # 重断言（defconfig 会丢未被 profile 点名的包）
-          for sym in rtl9617c-pon-control luci-app-rtl9617c-pon luci-ssl uhttpd fitblk \
-                     luci-theme-argon kmod-rtl-ax-ap wpad-mbedtls wifi-scripts wireless-regdb; do
+          # 路线C（wifi_mode=off）：WiFi 包跳过，只断言 2.5G/PON/平台/LuCI 基线包
+          BASE_SYMS="rtl9617c-pon-control luci-app-rtl9617c-pon luci-ssl uhttpd fitblk luci-theme-argon"
+          WIFI_SYMS="kmod-rtl-ax-ap wpad-mbedtls wifi-scripts wireless-regdb"
+          ASSERT_SYMS="$BASE_SYMS"
+          [ "$WIFI_MODE" = "on" ] && ASSERT_SYMS="$ASSERT_SYMS $WIFI_SYMS"
+          for sym in $ASSERT_SYMS; do
             if ! grep -q "^CONFIG_PACKAGE_${sym}=y$" .config; then
               sed -i "/^# CONFIG_PACKAGE_${sym} is not set$/d; /^CONFIG_PACKAGE_${sym}=/d" .config
               echo "CONFIG_PACKAGE_${sym}=y" >> .config
@@ -381,8 +405,7 @@ jobs:
           echo "===== hard assertions ====="
           grep -q "^CONFIG_TARGET_rtl9617c_generic_DEVICE_${PROFILE}=y$" .config \
             || { echo "ERROR: profile $PROFILE 未启用" >&2; exit 1; }
-          for sym in rtl9617c-pon-control luci-app-rtl9617c-pon luci-ssl uhttpd fitblk \
-                     luci-theme-argon kmod-rtl-ax-ap wpad-mbedtls wifi-scripts wireless-regdb; do
+          for sym in $ASSERT_SYMS; do
             grep -q "^CONFIG_PACKAGE_${sym}=y$" .config \
               || { echo "ERROR: $sym 二次 defconfig 后仍被丢弃" >&2; exit 1; }
             echo "  OK   $sym"
@@ -417,14 +440,18 @@ jobs:
             echo "  OK   2.5G refactor 驱动符号（pre-Taurus）"
           fi
 
-          # PCIe/WiFi 回移植内核符号（overlay 写入）
-          for sym in CONFIG_PCIE_RTL9617C=y CONFIG_PHY_RTL9617C_PCIE=y \
-                     CONFIG_PCIE_DW_HOST=y CONFIG_MAC80211=m CONFIG_CFG80211=m \
-                     CONFIG_RTL_AX_AP=m CONFIG_LEDS_TYFZA1=y; do
-            grep -q "^${sym}$" target/linux/rtl9617c/config-6.18 \
-              || { echo "ERROR: target config 缺 $sym（PCIe/WiFi overlay 未生效）" >&2; exit 1; }
-          done
-          echo "  OK   PCIe/WiFi 内核符号"
+          # PCIe/WiFi 回移植内核符号（overlay 写入）——路线C跳过
+          if [ "$WIFI_MODE" = "on" ]; then
+            for sym in CONFIG_PCIE_RTL9617C=y CONFIG_PHY_RTL9617C_PCIE=y \
+                       CONFIG_PCIE_DW_HOST=y CONFIG_MAC80211=m CONFIG_CFG80211=m \
+                       CONFIG_RTL_AX_AP=m CONFIG_LEDS_TYFZA1=y; do
+              grep -q "^${sym}$" target/linux/rtl9617c/config-6.18 \
+                || { echo "ERROR: target config 缺 $sym（PCIe/WiFi overlay 未生效）" >&2; exit 1; }
+            done
+            echo "  OK   PCIe/WiFi 内核符号"
+          else
+            echo "  SKIP PCIe/WiFi 内核符号（wifi_mode=off，Taurus 原生 NIC）"
+          fi
 
           # PON mode xgpon + CU DTS 防回退
           grep -q "option mode 'xgpon'" \
@@ -438,10 +465,14 @@ jobs:
           done
           echo "  OK   PON mode=xgpon + CU DTS 2.5G/PCIe/cal 特征"
 
-          # 跨板 WiFi 资产一致性护栏（R10 <-> CU 单一驱动真源，逐字节一致）
-          python3 "$ASSETS/scripts/verify-wifi-parity.py" "$ASSETS" \
-            || { echo "ERROR: 两板 WiFi 资产漂移（驱动/overlay 不一致）" >&2; exit 1; }
-          echo "  OK   WIFI_PARITY_OK（R10 <-> CU 共用驱动）"
+          # 跨板 WiFi 资产一致性护栏（R10 <-> CU 单一驱动真源）——路线C跳过
+          if [ "$WIFI_MODE" = "on" ]; then
+            python3 "$ASSETS/scripts/verify-wifi-parity.py" "$ASSETS" \
+              || { echo "ERROR: 两板 WiFi 资产漂移（驱动/overlay 不一致）" >&2; exit 1; }
+            echo "  OK   WIFI_PARITY_OK（R10 <-> CU 共用驱动）"
+          else
+            echo "  SKIP WIFI_PARITY（wifi_mode=off）"
+          fi
 
           grep -q "SUPPORTED_DEVICES += ${BOARD_NAME}" target/linux/rtl9617c/image/Makefile \
             || { echo "ERROR: image/Makefile 缺 SUPPORTED_DEVICES" >&2; exit 1; }
@@ -522,6 +553,7 @@ jobs:
         env:
           ASSETS: ${{ github.workspace }}
           APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
+          WIFI_MODE: ${{ inputs.wifi_mode }}
         run: |
           set -e
           ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
@@ -579,64 +611,77 @@ jobs:
             || { echo "::error::CU WAN 脚本缺 PON mode=xgpon 纠正"; exit 1; }
           echo "  OK   首启脚本（refactor 规范命名）+ PON mode=xgpon"
 
-          # WiFi 固件 / 驱动 / cal 兜底
-          MOD="$ROOT/lib/modules"
-          ls "$MOD"/*/rtl_ax_ap.ko >/dev/null 2>&1 \
-            || { echo "::error::镜像缺 rtl_ax_ap.ko（WiFi 驱动未编入）"; exit 1; }
-          CAL5="$ROOT/lib/firmware/realtek/rtl9617c/rtl8852ce/flash-calibration.bin"
-          CAL2="$ROOT/lib/firmware/realtek/rtl9617c/rtl8192xbe/flash-calibration.bin"
-          # 5G cal 由 99 脚本首启从 factory 导出（镜像内可无），2.4G 内置兜底须在
-          [ -f "$ROOT/etc/rtl9617c/wifi-default/rtl8192xbe/flash-calibration.bin" ] \
-            || { echo "::error::镜像缺 2.4G cal 兜底 blob"; exit 1; }
-          # 驱动 cal 路径：校验编译树里的最终形态（overlay 已把统一资产真源
-          # 的 tyfza1 路径适配为 refactor 规范路径），不是仓库里的 base 真源。
-          DRV_CAL=$(find -L "$GITHUB_WORKSPACE/wrt" \
-            -path '*/drivers/net/wireless/realtek/rtl_ax_ap/board-cal.h' \
-            2>/dev/null | head -1)
-          [ -n "$DRV_CAL" ] \
-            || { echo "::error::找不到编译树 board-cal.h（overlay 未生效）"; exit 1; }
-          grep -q "realtek/rtl9617c/rtl8852ce/flash-calibration.bin" "$DRV_CAL" \
-            || { echo "::error::编译树驱动 cal 路径未规范化（仍含 tyfza1）"; exit 1; }
-          echo "  OK   WiFi 驱动 + cal（编译树已适配 refactor 规范路径）"
+          # ===== 以下 WiFi 相关校验仅 wifi_mode=on 执行（路线C跳过）=====
+          if [ "$WIFI_MODE" = "on" ]; then
+            # WiFi 固件 / 驱动 / cal 兜底
+            MOD="$ROOT/lib/modules"
+            ls "$MOD"/*/rtl_ax_ap.ko >/dev/null 2>&1 \
+              || { echo "::error::镜像缺 rtl_ax_ap.ko（WiFi 驱动未编入）"; exit 1; }
+            CAL5="$ROOT/lib/firmware/realtek/rtl9617c/rtl8852ce/flash-calibration.bin"
+            CAL2="$ROOT/lib/firmware/realtek/rtl9617c/rtl8192xbe/flash-calibration.bin"
+            # 5G cal 由 99 脚本首启从 factory 导出（镜像内可无），2.4G 内置兜底须在
+            [ -f "$ROOT/etc/rtl9617c/wifi-default/rtl8192xbe/flash-calibration.bin" ] \
+              || { echo "::error::镜像缺 2.4G cal 兜底 blob"; exit 1; }
+            # 驱动 cal 路径：校验编译树里的最终形态（overlay 已把统一资产真源
+            # 的 tyfza1 路径适配为 refactor 规范路径），不是仓库里的 base 真源。
+            DRV_CAL=$(find -L "$GITHUB_WORKSPACE/wrt" \
+              -path '*/drivers/net/wireless/realtek/rtl_ax_ap/board-cal.h' \
+              2>/dev/null | head -1)
+            [ -n "$DRV_CAL" ] \
+              || { echo "::error::找不到编译树 board-cal.h（overlay 未生效）"; exit 1; }
+            grep -q "realtek/rtl9617c/rtl8852ce/flash-calibration.bin" "$DRV_CAL" \
+              || { echo "::error::编译树驱动 cal 路径未规范化（仍含 tyfza1）"; exit 1; }
+            echo "  OK   WiFi 驱动 + cal（编译树已适配 refactor 规范路径）"
 
-          # B-line: main firmware blobs must be baked into /lib/firmware so a
-          # config-preserving sysupgrade doesn't lose them (probe -12 otherwise).
-          MAINFW="$ROOT/lib/firmware/realtek/tyfza1"
-          for f in rtl8852c-u1-ap.bin rtl8852c-u2-ap.bin \
-                   rtl8192xb-u1-ap.bin rtl8192xb-u2-ap.bin \
-                   array_mp_8852c_nctl_reg.bin array_mp_8852c_nctl_reg_a.bin \
-                   array_mp_8192xb_nctl_reg.bin; do
-            [ -s "$MAINFW/$f" ] \
-              || { echo "::error::镜像缺 WiFi 主固件 $f（会 probe -12）"; exit 1; }
-          done
-          echo "  OK   WiFi_MAINFW_BAKED（7 blobs in /lib/firmware/realtek/tyfza1）"
+            # B-line: main firmware blobs must be baked into /lib/firmware so a
+            # config-preserving sysupgrade doesn't lose them (probe -12 otherwise).
+            MAINFW="$ROOT/lib/firmware/realtek/tyfza1"
+            for f in rtl8852c-u1-ap.bin rtl8852c-u2-ap.bin \
+                     rtl8192xb-u1-ap.bin rtl8192xb-u2-ap.bin \
+                     array_mp_8852c_nctl_reg.bin array_mp_8852c_nctl_reg_a.bin \
+                     array_mp_8192xb_nctl_reg.bin; do
+              [ -s "$MAINFW/$f" ] \
+                || { echo "::error::镜像缺 WiFi 主固件 $f（会 probe -12）"; exit 1; }
+            done
+            echo "  OK   WiFi_MAINFW_BAKED（7 blobs in /lib/firmware/realtek/tyfza1）"
 
-          # wireless 出厂默认：VHT80 + ch149 + psk2+ccmp（ sysupgrade 由 98 脚本纠正）
-          WL="$ROOT/etc/config/wireless"
-          grep -q "option channel '149'" "$WL" \
-            || { echo "::error::5G 默认信道不是 149"; exit 1; }
-          grep -q "option htmode 'VHT80'" "$WL" \
-            || { echo "::error::5G 默认 htmode 不是 VHT80"; exit 1; }
-          echo "  OK   wireless 默认 VHT80/ch149"
+            # wireless 出厂默认：VHT80 + ch149 + psk2+ccmp（ sysupgrade 由 98 脚本纠正）
+            WL="$ROOT/etc/config/wireless"
+            grep -q "option channel '149'" "$WL" \
+              || { echo "::error::5G 默认信道不是 149"; exit 1; }
+            grep -q "option htmode 'VHT80'" "$WL" \
+              || { echo "::error::5G 默认 htmode 不是 VHT80"; exit 1; }
+            echo "  OK   wireless 默认 VHT80/ch149"
 
-          # 两板统一的 hostapd 断流缓解：出厂 conffile + sysupgrade 保留配置兜底
-          [ -x "$UCI/99-pt1570-h10-cu-wifi-stability" ] \
-            || { echo "::error::99-pt1570-h10-cu-wifi-stability 未进镜像或丢可执行位"; exit 1; }
-          grep -q 'skip_inactivity_poll' "$UCI/99-pt1570-h10-cu-wifi-stability" \
-            || { echo "::error::CU stability 脚本缺 skip_inactivity_poll"; exit 1; }
-          grep -q 'disassoc_low_ack' "$UCI/99-pt1570-h10-cu-wifi-stability" \
-            || { echo "::error::CU stability 脚本缺 disassoc_low_ack"; exit 1; }
-          echo "  OK   HOSTAPD_STABILITY_OK（两板统一稳定性兜底）"
+            # 两板统一的 hostapd 断流缓解：出厂 conffile + sysupgrade 保留配置兜底
+            [ -x "$UCI/99-pt1570-h10-cu-wifi-stability" ] \
+              || { echo "::error::99-pt1570-h10-cu-wifi-stability 未进镜像或丢可执行位"; exit 1; }
+            grep -q 'skip_inactivity_poll' "$UCI/99-pt1570-h10-cu-wifi-stability" \
+              || { echo "::error::CU stability 脚本缺 skip_inactivity_poll"; exit 1; }
+            grep -q 'disassoc_low_ack' "$UCI/99-pt1570-h10-cu-wifi-stability" \
+              || { echo "::error::CU stability 脚本缺 disassoc_low_ack"; exit 1; }
+            echo "  OK   HOSTAPD_STABILITY_OK（两板统一稳定性兜底）"
+          else
+            echo "  SKIP WiFi 固件/驱动/cal/wireless/stability 校验（wifi_mode=off）"
+          fi
 
           # 内核 FIT + 2.5G + PCIe 符号
           KCFG=$(ls -d build_dir/target-*/linux-rtl9617c/linux-*/.config 2>/dev/null | head -1)
           if [ -n "$KCFG" ]; then
             for sym in CONFIG_UIMAGE_FIT_BLK CONFIG_MTD_ROOTFS_ROOT_DEV CONFIG_SQUASHFS \
-                       CONFIG_REALTEK_PHY_HISGMII CONFIG_PCIE_RTL9617C CONFIG_RTL_AX_AP; do
+                       CONFIG_REALTEK_PHY_HISGMII; do
               grep -q "^${sym}=[ym]$" "$KCFG" \
-                || { echo "::error::内核缺 $sym（FIT/2.5G/PCIe/WiFi）"; exit 1; }
+                || { echo "::error::内核缺 $sym（FIT/2.5G）"; exit 1; }
             done
-            echo "  OK   内核 FIT + 2.5G + PCIe + WiFi 符号"
+            if [ "$WIFI_MODE" = "on" ]; then
+              for sym in CONFIG_PCIE_RTL9617C CONFIG_RTL_AX_AP; do
+                grep -q "^${sym}=[ym]$" "$KCFG" \
+                  || { echo "::error::内核缺 $sym（PCIe/WiFi）"; exit 1; }
+              done
+              echo "  OK   内核 FIT + 2.5G + PCIe + WiFi 符号"
+            else
+              echo "  OK   内核 FIT + 2.5G 符号（wifi_mode=off，跳过 PCIe/WiFi）"
+            fi
           else
             echo "::warning::找不到内核 .config，跳过内核符号校验"
           fi
