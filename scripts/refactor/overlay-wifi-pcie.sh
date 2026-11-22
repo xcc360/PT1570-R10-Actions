@@ -342,6 +342,37 @@ else
   echo "  OK   WiFi-NE 数据通路回移植（pre-Taurus 旧基线）"
 fi
 
+# ---- 3c. 统一 LF 换行 ----
+# ne-glue-taurus / modules.mk 等资产在仓库里带 CRLF；Linux Kconfig 解析器把
+# 行尾 CR 当非法字符，run#51 在 rtl9617c/Kconfig:13 syncconfig 直接失败。
+python3 - "$KDIR" "$PDIR" "$WRT/target/linux/rtl9617c/modules.mk" <<'PY'
+import pathlib, sys
+kdir, pdir, modules = map(pathlib.Path, sys.argv[1:4])
+dirs = [
+    kdir / 'drivers/net/ethernet/realtek/rtl9617c',
+    kdir / 'drivers/net/ethernet/realtek',
+    kdir / 'drivers/net/wireless/realtek/rtl_ax_ap',
+    kdir / 'drivers/leds',
+    kdir / 'drivers/pci/controller/dwc',
+    kdir / 'drivers/phy',
+    kdir / 'include/linux',
+    pdir,
+]
+targets = []
+for d in dirs:
+    if d.is_dir():
+        targets.extend(p for p in d.rglob('*') if p.is_file())
+if modules.is_file():
+    targets.append(modules)
+n = 0
+for p in targets:
+    b = p.read_bytes()
+    if b'\r' in b:
+        p.write_bytes(b.replace(b'\r\n', b'\n').replace(b'\r', b'\n'))
+        n += 1
+print('  OK   LF 归一化：%d 文件（Kconfig/源码/patch/modules.mk）' % n)
+PY
+
 # ---- 4. 结果校验 ----
 [ -f "$WIFI_DST/pci.c" ] || fail "WiFi 驱动未就位"
 grep -q 'RTL9617C_NI' "$WIFI_DST/Kconfig" || fail "驱动 Kconfig 依赖未适配 refactor（RTL9617C_NI）"
