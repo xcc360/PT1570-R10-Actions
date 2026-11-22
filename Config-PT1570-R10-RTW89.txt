@@ -1,0 +1,37 @@
+# Experimental config for PT1570-R10 rtw89 validation (2026-11-22).
+# Based on Config-PT1570-R10.txt. Key change: mainline rtw89 (kernel built-in)
+# + user-space wpad-openssl for AP mode; NO private rtl_ax_ap.ko.
+# NOTE: kernel side (CONFIG_RTW89_* / MAC80211 / CFG80211) comes from
+#       target/linux/rtl9617c/config-6.18 at refactor HEAD -- already =y.
+CONFIG_TARGET_rtl9617c=y
+CONFIG_TARGET_rtl9617c_generic=y
+CONFIG_TARGET_BOARD="rtl9617c"
+CONFIG_TARGET_SUBTARGET="generic"
+CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a55"
+CONFIG_PACKAGE_fitblk=y
+CONFIG_PACKAGE_rtl9617c-pon-control=y
+CONFIG_PACKAGE_luci-app-rtl9617c-pon=y
+CONFIG_PACKAGE_ubi-utils=y
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_block-mount=y
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_dnsmasq=y
+CONFIG_PACKAGE_zoneinfo-core=y
+CONFIG_PACKAGE_zoneinfo-asia=y
+# ---- rtw89 user-space (AP mode) ----
+CONFIG_PACKAGE_wpad-openssl=y
+CONFIG_PACKAGE_hostapd-common=y
+CONFIG_PACKAGE_iw=y
+CONFIG_PACKAGE_wireless-tools=y
+# ---- baseline extras (tailscale) ----
+CONFIG_PACKAGE_tailscale=y
+CONFIG_PACKAGE_luci-app-tailscale-community=y
+CONFIG_PACKAGE_luci-i18n-tailscale-community-zh-cn=y
+CONFIG_PACKAGE_kmod-tun=y
+CONFIG_LUCI_LANG_zh_Hans=y
