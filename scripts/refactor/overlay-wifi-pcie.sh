@@ -276,9 +276,8 @@ keys = {w.split('=', 1)[0] for w in want} | set(unset)
 lines = [l for l in lines if not any(l == k or l.startswith(k + '=') or l == '# ' + k + ' is not set' for k in keys)]
 # Taurus: enable native PCIe controller; pre-Taurus: old overlay symbols.
 import os
-if os.path.isfile(p.parent / 'dts' / 'rtk-taurus.dtsi'):
-    lines.append('CONFIG_PCIE_REALTEK_TAURUS=y')
-else:
+# Taurus 也用 OOT pcie-rtl9617c.c：CU DTS 的 compatible/reg-names/serdes
+# 按 OOT 布局写死；原生 pcie-taurus.c 匹配 realtek,taurus-pcie，probe 不到（run#54）。
     lines.append('CONFIG_PCIE_RTL9617C=y')
     lines.append('CONFIG_PHY_RTL9617C_PCIE=y')
 for w in want:
@@ -314,11 +313,9 @@ if [ "$TAURUS" = 1 ]; then
   cp -f "$NE_GLUE/Kconfig"       "$NE_DST/Kconfig"
   # Makefile 保持新基线原生（ni_api.o 已含 glue，无需新 .o）
   cp -f "$NE_GLUE/rtl9617c-wifi.h" "$KDIR/include/linux/rtl9617c-wifi.h"
-  # Taurus 原生 PCIe：删除旧注入的 host 驱动/patch，避免与 pcie-taurus.c 冲突
-  rm -f "$KDIR/drivers/pci/controller/dwc/pcie-rtl9617c.c" \
-        "$KDIR/drivers/pci/controller/dwc/rtl9617c-pcie-sequence.h" \
-        "$KDIR/drivers/phy/phy-rtl9617c-pcie.c" \
-        "$PDIR/200-native-pcie.patch"
+  # Taurus 保留 OOT PCIe host：CU DTS 的 pcie0/pcie1 用 realtek,rtl9617c-pcie
+  # 及 global/dbi/config/atu/serdes/coherent-atu 布局，原生 pcie-taurus.c 不匹配。
+  # 200-native-pcie.patch 已放宽 Kconfig 依赖以兼容 ARCH_REALTEK_TAURUS。
   echo "  OK   Taurus 双 PE WiFi glue（原生 NI/FE + 三符号，NE ingress 不注册）"
 else
   NE_GLUE="$ASSETS/cu-h10/fw/board/wifi/ne-glue"
@@ -388,8 +385,10 @@ grep -q 'rtl9617c_wifi_id' "$KDIR/include/linux/rtl9617c-wifi.h" || fail "公共
 
 if [ "$TAURUS" = 1 ]; then
   # Taurus 原生 PCIe + 增量 glue 校验
-  grep -q '^CONFIG_PCIE_REALTEK_TAURUS=y$' "$TCFG" \
-    || fail "PCIe 内核符号 CONFIG_PCIE_REALTEK_TAURUS=y 未写入（WiFi 卡无法枚举）"
+  grep -q '^CONFIG_PCIE_RTL9617C=y$' "$TCFG" \
+    || fail "PCIe 内核符号 CONFIG_PCIE_RTL9617C=y 未写入（WiFi 卡无法枚举）"
+  grep -q '^CONFIG_PHY_RTL9617C_PCIE=y$' "$TCFG" \
+    || fail "PCIe PHY 符号 CONFIG_PHY_RTL9617C_PCIE=y 未写入"
   grep -q '^CONFIG_RTL_AX_AP=m$' "$TCFG" || fail "CONFIG_RTL_AX_AP=m 未写入"
   grep -q 'taurus_wifi_publish' "$NE_DST/ni/ni_main.c" || fail "NI probe 未挂 WiFi publish"
   grep -q 'rtl9617c_wifi_peer_route' "$NE_DST/ni/ni_api.c" || fail "三符号 glue 缺失"

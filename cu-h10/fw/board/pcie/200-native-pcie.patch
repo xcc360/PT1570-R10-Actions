@@ -15,7 +15,7 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
 +
 +config PCIE_RTL9617C
 +	bool "Realtek RTL9617C PCIe host"
-+	depends on OF && ARCH_RTL9617C && PCI_MSI
++	depends on OF && (ARCH_RTL9617C || ARCH_REALTEK_TAURUS) && PCI_MSI
 +	select PCIE_DW_HOST
 +	select PHY_RTL9617C_PCIE
 +	help
@@ -38,7 +38,7 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
 +
 +config PHY_RTL9617C_PCIE
 +	bool "Realtek RTL9617C PCIe controls"
-+	depends on OF && ARCH_RTL9617C
++	depends on OF && (ARCH_RTL9617C || ARCH_REALTEK_TAURUS)
 +	select GENERIC_PHY
 +	select RESET_CONTROLLER
 +	select COMMON_CLK

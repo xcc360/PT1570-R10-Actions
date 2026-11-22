@@ -410,6 +410,7 @@
 	};
 
 	pcie0: pcie@f4325000 {
+		status = "okay";
 		compatible = "realtek,rtl9617c-pcie";
 		reg = <0 0xf4325000 0 0x400>,
 		      <0 0xa0000000 0 0x1000>,
@@ -478,6 +479,7 @@
 	};
 
 	pcie1: pcie@f4326000 {
+		status = "okay";
 		compatible = "realtek,rtl9617c-pcie";
 		reg = <0 0xf4326000 0 0x400>,
 		      <0 0xb0000000 0 0x1000>,
