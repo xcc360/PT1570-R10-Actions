@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config RTL9617C_NI
+	tristate "Realtek RTL9617C network interface support"
+	depends on ARCH_REALTEK_TAURUS || COMPILE_TEST
+	depends on OF && HAS_IOMEM && HAS_DMA
+	select PHYLINK
+	select REGMAP_MMIO
+	help
+	  Network interface of Realtek RTL9617C SoCs. Each Ethernet port in
+	  the device tree is its own network device.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called rtl9617c-ni.
+
+if RTL9617C_NI
+
+config RTL9617C_FE
+	bool "Flow engine offload"
+	depends on BRIDGE && (BRIDGE = y || RTL9617C_NI = m)
+	depends on NETFILTER_INGRESS && INET
+	select NETFILTER_FAMILY_BRIDGE
+	select RTL9617C_SKB_EXT
+	help
+	  Offload routed and bridged flows to the RTL9617C flow engine
+	  through the flow block API (tc flower, netfilter flowtable).
+
+config RTL9617C_BOSA
+	tristate "Optical front end (BOSA) support"
+	depends on I2C
+	select FW_LOADER
+	help
+	  Calibration of the optical front end on the RTL9617C PON port.
+	  The module will be called rtl9617c-bosa.
+
+config RTL9617C_PON
+	tristate "PON MAC (EPON / GPON / XG(S)-PON) support"
+	depends on RTL9617C_BOSA
+	select FW_LOADER
+	select CRYPTO_AES
+	select CRYPTO_CMAC
+	select CRYPTO_LIB_AES
+	select RTL9617C_SKB_EXT
+	help
+	  EPON, GPON and XG(S)-PON MAC of Realtek RTL9617C SoCs.
+	  The module will be called rtl9617c-pon.
+
+endif # RTL9617C_NI
+
+config RTL9617C_SKB_EXT
+	bool
+	select SKB_EXTENSIONS
+
+config RTL9617C_WIFI_GLUE
+	bool "RTL9617C Wi-Fi NE identity glue (Taurus dual-PE)"
+	depends on RTL9617C_NI && RTL9617C_FE
+	default y if RTL_AX_AP
+	help
+	  Minimal NE identity symbols (wifi_id / peer_route / setup_tc) for the
+	  OOT rtl_ax_ap dual-PE driver. Does not replace the native NI/FE register
+	  model; safe to keep off on LAN/PON-only builds.

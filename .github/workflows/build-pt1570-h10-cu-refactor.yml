@@ -440,11 +440,18 @@ jobs:
             echo "  OK   2.5G refactor 驱动符号（pre-Taurus）"
           fi
 
-          # PCIe/WiFi 回移植内核符号（overlay 写入）——路线C跳过
+          # PCIe/WiFi 内核符号（overlay 写入）——路线C跳过
+          # Taurus(6.18.64) 用原生 PCIE_REALTEK_TAURUS（315-pcie.patch），
+          # pre-Taurus 用回移植 PCIE_RTL9617C + PHY_RTL9617C_PCIE。
           if [ "$WIFI_MODE" = "on" ]; then
-            for sym in CONFIG_PCIE_RTL9617C=y CONFIG_PHY_RTL9617C_PCIE=y \
-                       CONFIG_PCIE_DW_HOST=y CONFIG_MAC80211=m CONFIG_CFG80211=m \
-                       CONFIG_RTL_AX_AP=m CONFIG_LEDS_TYFZA1=y; do
+            PCIE_SYMS="CONFIG_PCIE_DW_HOST=y CONFIG_MAC80211=m CONFIG_CFG80211=m \
+                       CONFIG_RTL_AX_AP=m CONFIG_LEDS_TYFZA1=y"
+            if [ -f target/linux/rtl9617c/dts/rtk-taurus.dtsi ]; then
+              PCIE_SYMS="$PCIE_SYMS CONFIG_PCIE_REALTEK_TAURUS=y"
+            else
+              PCIE_SYMS="$PCIE_SYMS CONFIG_PCIE_RTL9617C=y CONFIG_PHY_RTL9617C_PCIE=y"
+            fi
+            for sym in $PCIE_SYMS; do
               grep -q "^${sym}$" target/linux/rtl9617c/config-6.18 \
                 || { echo "ERROR: target config 缺 $sym（PCIe/WiFi overlay 未生效）" >&2; exit 1; }
             done
@@ -674,7 +681,13 @@ jobs:
                 || { echo "::error::内核缺 $sym（FIT/2.5G）"; exit 1; }
             done
             if [ "$WIFI_MODE" = "on" ]; then
-              for sym in CONFIG_PCIE_RTL9617C CONFIG_RTL_AX_AP; do
+              PCIE_KCONFIGS="CONFIG_RTL_AX_AP"
+              if [ -f target/linux/rtl9617c/dts/rtk-taurus.dtsi ]; then
+                PCIE_KCONFIGS="$PCIE_KCONFIGS CONFIG_PCIE_REALTEK_TAURUS"
+              else
+                PCIE_KCONFIGS="$PCIE_KCONFIGS CONFIG_PCIE_RTL9617C"
+              fi
+              for sym in $PCIE_KCONFIGS; do
                 grep -q "^${sym}=[ym]$" "$KCFG" \
                   || { echo "::error::内核缺 $sym（PCIe/WiFi）"; exit 1; }
               done

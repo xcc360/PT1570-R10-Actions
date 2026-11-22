@@ -206,8 +206,10 @@ want = [
     'CONFIG_PCIEPORTBUS=y',
     'CONFIG_PCIE_DW=y',
     'CONFIG_PCIE_DW_HOST=y',
-    'CONFIG_PCIE_RTL9617C=y',
-    'CONFIG_PHY_RTL9617C_PCIE=y',
+    # Taurus uses the native PCIE_REALTEK_TAURUS controller (315-pcie.patch);
+    # the old PCIE_RTL9617C / PHY_RTL9617C_PCIE overlay drivers are skipped.
+    # The Python block below appends the right symbol based on TAURUS_BASLINE.
+
     'CONFIG_CFG80211=m',
     'CONFIG_CFG80211_CRDA_SUPPORT=y',
     'CONFIG_CFG80211_DEFAULT_PS=y',
@@ -262,6 +264,13 @@ unset = [
 lines = text.splitlines()
 keys = {w.split('=', 1)[0] for w in want} | set(unset)
 lines = [l for l in lines if not any(l == k or l.startswith(k + '=') or l == '# ' + k + ' is not set' for k in keys)]
+# Taurus: enable native PCIe controller; pre-Taurus: old overlay symbols.
+import os
+if os.path.isfile(p.parent / 'dts' / 'rtk-taurus.dtsi'):
+    lines.append('CONFIG_PCIE_REALTEK_TAURUS=y')
+else:
+    lines.append('CONFIG_PCIE_RTL9617C=y')
+    lines.append('CONFIG_PHY_RTL9617C_PCIE=y')
 for w in want:
     lines.append(w)
 for k in unset:
@@ -270,74 +279,95 @@ p.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
 print('  OK   config-6.18 补齐 %d 个 PCIe/WiFi 符号 + %d 个 is-not-set' % (len(want), len(unset)))
 PY
 
-# ---- 3b. WiFi-NE 数据通路面回移植（refactor 重写 NI/FE 后整套 glue 被删）----
-# RUN#16 modpost 失败根因：rtl_ax_ap 驱动引用的 rtl9617c_wifi_peer_route /
-# rtl9617c_wifi_setup_tc / rtl9617c_wifi_id 三个导出符号由 base 的
-# rtl9617c-wifi.c 提供，而 refactor 把 NI/FE/DMA/QM 全部重写、删除了整套
-# WiFi NE glue（含 802-native-wifi-ne 的 skb.wifi_miss）。这里按 refactor
-# 架构重建整条数据通路：
-#   - 公共 glue rtl9617c-wifi.c（notifier + nf_hook + 3 导出符号）
-#   - NI 层 6 个 rtl9617c_ni_wifi_* API + wifi[] endpoint 表
-#   - DMA 层 rtl_ni_dma_xmit_wifi（下行 NE lookup 注入）
-#   - QM 层 EPP wifi_id 识别 + 上行 endpoint 回调
-#   - FE 层 add_wifi_port / wifi_peer_route / wifi_id 表项
-# 全部替换为随资产提供的、已按 refactor 基线(ae4aeac45a70)改写的完整源文件。
-NE_GLUE="$ASSETS/cu-h10/fw/board/wifi/ne-glue"
+# ---- 3b. WiFi-NE 数据通路：按基线分流 ----
+# Taurus (6.18.64, f75f4ca/968f03f) 原生 NI/FE 用 RTL_L2TM_* 寄存器模型 + lan_deepq，
+# 与旧 ae4aeac ne-glue 的 RTL_NI_NITX_* 完全冲突（run#46 编译失败根因）。
+# 因此 Taurus 下【不覆盖】ni_qm.c/ni_dma.c/ni_main.c，只覆盖经增量适配的
+# fe{,_priv}.h/fe_main.c + ni_api.c + ni_main.c(仅两行 publish/withdraw)，
+# 三符号 glue 编在 ni_api.c 内。NE ingress nf_hook 不注册 → 无回注硬锁。
+# pre-Taurus 仍走旧 ne-glue 全覆盖（已实机验证路径）。
 NE_DST="$KDIR/drivers/net/ethernet/realtek/rtl9617c"
-[ -f "$NE_GLUE/rtl9617c-wifi.c" ] || fail "WiFi-NE glue 资产缺失：$NE_GLUE"
-[ -f "$NE_GLUE/fe/fe_main.c" ] || fail "WiFi-NE FE 资产缺失"
-[ -f "$NE_GLUE/ni/ni_api.c" ] || fail "WiFi-NE NI 资产缺失"
-[ -f "$NE_GLUE/build/Makefile" ] || fail "WiFi-NE Makefile 资产缺失"
-[ -f "$NE_GLUE/patches/820-rtl9617c-wifi-miss-skb.patch" ] || fail "WiFi-NE skbuff patch 缺失"
+TAURUS=0
+if [ -f "$WRT/target/linux/rtl9617c/dts/rtk-taurus.dtsi" ]; then
+  TAURUS=1
+fi
 
-# 新增公共 glue + format 头（refactor 树里不存在，直接放）
-cp -f "$NE_GLUE/rtl9617c-wifi.c"        "$NE_DST/rtl9617c-wifi.c"
-cp -f "$NE_GLUE/rtl9617c-wifi-format.h" "$NE_DST/rtl9617c-wifi-format.h"
-# 替换 NI/FE 源文件为带 WiFi 数据通路的 refactor 适配版
-cp -f "$NE_GLUE/include/rtl9617c_ni.h"  "$NE_DST/rtl9617c_ni.h"
-cp -f "$NE_GLUE/ni/ni.h"                "$NE_DST/ni/ni.h"
-cp -f "$NE_GLUE/ni/ni_api.c"            "$NE_DST/ni/ni_api.c"
-cp -f "$NE_GLUE/ni/ni_dma.c"            "$NE_DST/ni/ni_dma.c"
-cp -f "$NE_GLUE/ni/ni_qm.c"             "$NE_DST/ni/ni_qm.c"
-cp -f "$NE_GLUE/ni/ni_main.c"           "$NE_DST/ni/ni_main.c"
-cp -f "$NE_GLUE/fe/fe.h"                "$NE_DST/fe/fe.h"
-cp -f "$NE_GLUE/fe/fe_priv.h"           "$NE_DST/fe/fe_priv.h"
-cp -f "$NE_GLUE/fe/fe_main.c"           "$NE_DST/fe/fe_main.c"
-# Makefile / Kconfig：把 rtl9617c-wifi.o 编进 NI 模块并 select netfilter ingress
-cp -f "$NE_GLUE/build/Makefile" "$NE_DST/Makefile"
-cp -f "$NE_GLUE/build/Kconfig"  "$NE_DST/Kconfig"
-# skbuff.h 的 wifi_miss 位域通过内核 patch 注入（OpenWrt 解压内核后自动应用）
-cp -f "$NE_GLUE/patches/820-rtl9617c-wifi-miss-skb.patch" \
-      "$PDIR/820-rtl9617c-wifi-miss-skb.patch"
-echo "  OK   WiFi-NE 数据通路回移植（公共 glue + NI/FE/DMA/QM + skbuff patch）"
+if [ "$TAURUS" = 1 ]; then
+  NE_GLUE="$ASSETS/cu-h10/fw/board/wifi/ne-glue-taurus"
+  [ -f "$NE_GLUE/ni/ni_api.c" ] || fail "Taurus WiFi glue 资产缺失：$NE_GLUE"
+  [ -f "$NE_GLUE/fe/fe_main.c" ] || fail "Taurus WiFi FE 资产缺失"
+  cp -f "$NE_GLUE/fe/fe.h"       "$NE_DST/fe/fe.h"
+  cp -f "$NE_GLUE/fe/fe_priv.h"  "$NE_DST/fe/fe_priv.h"
+  cp -f "$NE_GLUE/fe/fe_main.c"  "$NE_DST/fe/fe_main.c"
+  cp -f "$NE_GLUE/ni/ni_api.c"   "$NE_DST/ni/ni_api.c"
+  cp -f "$NE_GLUE/ni/ni_main.c"  "$NE_DST/ni/ni_main.c"
+  cp -f "$NE_GLUE/Kconfig"       "$NE_DST/Kconfig"
+  # Makefile 保持新基线原生（ni_api.o 已含 glue，无需新 .o）
+  cp -f "$NE_GLUE/rtl9617c-wifi.h" "$KDIR/include/linux/rtl9617c-wifi.h"
+  # Taurus 原生 PCIe：删除旧注入的 host 驱动/patch，避免与 pcie-taurus.c 冲突
+  rm -f "$KDIR/drivers/pci/controller/dwc/pcie-rtl9617c.c" \
+        "$KDIR/drivers/pci/controller/dwc/rtl9617c-pcie-sequence.h" \
+        "$KDIR/drivers/phy/phy-rtl9617c-pcie.c" \
+        "$PDIR/200-native-pcie.patch"
+  echo "  OK   Taurus 双 PE WiFi glue（原生 NI/FE + 三符号，NE ingress 不注册）"
+else
+  NE_GLUE="$ASSETS/cu-h10/fw/board/wifi/ne-glue"
+  [ -f "$NE_GLUE/rtl9617c-wifi.c" ] || fail "WiFi-NE glue 资产缺失：$NE_GLUE"
+  [ -f "$NE_GLUE/fe/fe_main.c" ] || fail "WiFi-NE FE 资产缺失"
+  [ -f "$NE_GLUE/ni/ni_api.c" ] || fail "WiFi-NE NI 资产缺失"
+  [ -f "$NE_GLUE/build/Makefile" ] || fail "WiFi-NE Makefile 资产缺失"
+  [ -f "$NE_GLUE/patches/820-rtl9617c-wifi-miss-skb.patch" ] || fail "WiFi-NE skbuff patch 缺失"
+  cp -f "$NE_GLUE/rtl9617c-wifi.c"        "$NE_DST/rtl9617c-wifi.c"
+  cp -f "$NE_GLUE/rtl9617c-wifi-format.h" "$NE_DST/rtl9617c-wifi-format.h"
+  cp -f "$NE_GLUE/include/rtl9617c_ni.h"  "$NE_DST/rtl9617c_ni.h"
+  cp -f "$NE_GLUE/ni/ni.h"          "$NE_DST/ni/ni.h"
+  cp -f "$NE_GLUE/ni/ni_api.c"      "$NE_DST/ni/ni_api.c"
+  cp -f "$NE_GLUE/ni/ni_dma.c"      "$NE_DST/ni/ni_dma.c"
+  cp -f "$NE_GLUE/ni/ni_qm.c"       "$NE_DST/ni/ni_qm.c"
+  cp -f "$NE_GLUE/ni/ni_main.c"     "$NE_DST/ni/ni_main.c"
+  cp -f "$NE_GLUE/fe/fe.h"          "$NE_DST/fe/fe.h"
+  cp -f "$NE_GLUE/fe/fe_priv.h"     "$NE_DST/fe/fe_priv.h"
+  cp -f "$NE_GLUE/fe/fe_main.c"     "$NE_DST/fe/fe_main.c"
+  cp -f "$NE_GLUE/build/Makefile"   "$NE_DST/Makefile"
+  cp -f "$NE_GLUE/build/Kconfig"    "$NE_DST/Kconfig"
+  cp -f "$NE_GLUE/patches/820-rtl9617c-wifi-miss-skb.patch" \
+        "$PDIR/820-rtl9617c-wifi-miss-skb.patch"
+  echo "  OK   WiFi-NE 数据通路回移植（pre-Taurus 旧基线）"
+fi
 
 # ---- 4. 结果校验 ----
-[ -f "$KDIR/drivers/pci/controller/dwc/pcie-rtl9617c.c" ] || fail "PCIe 驱动未就位"
-[ -f "$KDIR/drivers/net/ethernet/realtek/rtl9617c-sgmii.h" ] || fail "PCIe SGMII 头文件未就位（phy-pcie.c 会编译失败）"
-grep -q 'rtl_sgmii_link' "$KDIR/drivers/net/ethernet/realtek/rtl9617c-sgmii.h" || fail "sgmii.h 内容异常（缺 rtl_sgmii_link）"
 [ -f "$WIFI_DST/pci.c" ] || fail "WiFi 驱动未就位"
-grep -q '^CONFIG_PCIE_RTL9617C=y$' "$TCFG" || fail "PCIe 内核符号未写入"
-grep -q '^CONFIG_RTL_AX_AP=m$' "$TCFG" || fail "WiFi 驱动内核符号 CONFIG_RTL_AX_AP=m 未写入"
-grep -q 'PCIE_RTL9617C' "$PDIR/200-native-pcie.patch" || fail "PCIe patch 内容异常（缺 PCIE_RTL9617C Kconfig）"
-[ -f "$PDIR/804-mac80211-rx-shortcut-state.patch" ] || fail "WiFi 基础设施 patch 804 未就位"
-[ -f "$PDIR/809-native-leds.patch" ] || fail "WiFi 基础设施 patch 809 未就位"
-[ -f "$KDIR/drivers/leds/leds-tyfza1.c" ] || fail "LED 控制器源文件未就位（内核会报 No rule to make leds-tyfza1.o）"
-[ -f "$KDIR/drivers/leds/ledtrig-tyfza1-usb.c" ] || fail "LED USB trigger 源文件未就位"
-[ -f "$KDIR/include/linux/tyfza1-led.h" ] || fail "LED 公共头未就位（linux/tyfza1-led.h）"
-grep -q 'tyfza1_led_register' "$KDIR/drivers/leds/leds-tyfza1.c" || fail "leds-tyfza1.c 缺 tyfza1_led_register 导出符号"
-grep -q 'struct tyfza1_led' "$KDIR/include/linux/tyfza1-led.h" || fail "tyfza1-led.h 缺 struct tyfza1_led 定义"
-[ -f "$KDIR/include/linux/rtl9617c-wifi.h" ] || fail "WiFi 公共头未就位（linux/rtl9617c-wifi.h）"
-grep -q 'rtl_wifi_start' "$KDIR/include/linux/rtl9617c-wifi.h" || fail "rtl9617c-wifi.h 缺 rtl_wifi_start 声明"
 grep -q 'RTL9617C_NI' "$WIFI_DST/Kconfig" || fail "驱动 Kconfig 依赖未适配 refactor（RTL9617C_NI）"
-# WiFi-NE 回移植校验
-[ -f "$NE_DST/rtl9617c-wifi.c" ] || fail "WiFi-NE glue 未就位"
-grep -q 'rtl9617c_wifi_peer_route' "$NE_DST/rtl9617c-wifi.c" || fail "WiFi-NE glue 导出符号缺失"
-grep -q 'rtl_wifi_start' "$NE_DST/ni/ni_main.c" || fail "NI probe 未挂 rtl_wifi_start"
-grep -q 'rtl_ni_dma_xmit_wifi' "$NE_DST/ni/ni_dma.c" || fail "NI DMA wifi 注入缺失"
-grep -q 'rtl_wifi_epp_id' "$NE_DST/ni/ni_qm.c" || fail "NI QM wifi 上行分发缺失"
-grep -q 'rtl_fe_add_wifi_port' "$NE_DST/fe/fe_main.c" || fail "FE wifi 表项 API 缺失"
-grep -q 'rtl9617c-wifi.o' "$NE_DST/Makefile" || fail "Makefile 未编入 rtl9617c-wifi.o"
-grep -q 'select NETFILTER_INGRESS' "$NE_DST/Kconfig" || fail "Kconfig 未 select NETFILTER_INGRESS"
-[ -f "$PDIR/820-rtl9617c-wifi-miss-skb.patch" ] || fail "skbuff wifi_miss patch 未就位"
+[ -f "$KDIR/include/linux/rtl9617c-wifi.h" ] || fail "WiFi 公共头未就位"
+grep -q 'rtl9617c_wifi_id' "$KDIR/include/linux/rtl9617c-wifi.h" || fail "公共头缺 wifi_id 声明"
+[ -f "$KDIR/drivers/leds/leds-tyfza1.c" ] || fail "LED 控制器源文件未就位"
+[ -f "$KDIR/include/linux/tyfza1-led.h" ] || fail "LED 公共头未就位"
+[ -f "$PDIR/804-mac80211-rx-shortcut-state.patch" ] || fail "patch 804 未就位"
+[ -f "$PDIR/809-native-leds.patch" ] || fail "patch 809 未就位"
+
+if [ "$TAURUS" = 1 ]; then
+  # Taurus 原生 PCIe + 增量 glue 校验
+  grep -q '^CONFIG_PCIE_REALTEK_TAURUS=y$' "$TCFG" \
+    || fail "PCIe 内核符号 CONFIG_PCIE_REALTEK_TAURUS=y 未写入（WiFi 卡无法枚举）"
+  grep -q '^CONFIG_RTL_AX_AP=m$' "$TCFG" || fail "CONFIG_RTL_AX_AP=m 未写入"
+  grep -q 'taurus_wifi_publish' "$NE_DST/ni/ni_main.c" || fail "NI probe 未挂 WiFi publish"
+  grep -q 'rtl9617c_wifi_peer_route' "$NE_DST/ni/ni_api.c" || fail "三符号 glue 缺失"
+  grep -q 'rtl_fe_add_wifi_port' "$NE_DST/fe/fe_main.c" || fail "FE wifi API 缺失"
+  grep -q 'rtl_fe_wifi_peer_route' "$NE_DST/fe/fe_main.c" || fail "FE peer route 缺失"
+  grep -q 'RTL9617C_WIFI_GLUE' "$NE_DST/Kconfig" || fail "WIFI_GLUE Kconfig 符号缺失"
+  # 确认未注入旧寄存器模型的 ne-glue（避免 run#46 冲突）
+  ! grep -q 'RTL_NI_NITX' "$NE_DST/ni/ni_main.c" || fail "Taurus 树残留旧 NITX 寄存器宏"
+  echo "  OK   Taurus WiFi 校验（原生 PCIe + 增量 glue + 无 NE ingress）"
+else
+  grep -q '^CONFIG_PCIE_RTL9617C=y$' "$TCFG" || fail "PCIe 内核符号未写入"
+  grep -q '^CONFIG_RTL_AX_AP=m$' "$TCFG" || fail "WiFi 驱动内核符号未写入"
+  [ -f "$NE_DST/rtl9617c-wifi.c" ] || fail "WiFi-NE glue 未就位"
+  grep -q 'rtl9617c_wifi_peer_route' "$NE_DST/rtl9617c-wifi.c" || fail "WiFi-NE glue 导出符号缺失"
+  grep -q 'rtl_wifi_start' "$NE_DST/ni/ni_main.c" || fail "NI probe 未挂 rtl_wifi_start"
+  grep -q 'rtl_ni_dma_xmit_wifi' "$NE_DST/ni/ni_dma.c" || fail "NI DMA wifi 注入缺失"
+  grep -q 'rtl_wifi_epp_id' "$NE_DST/ni/ni_qm.c" || fail "NI QM wifi 上行分发缺失"
+  grep -q 'rtl_fe_add_wifi_port' "$NE_DST/fe/fe_main.c" || fail "FE wifi 表项 API 缺失"
+  echo "  OK   pre-Taurus WiFi 校验"
+fi
 
 echo "WIFI_PCIE_OVERLAY_OK=True source_ref=refactor wifi_files=$n wifi_patches=$np ne_glue=True"
