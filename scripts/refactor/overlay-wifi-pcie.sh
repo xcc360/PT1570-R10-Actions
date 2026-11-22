@@ -83,8 +83,10 @@ echo "  OK   PCIe host + PHY 驱动 + rtl9617c-sgmii.h + 200-native-pcie.patch"
 # （并带 MLD guard），再套 803 会 Hunk #1 FAILED at tx.c:4650。
 # pre-Taurus 基线仍需 803，故按基线条件跳过。
 SKIP_803=0
-if [ -f "$WRT/target/linux/rtl9617c/dts/rtk-taurus.dtsi" ] \
-   || grep -q '^CONFIG_MDIO_REALTEK_TAURUS=y$' \
+# POSIX sh 不接受 "if cmd \\ || cmd" 续行写法，改成显式分支
+if [ -f "$WRT/target/linux/rtl9617c/dts/rtk-taurus.dtsi" ]; then
+  SKIP_803=1
+elif grep -q '^CONFIG_MDIO_REALTEK_TAURUS=y$' \
         "$WRT/target/linux/rtl9617c/config-6.18" 2>/dev/null; then
   SKIP_803=1
 fi
