@@ -18,7 +18,12 @@
 #   - 幂等：重复执行结果一致；失败即 fail，不留半成品
 #
 # env: ASSETS=<资产仓库根>  WRT=<源码树>
-set -euo pipefail
+set -eu
+# runner 上若以 /bin/sh 执行，pipefail 不是 POSIX 选项；仅在支持时开启，
+# 避免整段 WiFi overlay 因 shell 差异在第一行直接失败（run#49）。
+if (set -o pipefail) 2>/dev/null; then
+  set -o pipefail
+fi
 
 ASSETS="${ASSETS:-$(cd "$(dirname "$0")/../.." && pwd)}"
 WRT="${WRT:-$ASSETS/wrt}"
