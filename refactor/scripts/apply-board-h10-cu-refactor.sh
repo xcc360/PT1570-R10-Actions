@@ -138,7 +138,19 @@ print('  OK   config/pon mode -> xgpon')
 PY
 
 # ---- 5. 回移植 PCIe/WiFi 驱动（含内核 config 符号）----
-bash "$REF/../scripts/refactor/overlay-wifi-pcie.sh" || fail "overlay-wifi-pcie.sh 失败"
+# 2026-11-22 路线C：WIFI_MODE=off 时跳过整套 OOT WiFi ne-glue，NI/FE/DMA/QM
+# 全用 Taurus 上游原生（PT1500 已实机验证 2.5G 驱动层正常、PON xgpon 上线）。
+# OOT ne-glue 基于旧基线 ae4aeac 的 RTL_NI_NITX_* 寄存器体系，与 Taurus
+# f75f4ca 重写的 RTL_L2TM_* 冲突，无法在 6.18.64 上直接编译。
+WIFI_MODE="${WIFI_MODE:-on}"
+if [ "$WIFI_MODE" = "on" ]; then
+  bash "$REF/../scripts/refactor/overlay-wifi-pcie.sh" || fail "overlay-wifi-pcie.sh 失败"
+else
+  echo "  SKIP   OOT WiFi overlay（WIFI_MODE=off：Taurus 原生 NI/FE + 2.5G/PON）"
+  # 断言：确实没有注入 OOT 驱动，避免误带旧符号污染内核
+  [ ! -e "$TGT/files-6.18/drivers/net/wireless/realtek/rtl_ax_ap" ] \
+    || fail "WIFI_MODE=off 但编译树含 rtl_ax_ap（overlay 未跳过？）"
+fi
 
 # ---- 6. 结果校验 ----
 echo "CU_REFACTOR_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS"
