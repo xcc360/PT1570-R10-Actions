@@ -57,8 +57,17 @@ open(p,'w', encoding='utf-8', newline='\n').write(s)
 print("  whitelisted board in platform.sh")
 PY
 
-# --- 4) verify injection landed ---
+# --- 4) inject wireless overlay into rootfs files/ ---
+# OpenWrt copies <source>/files/ into the rootfs; place standard mac80211 config there
+# so both radios come up as AP with mainline rtw89.
+mkdir -p "$SRC/files/etc/config"
+cp -f "$ASSETS/files-exp/etc/config/wireless" "$SRC/files/etc/config/wireless"
+echo "  injected wireless overlay"
+
+# --- 5) verify injection landed ---
 grep -q 'youhua,pt1570-r10-rtw89-exp' "$PLAT" || { echo "ERROR: platform.sh whitelist failed" >&2; exit 1; }
 grep -q 'DEVICE_DTS := rtl9617c-pt1570-r10-rtw89' "$IMG_DIR/Makefile" || { echo "ERROR: profile injection failed" >&2; exit 1; }
 [ -f "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" ] || { echo "ERROR: DTS injection failed" >&2; exit 1; }
+grep -q "path 'soc/f4325000.pcie" "$SRC/files/etc/config/wireless" \
+  || { echo "ERROR: wireless overlay injection failed" >&2; exit 1; }
 echo "  all injections verified"
