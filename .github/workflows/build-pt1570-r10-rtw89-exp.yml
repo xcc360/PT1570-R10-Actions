@@ -195,11 +195,27 @@ jobs:
         if: ${{ !inputs.test_only }}
         working-directory: /mnt/build_wrt
         run: |
-          set -e
+          set -o pipefail
+          LOG="$GITHUB_WORKSPACE/artifact/build.log"
           mkdir -p "$GITHUB_WORKSPACE/artifact"
-          make -j$(nproc) 2>&1 | tee "$GITHUB_WORKSPACE/artifact/build.log"
-          ITB=$(find bin/targets/rtl9617c/generic -name 'sysupgrade.itb' | head -1)
+          : > "$LOG"
+          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+            echo "PARALLEL_BUILD_OK=True"
+          else
+            echo "::warning::parallel build failed, retrying with -j1 V=s (verbose)"
+            if ! make -j1 V=s 2>&1 | tee -a "$LOG"; then
+              echo "::group::BUILD FAILED - last 150 lines"
+              tail -n 150 "$LOG"
+              echo "::endgroup::"
+              exit 1
+            fi
+          fi
+          # OpenWrt FIT image is named <prefix>-sysupgrade.itb, NOT plain sysupgrade.itb
+          echo "=== bin/targets/rtl9617c/generic/ listing ==="
+          ls -lah bin/targets/rtl9617c/generic/ 2>&1 || true
+          ITB=$(ls bin/targets/rtl9617c/generic/*sysupgrade.itb 2>/dev/null | head -1)
           [ -n "$ITB" ] || { echo "ERROR: sysupgrade.itb not produced" >&2; exit 1; }
+          echo "FOUND ITB: $ITB"
           cp "$ITB" "$GITHUB_WORKSPACE/artifact/PT1570-R10-rtw89-exp-sysupgrade.itb"
           # sanity: ITB must contain rtw89 firmware strings, not private ap bins
           strings "$ITB" | grep -q 'rtw8192xb_fw.bin' \
