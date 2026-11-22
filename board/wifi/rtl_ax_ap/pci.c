@@ -14,6 +14,7 @@
 #include <linux/tyfza1-led.h>
 #include <net/mac80211.h>
 #include "fw.h"
+#include "wbdbg.h"
 #include "power.h"
 #include "led.h"
 #include "download.h"
@@ -304,8 +305,10 @@ static int rtl_ax_h2c_publish(struct rtl_ax_ap *radio, unsigned int class, unsig
 	unsigned int offset = slot * RTL_AX_H2C_BUFFER_BYTES;
 	int ret;
 
+	WBDBG("h2c_publish class=%u len=%u producer=%u", class, length, radio->h2c_producer);
 	ret = radio->io.poll32(radio, RTL_AX_H2C_INDEX, 0x3ff0000,
 		radio->h2c_producer << 16, 10, 400000, &last);
+	WBDBG("h2c_publish poll1 ret=%d last=%08x", ret, last);
 	if (ret) return ret;
 	rtl_ax_txbd(radio->h2c_ring + radio->h2c_producer * 8,
 		    lower_32_bits(radio->h2c_packet_dma + offset), length);
@@ -318,6 +321,7 @@ static int rtl_ax_h2c_publish(struct rtl_ax_ap *radio, unsigned int class, unsig
 	rtl_ax_write16(radio, RTL_AX_H2C_INDEX, next);
 	ret = radio->io.poll32(radio, RTL_AX_H2C_INDEX, 0x3ff0000, next << 16,
 			       10, 400000, &last);
+	WBDBG("h2c_publish poll2 ret=%d last=%08x", ret, last);
 	if (ret)
 		return ret;
 	dma_rmb();
@@ -547,10 +551,13 @@ static int rtl_ax_command_flags(struct rtl_ax_ap *radio, unsigned int buffer_cla
 	if (!ret && (receive_ack || done_ack)) {
 		/* Wait for the requested firmware ACK. A receive-only command
 		 * proves acceptance; done-ACK proves execution. */
+		WBDBG("cmd wait ACK cat=%u cls=%u fn=%u seq=%u rx=%d done=%d",
+		      category, class, function, sequence, receive_ack, done_ack);
 		if (!wait_for_completion_timeout(&radio->command_done, msecs_to_jiffies(1000)))
 			ret = -ETIMEDOUT;
 		else if (radio->command_result)
 			ret = -EREMOTEIO;
+		WBDBG("cmd wait ACK ret=%d result=%u", ret, radio->command_result);
 	}
 	if (receive_ack || done_ack) {
 		spin_lock_irqsave(&radio->command_lock, flags);
@@ -707,6 +714,7 @@ static int rtl_ax_beacon_update(struct rtl_ax_ap *radio, const u8 *frame,
 	u8 *packet;
 	int ret;
 
+	WBDBG("beacon_update ENTER bytes=%u tim=%u rate=%u", bytes, tim, rate);
 	if (bytes > 700 || tim < 24 || tim - 24 > 127)
 		return -E2BIG;
 	packet = kmalloc(bytes + 16, GFP_KERNEL);
@@ -744,6 +752,8 @@ static int rtl_ax_self_role_prepare(struct rtl_ax_ap *radio, const u8 *address,
 	bool owns_transport = !radio->monitor_started;
 	int ret;
 
+	WBDBG("role ENTER monitor=%d", radio->monitor_started);
+
 	/* Probe has not yet registered the wiphy. Keep the C2H receive ring
 	 * available for original receive/done acknowledgements. */
 	rtl_ax_role_unpause(unpause, 0);
@@ -755,37 +765,50 @@ static int rtl_ax_self_role_prepare(struct rtl_ax_ap *radio, const u8 *address,
 	rtl_ax_rx_open(radio->rx);
 	if (radio->role_stage >= 4)
 		goto update_cam;
+	WBDBG("role stage0 unpause SEND");
 	ret = rtl_ax_command_flags(radio, RTL_AX_H2C_CMD, 1, 9, 8,
 				   unpause, sizeof(unpause), true, false);
+	WBDBG("role stage0 unpause ret=%d", ret);
 	if (ret)
 		goto stop;
 	radio->role_stage = 1;
+	WBDBG("role stage1 create SEND");
 	ret = rtl_ax_command(radio, RTL_AX_H2C_CMD, 1, 8, 4,
 			     create, sizeof(create), true);
+	WBDBG("role stage1 create ret=%d", ret);
 	if (ret)
 		goto stop;
 	radio->role_stage = 2;
+	WBDBG("role stage2 join SEND");
 	ret = rtl_ax_command(radio, RTL_AX_H2C_CMD, 1, 8, 0,
 			     join, sizeof(join), true);
+	WBDBG("role stage2 join ret=%d", ret);
 	if (ret)
 		goto stop;
 	radio->role_stage = 3;
 update_cam:
+	WBDBG("role stage3 cam SEND");
 	ret = rtl_ax_command(radio, RTL_AX_H2C_DATA, 1, 6, 0,
 			     radio->role_cam, sizeof(radio->role_cam), true);
+	WBDBG("role stage3 cam ret=%d", ret);
 	if (!ret) {
 		radio->role_stage = 4;
+		WBDBG("role stage4 station_tables SEND");
 		ret = rtl_ax_station_tables(radio, 0);
+		WBDBG("role stage4 station_tables ret=%d", ret);
 	}
 	if (!ret) {
+		WBDBG("role stage5 port0_start SEND interval=%u dtim=%u", interval, dtim);
 		ret = rtl_ax_port0_start(&radio->io, &radio->port0, radio,
 					rtl_ax_port0_drop_mbid, interval, dtim);
+		WBDBG("role stage5 port0_start ret=%d", ret);
 		radio->port0.result = ret;
 		if (!ret)
 			radio->role_stage = 5;
 	}
 stop:
 	radio->role_result = ret;
+	WBDBG("role EXIT ret=%d stage=%u", ret, radio->role_stage);
 	if (owns_transport) {
 		rtl_ax_rx_close(radio->rx);
 		rtl_ax_hci_pause(&radio->io);

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#include "wbdbg.h"
 /* Linux receive integration for the native C 5GHz and XB2.4GHz paths.
  * Hardware channel and filters reuse the original-backed native controls. */
 #ifndef RTL_AX_AP_MONITOR_H
@@ -158,7 +159,9 @@ static int rtl_ax_ap_template(struct ieee80211_hw *hw, struct ieee80211_vif *vif
 	unsigned int rate = radio->chip == RTL_AX_8852C ? 4 : 0;
 	int ret;
 
+	WBDBG("ap_template ENTER");
 	skb = ieee80211_beacon_get_template(hw, vif, &offsets, conf->link_id);
+	WBDBG("ap_template beacon_get=%p", skb);
 	if (!skb)
 		return -ENOMEM;
 	if (conf->basic_rates)
@@ -175,10 +178,13 @@ static int rtl_ax_ap_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	unsigned long flags;
 	int ret;
 
+	WBDBG("ap_start ENTER vif=%pM beacon_int=%u dtim=%u",
+	      vif->addr, conf->beacon_int, conf->dtim_period);
 	if (radio->radar_required &&
 	    (radio->dfs.error || !radio->dfs.enabled || radio->dfs.detected))
 		return radio->dfs.error ? radio->dfs.error : -EBUSY;
 	ret = rtl_ax_self_role_prepare(radio, vif->addr, conf->beacon_int, conf->dtim_period);
+	WBDBG("ap_start self_role ret=%d", ret);
 	if (!ret && radio->security_roles[0].valid) {
 		u8 dctl[68];
 
@@ -187,13 +193,16 @@ static int rtl_ax_ap_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	}
 	if (!ret)
 		ret = rtl_ax_ap_template(hw, vif, conf);
+	WBDBG("ap_start template ret=%d", ret);
 	radio->ap_result = ret;
 	if (ret) {
 		rtl_ax_update32(&radio->io, 0xc400, BIT(12), 0);
+		WBDBG("ap_start ABORT ret=%d", ret);
 		return ret;
 	}
 	rtl_ax_port0_color(&radio->io, conf->he_bss_color.enabled ? conf->he_bss_color.color : 0);
 	rtl_ax_receive_mode(&radio->io, 4);
+	WBDBG("ap_start pre-spin");
 	/* RX radar can arrive while the firmware commands above are waiting. */
 	spin_lock_irqsave(&radio->command_lock, flags);
 	if (radio->radar_required && radio->dfs.detected) ret = -EBUSY;
@@ -206,6 +215,7 @@ static int rtl_ax_ap_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	}
 	spin_unlock_irqrestore(&radio->command_lock, flags);
 	radio->ap_result = ret;
+	WBDBG("ap_start DONE ret=%d started=%d", ret, READ_ONCE(radio->ap_started));
 	return ret;
 }
 
@@ -214,11 +224,14 @@ static void rtl_ax_offload_work(struct wiphy *wiphy, struct wiphy_work *work)
 	struct rtl_ax_ap *radio = container_of(work, struct rtl_ax_ap, offload_work);
 	unsigned int macid;
 	if (!radio->ap_started) return;
+	WBDBG("offload_work ENTER");
 	for (macid = 1; macid < 128; macid++) {
 		int ret;
 		if (!radio->peer_authorized[macid] || !radio->tx_ba[macid].aggregation[0] ||
 		    !(radio->security_roles[macid].valid & 3)) continue;
+		WBDBG("offload_work peer macid=%u SEND", macid);
 		ret = rtl_ax_tx_ni_peer(radio->tx, ieee80211_vif_to_wdev(radio->ap_vif)->netdev, macid);
+		WBDBG("offload_work peer macid=%u ret=%d", macid, ret);
 		radio->offload_result = min(ret, 0);
 		if (ret > 0) radio->offload_started++;
 	}

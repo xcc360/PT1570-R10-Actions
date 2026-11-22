@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Per-radio NI VP/EPP/EQ state, consumed by the shared PE1 executor. */
 #include <linux/etherdevice.h>
+#include "wbdbg.h"
 
 #define RING_BYTES RTL9617C_WIFI_EPP_BYTES
 #define BUFFER_COUNT RTL9617C_WIFI_BUFFERS
@@ -487,22 +488,30 @@ unlock:
 int rtl_ax_tx_ni_peer(struct rtl_ax_tx *tx, struct net_device *netdev, unsigned int macid)
 {
 	int id, ret;
+	WBDBG("tx_ni_peer ENTER macid=%u pe_active=%d", macid, tx->pe_active);
 	if (!tx->pe_active || READ_ONCE(tx->peer_offloaded[macid])) return 0;
 	if (!(get_unaligned_le32(tx->pe.memory + 0xd000 + macid * 32 + 16) & BIT(16))) return -ENOLINK;
 	id = rtl9617c_wifi_id(netdev);
+	WBDBG("tx_ni_peer wifi_id=%d", id);
 	if (id < 0) return id;
 	if (!tx->ni.active) {
+		WBDBG("tx_ni_peer ni_route SEND");
 		ret = rtl_ax_tx_ni_route(tx, netdev, macid);
+		WBDBG("tx_ni_peer ni_route ret=%d", ret);
 		if (ret) return ret;
 	}
 	if (!tx->ni.uplink_memory) {
+		WBDBG("tx_ni_peer uplink SEND");
 		ret = rtl_ax_tx_uplink(tx, netdev, tx->ni.route_macid, id);
+		WBDBG("tx_ni_peer uplink ret=%d", ret);
 		if (ret) return ret;
 	}
 	mutex_lock(&ni_test_lock);
 	put_unaligned_le32(1, tx->pe.memory + 0x11a00 + macid * 4);
 	dma_wmb();
+	WBDBG("tx_ni_peer peer_route SEND dest=%u", 16 + tx->ni.cpu);
 	ret = rtl9617c_wifi_peer_route(netdev, tx->pe.memory + 0xe400 + macid * 8, 16 + tx->ni.cpu);
+	WBDBG("tx_ni_peer peer_route ret=%d", ret);
 	if (!ret) {
 		WRITE_ONCE(tx->ni.route_peers[macid], true);
 		WRITE_ONCE(tx->peer_offloaded[macid], true);

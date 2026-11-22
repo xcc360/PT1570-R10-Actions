@@ -15,6 +15,7 @@
 #include "tx.h"
 #include "rx.h"
 #include "pe_probe.h"
+#include "wbdbg.h"
 #include "pe-tx-code.h"
 #include "ni-state.h"
 

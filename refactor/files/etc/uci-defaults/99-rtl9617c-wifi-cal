@@ -32,7 +32,10 @@ CAL5="$FWBASE/rtl8852ce/flash-calibration.bin"
 CAL2="$FWBASE/rtl8192xbe/flash-calibration.bin"
 valid_cal "$CAL5" || NEED_5G=1
 valid_cal "$CAL2" || NEED_2G=1
-[ "$NEED_5G$NEED_2G" = "00" ] && exit 0
+# Baked squashfs cal guarantees request_firmware succeeds before uci-defaults
+# runs. Always refresh from the device factory volume into overlay so the
+# device-specific calibration wins from the second boot onward.
+NEED_5G=1; NEED_2G=1
 
 # 找 factory UBI 卷设备（volname=factory）
 factory_dev=""
