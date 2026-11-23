@@ -2,9 +2,10 @@ name: PT1570-H10-CU-RTW89-EXP-sysupgrade
 
 # EXPERIMENTAL workflow — validates mainline rtw89 on PT1570-H10-CU.
 # Isolated from the stable build-pt1570-fit.yml (private rtl_ax_ap) channel.
-# Baseline: lyq1996/rtl9617c-openwrt@refactor HEAD (rtw89 kernel built-in).
-# Board: copy of upstream tianyi-tyfza1-2p5g (same platform + TYFC0003 cal),
-#        relabeled to H10-CU with 1x2.5GE + 3xGE ports. Stable channel untouched.
+# Baseline: lyq1996/rtl9617c-openwrt @ rtw89-enabled refactor (kernel built-in).
+# Board: new-base taurus PCIe/USB + H10-CU verified MDIO/NI/PON/LED mapping;
+#        TYFC0003 wifi calibration @0x2000/@3000 preserved. Stable channel untouched.
+# CI: AN758X-style cache closure, device-package precheck, failure diagnosis.
 # Usage:
 #   1) dispatch with test_only=true  -> static assertions + .config, no compile
 #   2) dispatch with test_only=false -> build sysupgrade.itb artifact (no release)
@@ -38,18 +39,20 @@ concurrency:
 env:
   DEBIAN_FRONTEND: noninteractive
   FORCE_UNSAFE_CONFIGURE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     name: PT1570-H10-CU-RTW89-EXP / build
     runs-on: ubuntu-24.04
-    timeout-minutes: 480
+    timeout-minutes: 350
 
     steps:
       - name: Checkout build assets
         uses: actions/checkout@v5
         with:
           ref: main
+          persist-credentials: false
 
       - name: Resolve board parameters
         run: |
@@ -96,13 +99,14 @@ jobs:
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
-          if ! git fetch -q --depth=1 origin "$REF"; then
-            echo "WARN: commit fetch failed, trying branch refactor" >&2
-            git fetch -q --depth=1 origin refactor
-          fi
+          git fetch -q --depth=1 origin "$REF" \
+            || { echo "::error::failed to fetch source ref '$REF'" >&2; exit 1; }
           git checkout -q FETCH_HEAD
-          echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
+          SOURCE_HASH=$(git rev-parse HEAD)
+          [ "${#SOURCE_HASH}" -eq 40 ] \
+            || { echo "::error::SOURCE_HASH is not a 40-char SHA: $SOURCE_HASH" >&2; exit 1; }
+          echo "SOURCE_HASH=$SOURCE_HASH" >> "$GITHUB_ENV"
+          echo "SOURCE_REF=$REF"          >> "$GITHUB_ENV"
           # baseline markers
           test -f target/linux/rtl9617c/dts/rtk-taurus.dtsi
           test -f target/linux/rtl9617c/patches-6.18/740-wifi-rtw89-8192xb.patch
@@ -111,6 +115,37 @@ jobs:
           test -s target/linux/rtl9617c/base-files/lib/firmware/rtw89/rtw8192xb_fw.bin
           test -s target/linux/rtl9617c/base-files/lib/firmware/rtw89/rtw8852c_fw.bin
           echo "source: $(git rev-parse HEAD) (rtw89 assets present)"
+
+      - name: Compute build cache keys
+        id: cachekeys
+        working-directory: /mnt/build_wrt
+        env:
+          SOURCE_REF: ${{ inputs.source_ref || '2df200550b73' }}
+          SOURCE_HASH: ${{ env.SOURCE_HASH }}
+        run: |
+          bash "$GITHUB_WORKSPACE/rtw89-h10/wb-build-common.sh" key /mnt/build_wrt
+          bash "$GITHUB_WORKSPACE/rtw89-h10/wb-build-common.sh" dlkey /mnt/build_wrt
+
+      - name: Restore toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.PREFIX }}
+
+      - name: Restore dl cache
+        uses: actions/cache@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.DL_PREFIX }}
+
+      - name: Prepare restored cache
+        run: bash "$GITHUB_WORKSPACE/rtw89-h10/wb-build-common.sh" prepare /mnt/build_wrt
 
       - name: Update and install feeds
         working-directory: /mnt/build_wrt
@@ -189,6 +224,11 @@ jobs:
           grep -q 'youhua,pt1570-h10-cu-rtw89-exp' target/linux/rtl9617c/base-files/etc/board.d/02_network
           echo "  OK rtw89 kernel cfg + early firmware + H10 board/wifi bindings"
 
+      - name: Verify device package closure
+        working-directory: /mnt/build_wrt
+        run: |
+          bash "$GITHUB_WORKSPACE/rtw89-h10/wb-build-common.sh" check-packages /mnt/build_wrt "$PROFILE"
+
       - name: Upload config (test_only)
         if: ${{ inputs.test_only }}
         uses: actions/upload-artifact@v6
@@ -199,6 +239,27 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Build toolchain (cacheable)
+        if: ${{ !inputs.test_only }}
+        working-directory: /mnt/build_wrt
+        run: |
+          set -e
+          JOBS=$(bash "$GITHUB_WORKSPACE/rtw89-h10/wb-build-common.sh" jobs /mnt/build_wrt)
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "building toolchain with -j$JOBS"
+          make -j"$JOBS" toolchain/compile
+
+      - name: Save toolchain cache (early)
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}-${{ github.run_id }}
+
       - name: Build firmware
         if: ${{ !inputs.test_only }}
         working-directory: /mnt/build_wrt
@@ -207,16 +268,28 @@ jobs:
           LOG="$GITHUB_WORKSPACE/artifact/build.log"
           mkdir -p "$GITHUB_WORKSPACE/artifact"
           : > "$LOG"
-          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+          JOBS="${JOBS:-$(nproc)}"
+          if make -j"$JOBS" 2>&1 | tee -a "$LOG"; then
             echo "PARALLEL_BUILD_OK=True"
           else
-            echo "::warning::parallel build failed, retrying with -j1 V=s (verbose)"
-            if ! make -j1 V=s 2>&1 | tee -a "$LOG"; then
-              echo "::group::BUILD FAILED - last 150 lines"
-              tail -n 150 "$LOG"
-              echo "::endgroup::"
-              exit 1
+            echo "::warning::parallel build failed, running targeted verbose retry"
+            bash "$GITHUB_WORKSPACE/rtw89-h10/wb-build-common.sh" diagnose "$LOG" || true
+            FAILED_SUB=$(grep -oE 'ERROR: [^ ]+ failed to build' "$LOG" \
+              | tail -1 | sed 's/^ERROR: //; s/ failed to build$//' || true)
+            if [ -n "$FAILED_SUB" ]; then
+              case "$FAILED_SUB" in
+                package/*|target/*) RETRY="$FAILED_SUB/compile" ;;
+                *) RETRY="$FAILED_SUB" ;;
+              esac
+              echo "::warning::retrying $RETRY with V=s"
+              make -j1 V=s "$RETRY" 2>&1 | tee -a "$LOG" || true
+            else
+              make -j1 V=s 2>&1 | tee -a "$LOG" || true
             fi
+            echo "::group::BUILD FAILED - last 150 lines"
+            tail -n 150 "$LOG"
+            echo "::endgroup::"
+            exit 1
           fi
           # OpenWrt FIT image is named <prefix>-sysupgrade.itb, NOT plain sysupgrade.itb
           echo "=== bin/targets/rtl9617c/generic/ listing ==="
@@ -242,6 +315,22 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Upload build log (failure)
+        if: ${{ failure() && !inputs.test_only }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: rtw89-h10-buildlog-${{ github.run_number }}
+          path: artifact/build.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Save dl cache
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}-${{ github.run_id }}
+
       - name: Publish release
         if: ${{ !inputs.test_only && inputs.create_release }}
         uses: softprops/action-gh-release@v3
@@ -252,6 +341,6 @@ jobs:
           body: |
             ⚠️ EXPERIMENTAL — mainline rtw89 validation on PT1570-H10-CU. NOT for daily use.
             Source ${{ env.SOURCE_REF }} @ ${{ env.SOURCE_HASH }} (refactor baseline, rtw89 built-in).
-            Board: upstream tianyi-tyfza1-2p5g relabeled to H10-CU, 1x2.5GE+3xGE, WiFi cal @0x2000/0x3000 preserved.
+            Board: new-base taurus PCIe/USB + H10-CU verified 1x2.5GE+3xGE/PON/LED mapping, WiFi cal @0x2000/@3000 preserved.
             Built with wpad-openssl + iw. No private rtl_ax_ap.ko.
             Flash only after backing up current firmware + factory UBI volume. Revert = reflash known-good.
