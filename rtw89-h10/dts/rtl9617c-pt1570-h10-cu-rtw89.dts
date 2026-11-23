@@ -9,7 +9,7 @@
 
 / {
 	model = "Youhua PT1570-H10-CU (rtw89-exp)";
-	compatible = "youhua,pt1570-h10-cu-rtw89-exp", "tianyi,tyfza1-2p5g", "realtek,rtl9617c";
+	compatible = "youhua,pt1570-h10-cu-rtw89-exp", "youhua,pt1570-h10-cu", "realtek,rtl9617c";
 
 	aliases {
 		serial0 = &uart0;
@@ -36,9 +36,28 @@
 		#size-cells = <2>;
 		ranges;
 
+		voip-vector@0 {
+			reg = <0 0 0 0x1000>;
+			no-map;
+		};
+		voip@2000000 {
+			reg = <0 0x02000000 0 0x00300000>;
+			no-map;
+		};
+		voip-ipc@2300000 {
+			reg = <0 0x02300000 0 0x00100000>;
+			no-map;
+		};
+		ddr-noncache@9000000 {
+			reg = <0 0x09000000 0 0x01a50000>;
+		};
+		ddr-cache@bc48000 {
+			reg = <0 0x0bc48000 0 0x10000>;
+		};
 		lan_deepq: lan-deepq@c000000 {
 			reg = <0 0x0c000000 0 0x01500000>;
 		};
+
 		tz-smc@eeff000 {
 			reg = <0 0x0eeff000 0 0x1000>;
 			no-map;
@@ -53,7 +72,7 @@
 
 		internet {
 			label = "LED_PPP_G";
-			gpios = <&gpio_bank2 7 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
 			default-state = "off";
 		};
 		los {
@@ -66,38 +85,41 @@
 		};
 		led_power: power {
 			label = "LED_PWR_G";
-			gpios = <&gpio_bank2 6 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 11 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 		phone {
 			label = "LED_FXS";
-			gpios = <&gpio_bank4 11 GPIO_ACTIVE_LOW>;
-		};
-		lan1 {
-			label = "LED_EPHY0";
-			gpios = <&gpio_bank0 11 GPIO_ACTIVE_HIGH>;
-		};
-		lan2 {
-			label = "LED_EPHY1";
 			gpios = <&gpio_bank0 12 GPIO_ACTIVE_HIGH>;
 		};
-		lan3 {
+		lan0 {
+			label = "LED_EPHY0";
+			gpios = <&gpio_bank0 4 GPIO_ACTIVE_LOW>;   /* 2.5G 口，PHY 硬件驱动可长灭 */
+		};
+		lan1 {
+			label = "LED_EPHY1";
+			gpios = <&gpio_bank0 3 GPIO_ACTIVE_LOW>;   /* 千兆口2 */
+		};
+		lan2 {
 			label = "LED_EPHY2";
-			gpios = <&gpio_bank0 3 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 1 GPIO_ACTIVE_LOW>;   /* 千兆口3 */
 		};
-		lan4 {
+		lan3 {
 			label = "LED_EPHY3";
-			gpios = <&gpio_bank0 4 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 0 GPIO_ACTIVE_LOW>;   /* 千兆口4 */
 		};
-		usb {
-			label = "LED_USB1";
-			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
+		usb0 {
+			label = "LED_USB0";
+			gpios = <&gpio_bank0 7 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "usbport";
-			trigger-sources = <&usb_port1>;
+		};
+		usb1 {
+			label = "LED_USB1";
+			gpios = <&gpio_bank0 6 GPIO_ACTIVE_LOW>;
 		};
 		wps {
 			label = "LED_WPS_G";
-			gpios = <&gpio_bank4 12 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 5 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
@@ -108,24 +130,6 @@
 			label = "reset";
 			linux,code = <KEY_RESTART>;
 			gpios = <&gpio_bank0 8 GPIO_ACTIVE_LOW>;
-			debounce-interval = <60>;
-		};
-		wps {
-			label = "wps";
-			linux,code = <KEY_WPS_BUTTON>;
-			gpios = <&gpio_bank3 7 GPIO_ACTIVE_LOW>;
-			debounce-interval = <60>;
-		};
-		wifi {
-			label = "wifi";
-			linux,code = <KEY_WLAN>;
-			gpios = <&gpio_bank3 3 GPIO_ACTIVE_LOW>;
-			debounce-interval = <60>;
-		};
-		led {
-			label = "led";
-			linux,code = <KEY_LIGHTS_TOGGLE>;
-			gpios = <&gpio_bank2 2 GPIO_ACTIVE_LOW>;
 			debounce-interval = <60>;
 		};
 	};
@@ -151,19 +155,14 @@
 &mdio {
 	status = "okay";
 
-	phy1: ethernet-phy@1 {
-		reg = <1>;
-	};
-	phy2: ethernet-phy@2 {
-		reg = <2>;
-	};
-	phy3: ethernet-phy@3 {
-		reg = <3>;
-	};
+	phy2: ethernet-phy@2 { reg = <2>; };
+	phy3: ethernet-phy@3 { reg = <3>; };
+	phy4: ethernet-phy@4 { reg = <4>; };
 
-	phy_2p5g: ethernet-phy@7 {
-		compatible = "ethernet-phy-ieee802.3-c45";
-		reg = <7>;
+	// 外置 RTL8221B 2.5G PHY：MDIO addr6 C22。refactor 用 HisGMII +
+	// serdes-option-mode=1（对齐上游 PT1500 已实机验证的 2.5G 正解架构）。
+	phy_2p5g: ethernet-phy@6 {
+		reg = <6>;
 		realtek,hisgmii;
 		realtek,serdes-option-mode = <1>;
 
@@ -173,50 +172,52 @@
 
 			led@0 {
 				reg = <0>;
-				color = <LED_COLOR_ID_BLUE>;
-				function = LED_FUNCTION_LAN;
-				active-low;
+				label = "LED_8221B_P6_0";
+				default-state = "on";
+			};
+			led@1 {
+				reg = <1>;
+				label = "LED_8221B_P6_1";
+				default-state = "on";
+			};
+			led@2 {
+				reg = <2>;
+				label = "LED_8221B_P6_2";
+				default-state = "on";
 			};
 		};
 	};
 };
 
 &ni {
-	memory-region = <&lan_deepq>;
 	nvmem-cells = <&base_mac 0>;
 	nvmem-cell-names = "mac-address";
+	memory-region = <&lan_deepq>;
 	status = "okay";
 
 	ethernet-ports {
-		port@0 {
-			reg = <0>;
-			label = "lan4";
-			nvmem-cells = <&base_mac 4>;
-			nvmem-cell-names = "mac-address";
-			phy-mode = "internal";
-			phy-handle = <&phy1>;
-		};
 		port@1 {
 			reg = <1>;
-			label = "lan3";
-			nvmem-cells = <&base_mac 3>;
-			nvmem-cell-names = "mac-address";
+			label = "lan2";
 			phy-mode = "internal";
 			phy-handle = <&phy2>;
 		};
 		port@2 {
 			reg = <2>;
-			label = "lan2";
-			nvmem-cells = <&base_mac 2>;
-			nvmem-cell-names = "mac-address";
+			label = "lan3";
 			phy-mode = "internal";
 			phy-handle = <&phy3>;
 		};
-		port@4 {
-			reg = <4>;
+		port@3 {
+			reg = <3>;
+			label = "lan4";
+			phy-mode = "internal";
+			phy-handle = <&phy4>;
+		};
+		// P6 XGE MAC = 2.5G 口（netdev lan1），独立 serdes PHY。
+		port@6 {
+			reg = <6>;
 			label = "lan1";
-			nvmem-cells = <&base_mac 1>;
-			nvmem-cell-names = "mac-address";
 			phy-mode = "2500base-x";
 			phy-handle = <&phy_2p5g>;
 			phys = <&serdes>;
@@ -254,8 +255,8 @@
 
 &pon {
 	status = "okay";
-	nvmem-cells = <&epon_mac 0>, <&base_mac 0>, <&pon_sn>;
-	nvmem-cell-names = "mac-address", "base-mac", "pon-serial";
+	nvmem-cells = <&epon_mac 0>, <&pon_sn>;
+	nvmem-cell-names = "mac-address", "pon-serial";
 	realtek,optical-front-end = <&bosa0>;
 	tx-disable-gpios = <&gpio_bank0 15 GPIO_ACTIVE_HIGH>;
 	realtek,burst-polarity = <0>;
@@ -299,6 +300,9 @@
 				label = "ubi_device";
 				reg = <0x340000 0xf5c0000>;
 				compatible = "linux,ubi";
+				// ⛔ 不可 read-only：否则 UBI 只读 attach、rootfs_data 建不出
+				// overlay，sysupgrade 刷入态黑砖（旧 CU 第二版实测踩过）。
+				// refactor 上游 dtsi 已不给 ubi 分区标 read-only，无需覆盖。
 
 				volumes {
 					ubi_rootdisk: ubi-volume-fit {
@@ -352,6 +356,11 @@
 							bosa_olt_calibration: olt-calibration@4800 {
 								reg = <0x4800 0x400>;
 							};
+
+							xtemp_calibration: xtemp-calibration@5000 {
+								reg = <0x5000 0x1000>;
+							};
+
 
 							fpga_image: fpga-image@10000 {
 								reg = <0x10000 0x7e0000>;
