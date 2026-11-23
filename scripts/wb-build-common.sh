@@ -11,7 +11,7 @@ set -e
 
 CMD="${1:-}"; shift || true
 ROOT="${1:-.}"; shift || true
-NS="${1:-wb}"; shift || true
+# NS is consumed only by key/dlkey branches; do NOT shift globally here.
 
 emit() {
   printf '%s=%s\n' "$1" "$2"
@@ -22,6 +22,7 @@ emit() {
 
 case "$CMD" in
   key)
+    NS="${1:-wb}"
     SRC_REF="${SOURCE_REF:-unknown}"
     SRC_HASH="${SOURCE_HASH:-unknown}"
     SLUG=$(printf '%s' "$SRC_REF" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-*$//')
@@ -31,6 +32,7 @@ case "$CMD" in
     ;;
 
   dlkey)
+    NS="${1:-wb}"
     WEEK=$(date -u +%Y%W)
     emit DL_KEY "${NS}-dl-${WEEK}"
     emit DL_PREFIX "${NS}-dl-"
