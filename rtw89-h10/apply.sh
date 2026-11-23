@@ -18,6 +18,35 @@ echo "assets=$ASSETS src=$SRC"
 [ -f "$SRC/target/linux/rtl9617c/patches-6.18/740-wifi-rtw89-8192xb.patch" ] \
   || { echo "ERROR: rtw89 8192xb patch missing (baseline too old)" >&2; exit 1; }
 
+# --- 0) install board-matched rtw89 NIC firmware (cut U2 for this H10 board) ---
+# The upstream base tree ships cut-U3 (8852C) and cut-U1 (8192XB) images. The
+# factory-confirmed hardware on PT1570-H10-CU is cut U2 for both radios (the
+# vendor AP backend logs cv=1 and selects the U2 AP images). Feeding the wrong
+# cut makes rtw89 either hang in c2h reg read (8852C) or never reach FreeRTOS
+# ready (8192XB). Always replace with the tested U2 NIC images from assets.
+FW_ASSETS="$ASSETS/rtw89-h10/firmware"
+FW_RT_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware/rtw89"
+mkdir -p "$FW_RT_DIR"
+cp -f "$FW_ASSETS/rtw8852c_fw.bin" "$FW_RT_DIR/rtw8852c_fw.bin"
+cp -f "$FW_ASSETS/rtw8192xb_fw.bin" "$FW_RT_DIR/rtw8192xb_fw.bin"
+python3 - "$FW_RT_DIR" <<'PY'
+import pathlib
+import struct
+import sys
+
+d = pathlib.Path(sys.argv[1])
+expected = {'rtw8852c_fw.bin': 0x88520202, 'rtw8192xb_fw.bin': 0x81920102}
+for name, want in expected.items():
+    p = d / name
+    data = p.read_bytes()
+    if len(data) < 4:
+        raise SystemExit('ERROR: %s is empty' % name)
+    got = struct.unpack('<I', data[:4])[0]
+    if got != want:
+        raise SystemExit('ERROR: %s chip/cut mismatch: got 0x%08x, want 0x%08x' % (name, got, want))
+    print('  verified %s chip/cut 0x%08x (%d bytes)' % (name, got, len(data)))
+PY
+
 # --- 1) inject DTS ---
 cp -f "$ASSETS/rtw89-h10/dts/rtl9617c-pt1570-h10-cu-rtw89.dts" "$DTS_DIR/rtl9617c-pt1570-h10-cu-rtw89.dts"
 echo "  injected DTS"
