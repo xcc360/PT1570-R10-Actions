@@ -60,6 +60,7 @@ case "$CMD" in
 
   check-packages)
     PROFILE="${1:-}"
+    ALLOW_MISSING="${2:-}"
     if [ -z "$PROFILE" ]; then
       echo "::error::check-packages requires PROFILE argument"; exit 1
     fi
@@ -97,6 +98,17 @@ case "$CMD" in
 
     if [ -n "$MOD_ONLY" ]; then
       echo "::warning::DEVICE_PACKAGES built as =m (not installed by default):$MOD_ONLY"
+    fi
+    # Some PT15xx workflows install diagnostic tools (tc/mtr/conntrack-tools)
+    # from an external apk feed instead of the local .config. Allow-list them.
+    if [ -n "$MISS_DEV" ] && [ -n "$ALLOW_MISSING" ]; then
+      ALLOWED=""
+      MISS2=""
+      for p in $MISS_DEV; do
+        case " $ALLOW_MISSING " in *" $p "*) ALLOWED="$ALLOWED $p" ;; *) MISS2="$MISS2 $p" ;; esac
+      done
+      [ -n "$ALLOWED" ] && echo "::warning::DEVICE_PACKAGES provided by external apk feed (allow-listed):$ALLOWED"
+      MISS_DEV="$MISS2"
     fi
     if [ -n "$MISS_DEV" ]; then
       echo "::error::DEVICE_PACKAGES of ${PROFILE} were not selected:$MISS_DEV"

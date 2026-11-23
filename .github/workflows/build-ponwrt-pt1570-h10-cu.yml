@@ -855,7 +855,7 @@ jobs:
         run: |
           PROFILE="${{ env.PROFILE }}"
           [ -n "$PROFILE" ] || { echo "::error::PROFILE is empty (Resolve board parameters did not run)"; exit 1; }
-          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" check-packages /mnt/build_wrt "$PROFILE"
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" check-packages /mnt/build_wrt "$PROFILE" "tc mtr conntrack-tools"
       - name: Run static preflight (H10-CU)
         if: ${{ inputs.test_only }}
         run: |
