@@ -77,6 +77,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DEBIAN_FRONTEND: noninteractive
   FORCE_UNSAFE_CONFIGURE: 1
 
@@ -84,12 +85,13 @@ jobs:
   build:
     name: PT1570-H10-CU-WIFI-refactor / build
     runs-on: ubuntu-24.04
-    timeout-minutes: 480
+    timeout-minutes: 350
 
     steps:
       - name: Checkout build assets
         uses: actions/checkout@v5
         with:
+          persist-credentials: false
           ref: main
 
       - name: Resolve board parameters
@@ -139,12 +141,12 @@ jobs:
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
-          if ! git fetch -q --depth=1 origin "$REF"; then
-            echo "WARN: 按 commit 拉取失败，回退到 refactor 分支 HEAD" >&2
-            git fetch -q --depth=1 origin refactor
-          fi
+          [ "${#REF}" -eq 40 ] || { echo "::error::source_ref must be a 40-char commit SHA, got: $REF" >&2; exit 1; }
+          git fetch -q --depth=1 origin "$REF" || { echo "::error::failed to fetch source ref: $REF" >&2; exit 1; }
           git checkout -q FETCH_HEAD
           echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          _SH=$(git rev-parse HEAD)
+          [ "${#_SH}" -eq 40 ] || { echo "::error::SOURCE_HASH invalid: $_SH" >&2; exit 1; }
           echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
           # Taurus 布局断言（2.5G/PON 白拿，无 tyfza1 base 残留）
           # 兼容旧 refactor（ae4aeac）与新 Taurus（f75f4ca+）：serdes 拆成 serdes/lane 两个文件
@@ -164,6 +166,39 @@ jobs:
             || { echo "::error::source_ref 串回 base（发现 tyfza1.dtsi）" >&2; exit 1; }
           echo "source: $(git rev-parse HEAD) (taurus/refactor)"
 
+
+      - name: Compute build cache keys
+        id: cachekeys
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_HASH: ${{ env.SOURCE_HASH }}
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" key /mnt/build_wrt pt1570-h10cu-refactor
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" dlkey /mnt/build_wrt pt1570-h10cu-refactor
+
+      - name: Restore toolchain cache
+        if: ${{ !inputs.test_only }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.PREFIX }}
+
+      - name: Restore dl cache
+        if: ${{ !inputs.test_only }}
+        uses: actions/cache@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.DL_PREFIX }}
+
+      - name: Prepare restored cache
+        if: ${{ !inputs.test_only }}
+        run: bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" prepare /mnt/build_wrt
       - name: Pin APK signing key (optional)
         working-directory: wrt
         env:
@@ -497,6 +532,13 @@ jobs:
 
           cp .config "$GITHUB_WORKSPACE/Config-final.txt"
 
+
+      - name: Verify device package closure
+        working-directory: wrt
+        run: |
+          PROFILE="${{ env.PROFILE }}"
+          [ -n "$PROFILE" ] || { echo "::error::PROFILE is empty (Resolve board parameters did not run)"; exit 1; }
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" check-packages /mnt/build_wrt "$PROFILE"
       - name: Run static preflight (test_only)
         if: ${{ inputs.test_only }}
         run: |
@@ -527,8 +569,31 @@ jobs:
         working-directory: wrt
         run: |
           make package/base-files/clean >/dev/null 2>&1 || true
-          make download -j"$(nproc)"
+          JOBS=$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+          make download -j"$JOBS"
 
+
+      - name: Build toolchain (cacheable)
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          set -e
+          JOBS=$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "building toolchain with -j$JOBS"
+          make -j"$JOBS" toolchain/compile
+
+      - name: Save toolchain cache (early)
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}-${{ github.run_id }}
       - name: Compile
         if: ${{ !inputs.test_only }}
         working-directory: wrt
@@ -536,7 +601,9 @@ jobs:
           set -o pipefail
           LOG="$GITHUB_WORKSPACE/build.log"
           : > "$LOG"
-          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+          JOBS="${JOBS:-$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)}"
+          echo "parallel jobs=$JOBS"
+          if make -j"$JOBS" 2>&1 | tee -a "$LOG"; then
             echo "PARALLEL_BUILD_OK=True"
           else
             echo "::warning::并行编译失败，改用 -j1 V=s 重试"
@@ -800,3 +867,11 @@ jobs:
                互相干扰，按实施记录的可回退方案处理。
             ⚠️ 默认 LAN 192.168.1.1，默认 WAN=pon0.1101 PPPoE（XGPON），账号自填。
             配置见 Config-final.txt；校验见 sha256sums.txt。
+
+
+      - name: Save dl cache
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}-${{ github.run_id }}

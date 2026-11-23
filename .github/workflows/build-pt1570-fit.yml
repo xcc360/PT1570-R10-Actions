@@ -149,6 +149,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DEBIAN_FRONTEND: noninteractive
   FORCE_UNSAFE_CONFIGURE: 1
 
@@ -156,7 +157,7 @@ jobs:
   build:
     name: PT1570-R10-4GE-CU-sysupgrade / build
     runs-on: ubuntu-24.04
-    timeout-minutes: 480
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
@@ -166,6 +167,8 @@ jobs:
     steps:
       - name: Checkout build assets
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       # 防呆：任何把第二个机型加回 matrix 的改动都会在这里失败。
       # 只检查 matrix 的 board 行，不搜全文（文件头注释里本来就有 H10 说明）。
@@ -246,12 +249,12 @@ jobs:
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
-          if ! git fetch -q --depth=1 origin "$REF"; then
-            echo "WARN: 按 commit 拉取失败，回退到 h10 分支" >&2
-            git fetch -q --depth=1 origin feature/pt1500-h10-openwrt-fixes
-          fi
+          [ "${#REF}" -eq 40 ] || { echo "::error::source_ref must be a 40-char commit SHA, got: $REF" >&2; exit 1; }
+          git fetch -q --depth=1 origin "$REF" || { echo "::error::failed to fetch source ref: $REF" >&2; exit 1; }
           git checkout -q FETCH_HEAD
           echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          _SH=$(git rev-parse HEAD)
+          [ "${#_SH}" -eq 40 ] || { echo "::error::SOURCE_HASH invalid: $_SH" >&2; exit 1; }
           echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
           echo "--- target ---"
           test -f target/linux/rtl9617c/image/Makefile
@@ -260,6 +263,39 @@ jobs:
           grep -n 'rootdisk' target/linux/rtl9617c/dts/rtl9617c-tyfza1.dtsi | head -3
           echo "source: $(git rev-parse HEAD)"
 
+
+      - name: Compute build cache keys
+        id: cachekeys
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_HASH: ${{ env.SOURCE_HASH }}
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" key /mnt/build_wrt pt1570-r10-fit
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" dlkey /mnt/build_wrt pt1570-r10-fit
+
+      - name: Restore toolchain cache
+        if: ${{ !inputs.test_only }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.PREFIX }}
+
+      - name: Restore dl cache
+        if: ${{ !inputs.test_only }}
+        uses: actions/cache@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.DL_PREFIX }}
+
+      - name: Prepare restored cache
+        if: ${{ !inputs.test_only }}
+        run: bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" prepare /mnt/build_wrt
       - name: Build PE firmware (pe-tx-code.h)
         working-directory: wrt
         run: |
@@ -742,6 +778,13 @@ jobs:
           cat files/etc/apk/repositories.d/distfeeds.list
           cp .config "$GITHUB_WORKSPACE/Config-final.txt"
 
+
+      - name: Verify device package closure
+        working-directory: wrt
+        run: |
+          PROFILE="${{ env.PROFILE }}"
+          [ -n "$PROFILE" ] || { echo "::error::PROFILE is empty (Resolve board parameters did not run)"; exit 1; }
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" check-packages /mnt/build_wrt "$PROFILE"
       - name: Run static preflight
         if: ${{ inputs.test_only }}
         env:
@@ -763,8 +806,31 @@ jobs:
         working-directory: wrt
         run: |
           make package/base-files/clean >/dev/null 2>&1 || true
-          make download -j"$(nproc)"
+          JOBS=$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+          make download -j"$JOBS"
 
+
+      - name: Build toolchain (cacheable)
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          set -e
+          JOBS=$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "building toolchain with -j$JOBS"
+          make -j"$JOBS" toolchain/compile
+
+      - name: Save toolchain cache (early)
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}-${{ github.run_id }}
       - name: Compile
         if: ${{ !inputs.test_only }}
         working-directory: wrt
@@ -772,9 +838,18 @@ jobs:
           set -o pipefail
           LOG="$GITHUB_WORKSPACE/build.log"
           : > "$LOG"
-          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+          JOBS="${JOBS:-$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)}"
+          echo "parallel jobs=$JOBS"
+          if make -j"$JOBS" 2>&1 | tee -a "$LOG"; then
             echo "PARALLEL_BUILD_OK=True"
           else
+            bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" diagnose "$LOG" || true
+            FAILED_SUB=$(grep -oE 'ERROR: [^ ]+ failed to build' "$LOG" | tail -1 | sed 's/^ERROR: //; s/ failed to build$//' || true)
+            if [ -n "$FAILED_SUB" ]; then
+              case "$FAILED_SUB" in package/*|target/*) RETRY="$FAILED_SUB/compile" ;; *) RETRY="$FAILED_SUB" ;; esac
+              echo "::warning::targeted verbose retry: $RETRY"
+              make -j1 V=s "$RETRY" 2>&1 | tee -a "$LOG" && { echo "TARGETED_RETRY_OK=True"; echo "" >> "$LOG"; } || true
+            fi
             echo "::warning::并行编译失败，改用 -j1 V=s 重试并显示详细日志"
             if make -j1 V=s 2>&1 | tee -a "$LOG"; then
               echo "SERIAL_BUILD_OK=True"
@@ -1327,3 +1402,11 @@ jobs:
             上游单 PE WiFi 移植：本产物 wifi_port 设置见 BUILD_INFO.txt（off / scan-rssi / scan-rssi+ra）。
             scan-rssi/scan-rssi+ra 在已验证的单 PE1 参考驱动上定向移植上游 6077a9a 的扫描/站点 RSSI 解码（iwinfo/station dump 上报真实负 dBm、sw_scan 回调）与 6077a9a/f74af178 的 RA 信号解析结构；严格跳过双 PE 微码、pe-core.c 与 WD 保留位（与本平台不兼容）。迁移仅取可验证子集，上游公开资料中 WiFi 吞吐根因尚未闭环，本版不承诺追平原厂私有驱动速率。
             B3 配置固化：新增 98-pt1570-wifi-offload-default，默认关闭 firewall 硬件流量卸载（flow_offloading_hw=0，与 rtl_ax_ap WiFi 不兼容导致断流/BA 刷屏），保留软件 flow_offloading=1（PON 单播上行所需 FE），sysupgrade 保留配置时不重跑，可手工改回。
+
+
+      - name: Save dl cache
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}-${{ github.run_id }}

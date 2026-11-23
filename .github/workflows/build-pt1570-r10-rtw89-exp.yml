@@ -36,6 +36,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DEBIAN_FRONTEND: noninteractive
   FORCE_UNSAFE_CONFIGURE: 1
 
@@ -43,13 +44,14 @@ jobs:
   build:
     name: PT1570-R10-RTW89-EXP / build
     runs-on: ubuntu-24.04
-    timeout-minutes: 480
+    timeout-minutes: 350
 
     steps:
       - name: Checkout build assets
         uses: actions/checkout@v5
         with:
           ref: feature/rtw89-r10-exp-20261122
+          persist-credentials: false
 
       - name: Resolve board parameters
         run: |
@@ -96,10 +98,8 @@ jobs:
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
-          if ! git fetch -q --depth=1 origin "$REF"; then
-            echo "WARN: commit fetch failed, trying branch refactor" >&2
-            git fetch -q --depth=1 origin refactor
-          fi
+          [ "${#REF}" -ge 12 ] || { echo "::error::source_ref too short: $REF" >&2; exit 1; }
+          git fetch -q --depth=1 origin "$REF" || { echo "::error::failed to fetch source ref: $REF" >&2; exit 1; }
           git checkout -q FETCH_HEAD
           echo "SOURCE_HASH=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "SOURCE_REF=$REF"                   >> "$GITHUB_ENV"
@@ -112,6 +112,39 @@ jobs:
           test -s target/linux/rtl9617c/base-files/lib/firmware/rtw89/rtw8852c_fw.bin
           echo "source: $(git rev-parse HEAD) (rtw89 assets present)"
 
+
+      - name: Compute build cache keys
+        id: cachekeys
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_HASH: ${{ env.SOURCE_HASH }}
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" key /mnt/build_wrt pt1570-r10-rtw89
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" dlkey /mnt/build_wrt pt1570-r10-rtw89
+
+      - name: Restore toolchain cache
+        if: ${{ !inputs.test_only }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.PREFIX }}
+
+      - name: Restore dl cache
+        if: ${{ !inputs.test_only }}
+        uses: actions/cache@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}
+          restore-keys: ${{ steps.cachekeys.outputs.DL_PREFIX }}
+
+      - name: Prepare restored cache
+        if: ${{ !inputs.test_only }}
+        run: bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" prepare /mnt/build_wrt
       - name: Update and install feeds
         working-directory: /mnt/build_wrt
         run: |
@@ -174,6 +207,13 @@ jobs:
           echo "  OK   FIT/UBI essentials"
           cp .config "$GITHUB_WORKSPACE/Config-final.txt"
 
+
+      - name: Verify device package closure
+        working-directory: wrt
+        run: |
+          PROFILE="${{ env.PROFILE }}"
+          [ -n "$PROFILE" ] || { echo "::error::PROFILE is empty (Resolve board parameters did not run)"; exit 1; }
+          bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" check-packages /mnt/build_wrt "$PROFILE"
       - name: Verify rtw89 assets
         working-directory: /mnt/build_wrt
         run: |
@@ -191,17 +231,42 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+
+      - name: Build toolchain (cacheable)
+        if: ${{ !inputs.test_only }}
+        working-directory: wrt
+        run: |
+          set -e
+          JOBS=$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "building toolchain with -j$JOBS"
+          make -j"$JOBS" toolchain/compile
+
+      - name: Save toolchain cache (early)
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /mnt/build_wrt/staging_dir/host
+            /mnt/build_wrt/staging_dir/hostpkg
+            /mnt/build_wrt/staging_dir/toolchain
+            /mnt/build_wrt/.ccache
+          key: ${{ steps.cachekeys.outputs.KEY }}-${{ github.run_id }}
       - name: Build firmware
         if: ${{ !inputs.test_only }}
         working-directory: /mnt/build_wrt
         run: |
           set -o pipefail
+          JOBS=$(bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" jobs /mnt/build_wrt)
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "parallel jobs=$JOBS"
           LOG="$GITHUB_WORKSPACE/artifact/build.log"
           mkdir -p "$GITHUB_WORKSPACE/artifact"
           : > "$LOG"
-          if make -j"$(nproc)" 2>&1 | tee -a "$LOG"; then
+          if make -j"$JOBS" 2>&1 | tee -a "$LOG"; then
             echo "PARALLEL_BUILD_OK=True"
           else
+            bash "$GITHUB_WORKSPACE/scripts/wb-build-common.sh" diagnose "$LOG" || true
             echo "::warning::parallel build failed, retrying with -j1 V=s (verbose)"
             if ! make -j1 V=s 2>&1 | tee -a "$LOG"; then
               echo "::group::BUILD FAILED - last 150 lines"
@@ -247,3 +312,11 @@ jobs:
             Board: copy of tianyi-tyfza1-2p5g relabeled to R10, 4xGE ports, WiFi cal @0x2000/0x3000 preserved.
             Built with wpad-openssl + iw. No private rtl_ax_ap.ko.
             Flash only after backing up current firmware + factory UBI volume. Revert = reflash known-good.
+
+
+      - name: Save dl cache
+        if: ${{ !cancelled() && !inputs.test_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: /mnt/build_wrt/dl
+          key: ${{ steps.cachekeys.outputs.DL_KEY }}-${{ github.run_id }}
