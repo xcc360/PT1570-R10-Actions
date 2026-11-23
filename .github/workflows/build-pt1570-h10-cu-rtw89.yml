@@ -16,7 +16,7 @@ on:
       source_ref:
         description: 'lyq1996/rtl9617c-openwrt commit/branch (default refactor HEAD with rtw89)'
         required: false
-        default: '2df200550b73'
+        default: '2df200550b73316094ff53c02899954beb22efeb'
         type: string
       test_only:
         description: 'Only validate config + assert rtw89 assets; no compile'
@@ -95,10 +95,12 @@ jobs:
       - name: Clone rtl9617c-openwrt source (refactor baseline)
         run: |
           set -e
-          REF="${{ inputs.source_ref || '2df200550b73' }}"
+          REF="${{ inputs.source_ref || '2df200550b73316094ff53c02899954beb22efeb' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
+          [ "${#REF}" -eq 40 ] \
+            || { echo "::error::source_ref must be a 40-char commit SHA, got: $REF" >&2; exit 1; }
           git fetch -q --depth=1 origin "$REF" \
             || { echo "::error::failed to fetch source ref '$REF'" >&2; exit 1; }
           git checkout -q FETCH_HEAD
@@ -120,7 +122,7 @@ jobs:
         id: cachekeys
         working-directory: /mnt/build_wrt
         env:
-          SOURCE_REF: ${{ inputs.source_ref || '2df200550b73' }}
+          SOURCE_REF: ${{ inputs.source_ref || '2df200550b73316094ff53c02899954beb22efeb' }}
           SOURCE_HASH: ${{ env.SOURCE_HASH }}
         run: |
           bash "$GITHUB_WORKSPACE/rtw89-h10/wb-build-common.sh" key /mnt/build_wrt
