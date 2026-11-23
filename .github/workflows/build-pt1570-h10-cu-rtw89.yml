@@ -185,7 +185,9 @@ jobs:
           test -s target/linux/rtl9617c/base-files/lib/firmware/rtw89/rtw8852c_fw.bin
           grep -q 'pci10ec,c852' "$GITHUB_WORKSPACE/rtw89-h10/dts/rtl9617c-pt1570-h10-cu-rtw89.dts"
           grep -q 'pci10ec,0192' "$GITHUB_WORKSPACE/rtw89-h10/dts/rtl9617c-pt1570-h10-cu-rtw89.dts"
-          echo "  OK rtw89 kernel cfg + firmware + H10 wifi cal bindings"
+          grep -q 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin' target/linux/rtl9617c/config-6.18
+          grep -q 'youhua,pt1570-h10-cu-rtw89-exp' target/linux/rtl9617c/base-files/etc/board.d/02_network
+          echo "  OK rtw89 kernel cfg + early firmware + H10 board/wifi bindings"
 
       - name: Upload config (test_only)
         if: ${{ inputs.test_only }}

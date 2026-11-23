@@ -64,10 +64,62 @@ mkdir -p "$SRC/files/etc/config"
 cp -f "$ASSETS/rtw89-h10/wireless" "$SRC/files/etc/config/wireless"
 echo "  injected wireless overlay"
 
+# --- 4b) register board in board.d so preinit initializes LAN/PON ---
+python3 - "$SRC" <<'PY'
+import pathlib
+import sys
+
+src = pathlib.Path(sys.argv[1])
+board = 'youhua,pt1570-h10-cu-rtw89-exp'
+base = src / 'target/linux/rtl9617c/base-files/etc'
+
+p = base / 'board.d/02_network'
+s = p.read_text(encoding='utf-8')
+if board not in s:
+    arm = ('\t%s)\n'
+           '\t\tucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "pon0"\n'
+           '\t\t;;\n') % board
+    i = s.find('\t*)\n')
+    if i < 0:
+        raise SystemExit('ERROR: 02_network fallback arm not found')
+    p.write_text(s[:i] + arm + s[i:], encoding='utf-8', newline='\n')
+
+p = base / 'board.d/01_leds'
+s = p.read_text(encoding='utf-8')
+if board not in s:
+    arm = ('\t%s)\n'
+           '\t    ucidef_set_led_netdev "wan" "WAN" "LED_PPP_G" "pppoe-wan" "link"\n'
+           '\t    ucidef_set_led_netdev "lan2" "LAN2" "LED_EPHY1" "lan2"\n'
+           '\t    ucidef_set_led_netdev "lan3" "LAN3" "LED_EPHY2" "lan3"\n'
+           '\t    ucidef_set_led_netdev "lan4" "LAN4" "LED_EPHY3" "lan4"\n'
+           '\t\t;;\n') % board
+    i = s.find('\tyouhua,pt1500-h10-2p5g)\n')
+    if i < 0:
+        raise SystemExit('ERROR: 01_leds youhua case not found')
+    p.write_text(s[:i] + arm + s[i:], encoding='utf-8', newline='\n')
+print("  registered board in board.d/01_leds and 02_network")
+PY
+
+# --- 4c) bake firmware into kernel: built-in rtw89 probes before rootfs mount ---
+KCFG="$SRC/target/linux/rtl9617c/config-6.18"
+FWDIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware"
+[ -s "$FWDIR/rtw89/rtw8852c_fw.bin" ] || { echo "ERROR: 8852C firmware missing" >&2; exit 1; }
+[ -s "$FWDIR/rtw89/rtw8192xb_fw.bin" ] || { echo "ERROR: 8192XB firmware missing" >&2; exit 1; }
+sed -i '/^CONFIG_EXTRA_FIRMWARE=/d; /^CONFIG_EXTRA_FIRMWARE_DIR=/d' "$KCFG"
+{
+  echo 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin rtw89/rtw8192xb_fw.bin"'
+  echo "CONFIG_EXTRA_FIRMWARE_DIR=\"$FWDIR\""
+} >> "$KCFG"
+echo "  baked rtw89 firmware into kernel config"
+
 # --- 5) verify injection landed ---
 grep -q 'youhua,pt1570-h10-cu-rtw89-exp' "$PLAT" || { echo "ERROR: platform.sh whitelist failed" >&2; exit 1; }
 grep -q 'DEVICE_DTS := rtl9617c-pt1570-h10-cu-rtw89' "$IMG_DIR/Makefile" || { echo "ERROR: profile injection failed" >&2; exit 1; }
 [ -f "$DTS_DIR/rtl9617c-pt1570-h10-cu-rtw89.dts" ] || { echo "ERROR: DTS injection failed" >&2; exit 1; }
 grep -q "path 'soc/f4325000.pcie" "$SRC/files/etc/config/wireless" \
   || { echo "ERROR: wireless overlay injection failed" >&2; exit 1; }
+grep -q 'youhua,pt1570-h10-cu-rtw89-exp' "$SRC/target/linux/rtl9617c/base-files/etc/board.d/02_network" \
+  || { echo "ERROR: board.d registration failed" >&2; exit 1; }
+grep -q 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin' "$KCFG" \
+  || { echo "ERROR: kernel firmware embedding failed" >&2; exit 1; }
 echo "  all injections verified"
