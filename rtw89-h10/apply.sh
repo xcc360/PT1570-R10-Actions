@@ -93,9 +93,13 @@ if board not in s:
            '\t    ucidef_set_led_netdev "lan3" "LAN3" "LED_EPHY2" "lan3"\n'
            '\t    ucidef_set_led_netdev "lan4" "LAN4" "LED_EPHY3" "lan4"\n'
            '\t\t;;\n') % board
-    i = s.find('\tyouhua,pt1500-h10-2p5g)\n')
+    # Upstream 01_leds uses no leading tab on case labels; match line start
+    # without assuming indentation.
+    marker = 'youhua,pt1500-h10-2p5g)'
+    i = s.find(marker)
     if i < 0:
         raise SystemExit('ERROR: 01_leds youhua case not found')
+    i = s.rfind('\n', 0, i) + 1
     p.write_text(s[:i] + arm + s[i:], encoding='utf-8', newline='\n')
 print("  registered board in board.d/01_leds and 02_network")
 PY
