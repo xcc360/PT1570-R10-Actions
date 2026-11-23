@@ -36,15 +36,35 @@ import sys
 
 d = pathlib.Path(sys.argv[1])
 expected = {'rtw8852c_fw.bin': 0x88520202, 'rtw8192xb_fw.bin': 0x81920102}
+
+def fw_suits(data):
+    # mainline rtw89 expects an MFW container (sig 0xff) so it can locate the
+    # firmware suits and the trailing element table; wrapped U2 images use it.
+    if data[0] == 0xff:
+        suits = []
+        for i in range(data[1]):
+            cv, typ, mp, rsvd, shift, size, rsvd2 = struct.unpack_from(
+                '<BBBBII4s', data, 16 + 16 * i)
+            if typ == 1 and not mp:
+                suits.append(data[shift:shift + size])
+        if not suits:
+            raise SystemExit('ERROR: MFW container has no normal firmware suit')
+        return suits
+    return [data]
+
 for name, want in expected.items():
     p = d / name
     data = p.read_bytes()
-    if len(data) < 4:
-        raise SystemExit('ERROR: %s is empty' % name)
-    got = struct.unpack('<I', data[:4])[0]
-    if got != want:
-        raise SystemExit('ERROR: %s chip/cut mismatch: got 0x%08x, want 0x%08x' % (name, got, want))
-    print('  verified %s chip/cut 0x%08x (%d bytes)' % (name, got, len(data)))
+    suits = fw_suits(data)
+    for payload in suits:
+        if len(payload) < 4:
+            raise SystemExit('ERROR: %s payload is empty' % name)
+        got = struct.unpack('<I', payload[:4])[0]
+        if got != want:
+            raise SystemExit('ERROR: %s chip/cut mismatch: got 0x%08x, want 0x%08x' % (name, got, want))
+    fmt = 'MFW' if data[0] == 0xff else 'legacy'
+    print('  verified %s %s chip/cut 0x%08x (%d bytes, %d suits)'
+          % (name, fmt, want, len(data), len(suits)))
 PY
 
 # --- 1) inject DTS ---
