@@ -220,6 +220,21 @@ jobs:
           grep -q 'CONFIG_RTW89_8852CE=y' target/linux/rtl9617c/config-6.18
           test -s target/linux/rtl9617c/base-files/lib/firmware/rtw89/rtw8192xb_fw.bin
           test -s target/linux/rtl9617c/base-files/lib/firmware/rtw89/rtw8852c_fw.bin
+          # Guard against the upstream cut-U3 / cut-U1 blobs: H10 hardware is U2.
+          python3 - <<'PY'
+          import hashlib
+          import pathlib
+          import struct
+
+          d = pathlib.Path('target/linux/rtl9617c/base-files/lib/firmware/rtw89')
+          expected = {'rtw8852c_fw.bin': 0x88520202, 'rtw8192xb_fw.bin': 0x81920102}
+          for name, want in expected.items():
+              data = (d / name).read_bytes()
+              got = struct.unpack('<I', data[:4])[0]
+              if got != want:
+                  raise SystemExit('ERROR: %s chip/cut 0x%08x != expected 0x%08x' % (name, got, want))
+              print('  OK %s cut=0x%08x sha256=%s' % (name, got, hashlib.sha256(data).hexdigest()))
+          PY
           grep -q 'pci10ec,c852' "$GITHUB_WORKSPACE/rtw89-h10/dts/rtl9617c-pt1570-h10-cu-rtw89.dts"
           grep -q 'pci10ec,0192' "$GITHUB_WORKSPACE/rtw89-h10/dts/rtl9617c-pt1570-h10-cu-rtw89.dts"
           grep -q 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin' target/linux/rtl9617c/config-6.18
