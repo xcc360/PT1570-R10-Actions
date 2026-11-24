@@ -18,6 +18,18 @@ echo "assets=$ASSETS src=$SRC"
 [ -f "$SRC/target/linux/rtl9617c/patches-6.18/740-wifi-rtw89-8192xb.patch" ] \
   || { echo "ERROR: rtw89 8192xb patch missing (baseline too old)" >&2; exit 1; }
 
+# --- 0c) 8192XB DLFW preconfig ---
+# Upstream 740 only adds RTL8192XB to dmac_func_en_ax(), but mainline still
+# applies the 8852C-only HCI/AXIDMA preconfig in rtw89_mac_hci_func_en_ax()
+# and rtw89_mac_dmac_func_pre_en_ax(). Without it the 8192XB WCPU never
+# asserts B_AX_FWDL_PATH_RDY after the FW header H2C and probe times out with
+# "[ERR]FWDL path ready / 0x1E0=0x23 / fw PC=0x20008594". The vendor
+# rtl_ax_dmac_pre_enable() performs the same AXIDMA/HAXI setup for both chips.
+PATCH_DIR="$SRC/target/linux/rtl9617c/patches-6.18"
+cp -f "$ASSETS/rtw89-h10/patches/741-8192xb-dlfw-preconfig.patch" \
+  "$PATCH_DIR/741-8192xb-dlfw-preconfig.patch"
+echo "  injected 8192XB DLFW preconfig patch"
+
 # --- 0a) force hostapd 802.11ac/ax build switches ---
 # CONFIG_DRIVER_11AC_SUPPORT / 11AX_SUPPORT are invisible bool symbols in
 # package/network/services/hostapd/Config.in (no prompt, "default n"). Values
@@ -217,4 +229,7 @@ grep -q 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin' "$KCFG" \
   || { echo "ERROR: kernel firmware embedding failed" >&2; exit 1; }
 grep -q 'CONFIG_EXTRA_FIRMWARE=.*regulatory.db' "$KCFG" \
   || { echo "ERROR: regulatory.db not baked into kernel" >&2; exit 1; }
+grep -q 'chip_id != RTL8852C && chip_id != RTL8192XB' \
+  "$PATCH_DIR/741-8192xb-dlfw-preconfig.patch" \
+  || { echo "ERROR: 8192XB DLFW preconfig patch missing" >&2; exit 1; }
 echo "  all injections verified"
