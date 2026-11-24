@@ -54,11 +54,11 @@ print('  forced hostapd CONFIG_DRIVER_11AC_SUPPORT/11AX_SUPPORT defaults to y')
 PY
 
 # --- 0) install board-matched rtw89 firmware ---
-# 8852C uses the validated cut-U2 NIC image. 8192XB used a vendor BPI cut-U2
-# AP image before, which loads into the mainline driver but never leaves the
-# ROM FWDL loop. Use the exact stock tyfza1 rtl8192xb-u2-ap.bin from the factory
-# rootfs instead (wrapped in mainline rtw89 MFW container). This is the image
-# the factory AP backend actually boots on this board.
+# Both radios use cut-U2 NIC images. The 8192XB AXIDMA preconfig patch fixes
+# FWDL path-ready, but the factory/BPI AP firmware then loads without answering
+# mainline's C2H GET_FEATURE query ("c2h reg timeout / failed to setup chip
+# information"). Use the NIC U2 image, which implements the H2C/C2H protocol
+# expected by mainline rtw89 (the 5G NIC firmware already works this way).
 FW_ASSETS="$ASSETS/rtw89-h10/firmware"
 FW_RT_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware/rtw89"
 mkdir -p "$FW_RT_DIR"
