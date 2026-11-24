@@ -30,6 +30,16 @@ cp -f "$ASSETS/rtw89-h10/patches/741-8192xb-dlfw-preconfig.patch" \
   "$PATCH_DIR/741-8192xb-dlfw-preconfig.patch"
 echo "  injected 8192XB DLFW preconfig patch"
 
+# --- 0d) 8192XB thermal RF read via direct window ---
+# The 8192XB thermal callback uses rtw89_read_rf()->rtw89_phy_read_rf_v1()
+# with ADSEL=0, i.e. SWSI. Its RR_TM read never asserts R_DATA_DONE here,
+# so the 2s thermal work logs "read swsi busy" twice per round and returns
+# INV_RF_DATA (0xff), which can be mistaken for overheating. Setting ADSEL
+# routes through rf_base_addr[] direct reads; keep factory thermal fallback.
+cp -f "$ASSETS/rtw89-h10/patches/742-8192xb-thermal-direct-read.patch" \
+  "$PATCH_DIR/742-8192xb-thermal-direct-read.patch"
+echo "  injected 8192XB thermal direct-read patch"
+
 # --- 0a) force hostapd 802.11ac/ax build switches ---
 # CONFIG_DRIVER_11AC_SUPPORT / 11AX_SUPPORT are invisible bool symbols in
 # package/network/services/hostapd/Config.in (no prompt, "default n"). Values
@@ -232,4 +242,7 @@ grep -q 'CONFIG_EXTRA_FIRMWARE=.*regulatory.db' "$KCFG" \
 grep -q 'chip_id != RTL8852C && chip_id != RTL8192XB' \
   "$PATCH_DIR/741-8192xb-dlfw-preconfig.patch" \
   || { echo "ERROR: 8192XB DLFW preconfig patch missing" >&2; exit 1; }
+grep -q 'RR_TM | RTW89_RF_ADDR_ADSEL_MASK' \
+  "$PATCH_DIR/742-8192xb-thermal-direct-read.patch" \
+  || { echo "ERROR: 8192XB thermal direct-read patch missing" >&2; exit 1; }
 echo "  all injections verified"
