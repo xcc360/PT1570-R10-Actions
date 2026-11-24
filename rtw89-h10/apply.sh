@@ -29,6 +29,23 @@ FW_RT_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware/rtw89"
 mkdir -p "$FW_RT_DIR"
 cp -f "$FW_ASSETS/rtw8852c_fw.bin" "$FW_RT_DIR/rtw8852c_fw.bin"
 cp -f "$FW_ASSETS/rtw8192xb_fw.bin" "$FW_RT_DIR/rtw8192xb_fw.bin"
+
+# --- 0b) regulatory database (needed for 5G AP channels) ---
+# cfg80211 loads regulatory.db in an initcall that runs just BEFORE rootfs is
+# mounted on this FIT/UBI setup (dmesg: load fails -2 at 13.89s, rootfs mounts
+# at 13.91s). Without it the regdomain stays country 00 where every 5G channel
+# is NO-IR, so hostapd refuses to start AP ("Primary frequency not allowed").
+# Bake both files into the kernel via CONFIG_EXTRA_FIRMWARE (same trick used for
+# the rtw89 firmwares) so request_firmware finds them before rootfs is ready.
+# NOTE: CONFIG_EXTRA_FIRMWARE_DIR is $FWDIR (lib/firmware root), and the
+# embedded name is the bare string in EXTRA_FIRMWARE, so regulatory.db must be
+# placed directly under $FWDIR while rtw89 firmwares stay under $FWDIR/rtw89.
+# request_firmware asks for bare "regulatory.db" / "regulatory.db.p7s".
+FW_REG_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware"
+mkdir -p "$FW_REG_DIR"
+cp -f "$FW_ASSETS/regulatory.db" "$FW_REG_DIR/regulatory.db"
+cp -f "$FW_ASSETS/regulatory.db.p7s" "$FW_REG_DIR/regulatory.db.p7s"
+[ -s "$FW_REG_DIR/regulatory.db" ] || { echo "ERROR: regulatory.db missing" >&2; exit 1; }
 python3 - "$FW_RT_DIR" <<'PY'
 import pathlib
 import struct
@@ -160,7 +177,7 @@ FWDIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware"
 [ -s "$FWDIR/rtw89/rtw8192xb_fw.bin" ] || { echo "ERROR: 8192XB firmware missing" >&2; exit 1; }
 sed -i '/^CONFIG_EXTRA_FIRMWARE=/d; /^CONFIG_EXTRA_FIRMWARE_DIR=/d' "$KCFG"
 {
-  echo 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin rtw89/rtw8192xb_fw.bin"'
+  echo 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin rtw89/rtw8192xb_fw.bin regulatory.db regulatory.db.p7s"'
   echo "CONFIG_EXTRA_FIRMWARE_DIR=\"$FWDIR\""
 } >> "$KCFG"
 echo "  baked rtw89 firmware into kernel config"
@@ -175,4 +192,6 @@ grep -q 'youhua,pt1570-h10-cu-rtw89-exp' "$SRC/target/linux/rtl9617c/base-files/
   || { echo "ERROR: board.d registration failed" >&2; exit 1; }
 grep -q 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin' "$KCFG" \
   || { echo "ERROR: kernel firmware embedding failed" >&2; exit 1; }
+grep -q 'CONFIG_EXTRA_FIRMWARE=.*regulatory.db' "$KCFG" \
+  || { echo "ERROR: regulatory.db not baked into kernel" >&2; exit 1; }
 echo "  all injections verified"
