@@ -1,0 +1,29 @@
+--- a/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
++++ b/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
+@@ -1842,10 +1842,25 @@
+ static u8 rtw8192xb_get_thermal(struct rtw89_dev *rtwdev, enum rtw89_rf_path rf_path)
+ {
++	u32 val;
++
+ 	rtw89_write_rf(rtwdev, rf_path, RR_TM, RR_TM_TRI, 0x1);
+ 	rtw89_write_rf(rtwdev, rf_path, RR_TM, RR_TM_TRI, 0x0);
+ 	rtw89_write_rf(rtwdev, rf_path, RR_TM, RR_TM_TRI, 0x1);
+ 
+ 	fsleep(200);
+ 
+-	return rtw89_read_rf(rtwdev, rf_path, RR_TM, RR_TM_VAL);
++	/* 8192XB's SWSI read of RR_TM never asserts R_DATA_DONE on this
++	 * platform (every 2s thermal poll logs "read swsi busy" twice).
++	 * Route through the direct RF window by setting ADSEL, and fall back
++	 * to the factory thermal value if the direct read is invalid.
++	 */
++	val = rtw89_read_rf(rtwdev, rf_path,
++			    RR_TM | RTW89_RF_ADDR_ADSEL_MASK, RR_TM_VAL);
++	if (val == INV_RF_DATA || val == 0 || val == 0xff) {
++		val = rtwdev->tssi.thermal[rf_path];
++		if (val == 0 || val == 0xff)
++			val = 0x25;
++	}
++
++	return (u8)val;
+ }
