@@ -136,7 +136,13 @@ jobs:
             /mnt/build_wrt/staging_dir/hostpkg
             /mnt/build_wrt/staging_dir/toolchain
             /mnt/build_wrt/.ccache
-          key: ${{ steps.cachekeys.outputs.KEY }}
+          # IMPORTANT: never use the bare KEY here. Save always appends
+          # -<run_id>, so a bare KEY can match a stale 0-byte entry and then
+          # restore-keys prefix matching is skipped -> toolchain rebuilt every
+          # run (70+ min). Appending run_id makes exact hit per-run only and
+          # forces cross-run restore through the PREFIX restore-key, which
+          # picks the most recent real toolchain cache instead.
+          key: ${{ steps.cachekeys.outputs.KEY }}-${{ github.run_id }}
           restore-keys: ${{ steps.cachekeys.outputs.PREFIX }}
 
       - name: Restore dl cache
