@@ -206,6 +206,15 @@ jobs:
               || { echo "ERROR: $sym dropped after defconfig" >&2; exit 1; }
             echo "  OK   $sym"
           done
+          # hostapd must be built with AC/AX support, otherwise ieee80211ac/
+          # ieee80211ax/he_* are rejected and 5G is stuck at HT40. These are
+          # invisible bool symbols, so Config.txt alone is not enough; apply.sh
+          # patches their Kconfig defaults to y.
+          for sym in DRIVER_11AC_SUPPORT DRIVER_11AX_SUPPORT; do
+            grep -q "^CONFIG_${sym}=y$" .config \
+              || { echo "ERROR: $sym dropped after defconfig" >&2; exit 1; }
+            echo "  OK   $sym"
+          done
           grep -q '^# CONFIG_PACKAGE_uboot-envtools is not set$' .config \
             || { echo "ERROR: uboot-envtools must be off" >&2; exit 1; }
           # private driver must NOT be selected

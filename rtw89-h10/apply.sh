@@ -18,12 +18,35 @@ echo "assets=$ASSETS src=$SRC"
 [ -f "$SRC/target/linux/rtl9617c/patches-6.18/740-wifi-rtw89-8192xb.patch" ] \
   || { echo "ERROR: rtw89 8192xb patch missing (baseline too old)" >&2; exit 1; }
 
-# --- 0) install board-matched rtw89 NIC firmware (cut U2 for this H10 board) ---
-# The upstream base tree ships cut-U3 (8852C) and cut-U1 (8192XB) images. The
-# factory-confirmed hardware on PT1570-H10-CU is cut U2 for both radios (the
-# vendor AP backend logs cv=1 and selects the U2 AP images). Feeding the wrong
-# cut makes rtw89 either hang in c2h reg read (8852C) or never reach FreeRTOS
-# ready (8192XB). Always replace with the tested U2 NIC images from assets.
+# --- 0a) force hostapd 802.11ac/ax build switches ---
+# CONFIG_DRIVER_11AC_SUPPORT / 11AX_SUPPORT are invisible bool symbols in
+# package/network/services/hostapd/Config.in (no prompt, "default n"). Values
+# placed in the top-level .config are ignored by `make defconfig`, so wpad-openssl
+# silently rejects every ieee80211ac/ieee80211ax/he_* option and 5G can only
+# come up in HT40. Patch the Kconfig defaults so defconfig keeps them =y.
+python3 - "$SRC/package/network/services/hostapd/Config.in" <<'PY'
+import pathlib
+import sys
+
+p = pathlib.Path(sys.argv[1])
+s = p.read_text(encoding='utf-8')
+for sym in ('DRIVER_11AC_SUPPORT', 'DRIVER_11AX_SUPPORT'):
+    old = 'config %s\n\tbool\n\tdefault n' % sym
+    new = 'config %s\n\tbool\n\tdefault y' % sym
+    if old in s:
+        s = s.replace(old, new, 1)
+    elif new not in s:
+        raise SystemExit('ERROR: cannot patch hostapd %s default' % sym)
+p.write_text(s, encoding='utf-8', newline='\n')
+print('  forced hostapd CONFIG_DRIVER_11AC_SUPPORT/11AX_SUPPORT defaults to y')
+PY
+
+# --- 0) install board-matched rtw89 firmware ---
+# 8852C uses the validated cut-U2 NIC image. 8192XB used a vendor BPI cut-U2
+# AP image before, which loads into the mainline driver but never leaves the
+# ROM FWDL loop. Use the exact stock tyfza1 rtl8192xb-u2-ap.bin from the factory
+# rootfs instead (wrapped in mainline rtw89 MFW container). This is the image
+# the factory AP backend actually boots on this board.
 FW_ASSETS="$ASSETS/rtw89-h10/firmware"
 FW_RT_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware/rtw89"
 mkdir -p "$FW_RT_DIR"
