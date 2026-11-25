@@ -13,10 +13,17 @@ PLAT="$SRC/target/linux/rtl9617c/base-files/lib/upgrade/platform.sh"
 echo "=== apply-r10-rtw89-exp.sh ==="
 echo "assets=$ASSETS src=$SRC"
 
-# --- sanity: refactor baseline markers ---
+# --- sanity: refactor baseline markers (old built-in OR new AP-firmware split) ---
 [ -f "$DTS_DIR/rtk-taurus.dtsi" ] || { echo "ERROR: rtk-taurus.dtsi missing (not refactor baseline)" >&2; exit 1; }
-[ -f "$SRC/target/linux/rtl9617c/patches-6.18/740-wifi-rtw89-8192xb.patch" ] \
-  || { echo "ERROR: rtw89 8192xb patch missing (baseline too old)" >&2; exit 1; }
+if [ -f "$SRC/package/firmware/rtw89-ap-firmware/Makefile" ]; then
+  echo "  baseline: rtw89 AP-firmware split (>= 299da19e2ea6)"
+  grep -q 'pcie0_port:' "$DTS_DIR/rtk-taurus.dtsi" \
+    || { echo "ERROR: pcie0_port missing (baseline older than 2df200550b73)" >&2; exit 1; }
+elif [ -f "$SRC/target/linux/rtl9617c/patches-6.18/740-wifi-rtw89-8192xb.patch" ]; then
+  echo "  baseline: legacy built-in rtw89 (pre-299da19e2ea6)"
+else
+  echo "ERROR: no rtw89 baseline marker found (source too old)" >&2; exit 1
+fi
 
 # --- 1) inject DTS ---
 cp -f "$ASSETS/board/dts/rtl9617c-pt1570-r10-rtw89.dts" "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts"
@@ -68,6 +75,10 @@ echo "  injected wireless overlay"
 grep -q 'youhua,pt1570-r10-rtw89-exp' "$PLAT" || { echo "ERROR: platform.sh whitelist failed" >&2; exit 1; }
 grep -q 'DEVICE_DTS := rtl9617c-pt1570-r10-rtw89' "$IMG_DIR/Makefile" || { echo "ERROR: profile injection failed" >&2; exit 1; }
 [ -f "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" ] || { echo "ERROR: DTS injection failed" >&2; exit 1; }
+grep -q 'deviation = <0xffffd120>' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
+  || { echo "ERROR: thermal deviation not fixed (boot-shutdown risk)" >&2; exit 1; }
+! grep -q '0xfffcd120' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
+  || { echo "ERROR: fatal thermal value still present" >&2; exit 1; }
 grep -q "path 'soc/f4325000.pcie" "$SRC/files/etc/config/wireless" \
   || { echo "ERROR: wireless overlay injection failed" >&2; exit 1; }
 echo "  all injections verified"

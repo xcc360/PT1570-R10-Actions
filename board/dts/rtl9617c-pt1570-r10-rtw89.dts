@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// EXPERIMENTAL rtw89 board for Youhua PT1570-R10 (2026-11-22).
+// EXPERIMENTAL rtw89 board for Youhua PT1570-R10 (updated 2026-11-25).
 // Goal: validate mainline rtw89 + factory TYFC0003 calibration on R10.
-// Based on upstream tianyi-tyfza1-2p5g.dts (same rtk-taurus.dtsi platform).
-// Kept verbatim: &pcie0(c852)/&pcie1(0192) wifi nodes, wifi-calibration
-// nvmem cells @0x2000/@0x3000, factory UBI nvmem-layout -- R10 factory
-// volume was verified on-device to carry TYFC0003 magic at both offsets.
-// Changed: model/compatible, gpio-keys (R10 real pins), 4xGE port map.
-// NOTE: network ports are RAID: this is an experiment; WiFi is the target.
+// Baseline: lyq1996/rtl9617c-openwrt@refactor d39cfc6367e3 (rtw89 AP
+// firmware rework). Kept: wifi-calibration nvmem cells @0x2000/@0x3000,
+// factory UBI nvmem-layout -- R10 factory was verified on-device to carry
+// TYFC0003 magic at both offsets.
+// Changed vs 2026-11-22 DTS:
+//   - thermal deviation 0xfffcd120 -> 0xffffd120 (upstream 43c48a4c16;
+//     the old value caused a critical-trip shutdown right after boot)
+//   - wifi nodes moved to &pcie0_port / &pcie1_port (upstream 2df200550b73)
+//   - add realtek,ap-firmware + realtek,rfe-type (upstream 299da19e2ea6)
+//   - ports renumbered 0..3, each LAN port gets a base_mac nvmem binding
+// NOTE: LAN label/MAC ordering follows the old R10 board labels; verify on device.
 
 /dts-v1/;
 
@@ -172,27 +177,36 @@
 	status = "okay";
 
 	ethernet-ports {
-		port@1 {
-			reg = <1>;
+		/* U-Boot authoritative map: p0->PHY1, p1->PHY2, p2->PHY3, p3->PHY4 */
+		port@0 {
+			reg = <0>;
 			label = "lan1";
+			nvmem-cells = <&base_mac 1>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "internal";
 			phy-handle = <&phy1>;
 		};
-		port@2 {
-			reg = <2>;
+		port@1 {
+			reg = <1>;
 			label = "lan2";
+			nvmem-cells = <&base_mac 2>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "internal";
 			phy-handle = <&phy2>;
 		};
-		port@3 {
-			reg = <3>;
+		port@2 {
+			reg = <2>;
 			label = "lan3";
+			nvmem-cells = <&base_mac 3>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "internal";
 			phy-handle = <&phy3>;
 		};
-		port@4 {
-			reg = <4>;
+		port@3 {
+			reg = <3>;
 			label = "lan4";
+			nvmem-cells = <&base_mac 4>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "internal";
 			phy-handle = <&phy4>;
 		};
@@ -201,10 +215,16 @@
 
 &pcie0 {
 	status = "okay";
+};
 
+&pcie0_port {
 	wifi5g: wifi@0,0 {
 		compatible = "pci10ec,c852";
 		reg = <0x0000 0 0 0 0>;
+		realtek,ap-firmware;
+		/* R10 front-end was previously observed as RFE54; confirm by radio log */
+		realtek,rfe-type = <54>;
+		ieee80211-freq-limit = <5150000 5900000>;
 		nvmem-cells = <&wifi_cal_radio0>;
 		nvmem-cell-names = "wifi-calibration";
 	};
@@ -212,10 +232,13 @@
 
 &pcie1 {
 	status = "okay";
+};
 
+&pcie1_port {
 	wifi2g: wifi@0,0 {
 		compatible = "pci10ec,0192";
 		reg = <0x0000 0 0 0 0>;
+		realtek,rfe-type = <54>;
 		nvmem-cells = <&wifi_cal_radio1>;
 		nvmem-cell-names = "wifi-calibration";
 	};
@@ -333,9 +356,11 @@
 	};
 };
 
-/* SoC TMS sensor reads 12C low per factory xtemp calibration; report raw + 12C */
+/* SoC TMS sensor reads 12C low per factory xtemp calibration; report raw + 12C.
+ * 0xfffcd120 = -208.6C -> critical trip right after boot (upstream 43c48a4c16).
+ * 0xffffd120 = -12.0C  -> correct. NEVER revert this. */
 &cpu_thermal {
-	deviation = <0xfffcd120>;
+	deviation = <0xffffd120>;
 };
 
 &serdes {
