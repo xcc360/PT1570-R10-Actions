@@ -4,7 +4,9 @@
 # Env: GITHUB_WORKSPACE (assets root), PWD = wrt (source root)
 set -e
 
-ASSETS="${GITHUB_WORKSPACE:-$(cd "$(dirname "$0")/.." && pwd)}"
+# Prefer ASSET_DIR from the unified workflow; otherwise derive from script
+# location so both the legacy root layout and boards/pt1570-r10/ work.
+ASSETS="${ASSET_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 SRC="$(pwd)"
 DTS_DIR="$SRC/target/linux/rtl9617c/dts"
 IMG_DIR="$SRC/target/linux/rtl9617c/image"
