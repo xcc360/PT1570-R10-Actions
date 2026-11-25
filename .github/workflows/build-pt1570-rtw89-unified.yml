@@ -206,13 +206,6 @@ jobs:
           restore-keys: |
             ${{ steps.cachekeys.outputs.DL_PREFIX }}
 
-      - name: Prepare restored cache
-        run: |
-          BOARD="$BOARD" bash "$GITHUB_WORKSPACE/scripts/wb-cache.sh" prepare /mnt/build_wrt
-          echo "build_cache_hit=${{ steps.restore_build_cache.outputs.cache-hit }}"
-          echo "ccache_hit=${{ steps.restore_ccache.outputs.cache-hit }}"
-          echo "dl_cache_hit=${{ steps.restore_dl.outputs.cache-hit }}"
-
       - name: Update and install feeds
         working-directory: /mnt/build_wrt
         run: |
@@ -279,6 +272,16 @@ jobs:
           if [ -f "$HELPER" ]; then
             bash "$HELPER" check-packages /mnt/build_wrt "$PROFILE"
           fi
+
+      - name: Prepare restored cache for incremental build
+        # Must run AFTER feeds/board injection/defconfig: those steps create
+        # fresh files with "now" mtimes. Age them here, then refresh cached
+        # stamps so make sees an up-to-date toolchain on a cache hit.
+        run: |
+          BOARD="$BOARD" bash "$GITHUB_WORKSPACE/scripts/wb-cache.sh" prepare /mnt/build_wrt
+          echo "build_cache_hit=${{ steps.restore_build_cache.outputs.cache-hit }}"
+          echo "ccache_hit=${{ steps.restore_ccache.outputs.cache-hit }}"
+          echo "dl_cache_hit=${{ steps.restore_dl.outputs.cache-hit }}"
 
       - name: Upload config (test_only)
         if: ${{ inputs.test_only }}
