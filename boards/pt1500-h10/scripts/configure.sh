@@ -14,7 +14,7 @@
 #       （这些来自 factory 卷，由 refactor 的 pon-control 运行时导出）。
 # 2026-11-17 基线切到 refactor：源码用 upstream 的 90-pon-wan / 91-pon-offload，
 #       架构为 aarch64_cortex-a53（不再是 base 的 a55）。
-# WAN 默认值不在这里改：由 files-h10/etc/uci-defaults/95-pt1500-h10-wan-default
+# WAN 默认值不在这里改：由 boards/pt1500-h10/files/etc/uci-defaults/95-pt1500-h10-wan-default
 #       在 90/91 之后覆盖。refactor 的 90-pon-wan 默认 EPON VLAN 3961；
 #       PT1500 实机（XGPON/1101 线路）需要 1101 + PON FE，由该脚本覆盖。
 #
@@ -81,7 +81,7 @@ fi
 
 # ---- 3. apk 源（沿用 R10 基线：北大镜像 immortalwrt 25.12-SNAPSHOT）----
 # refactor 编译架构 aarch64_cortex-a53，与北大镜像 aarch64_cortex-a53 目录一致。
-# 公钥由 files-common/etc/apk/keys/ 注入。
+# 公钥由 boards/pt1500-h10/files/etc/apk/keys/ 注入。
 WRT_APK_MIRROR="${WRT_APK_MIRROR:-https://mirrors.pku.edu.cn/immortalwrt}"
 WRT_APK_RELEASE="${WRT_APK_RELEASE:-25.12-SNAPSHOT}"
 WRT_APK_REPO_ARCH="${WRT_APK_REPO_ARCH:-aarch64_cortex-a53}"
@@ -127,5 +127,5 @@ if [ -n "${APK_REPO_KEY_URL:-}" ]; then
   fi
 fi
 
-# 不追加 Config-PT1570-R10-extra.txt：R10 的用户软件包基线（tailscale 三件套 +
+# 不追加 R10 的旧 config 片段：用户软件包基线（tailscale 三件套 +
 # kmod-tun + zh_Hans）已直接写入 Config-PT1500-H10.txt，避免重复与耦合。

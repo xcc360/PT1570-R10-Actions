@@ -5,7 +5,7 @@
 #   依据见 PT1500-H10-2.5G两固件二进制比对-根因锁定与方案-20261117.md。
 #
 # 用户要求「软件包沿用 R10 那套」：本文件与 R10 的
-#   Config-PT1570-R10.txt + Config-PT1570-R10-extra.txt 保持同一基线
+#   boards/pt1570-r10/Config.txt 保持同一基线
 #   （国内 apk 源 / 公钥 / argon / 中文 LuCI / tailscale 三件套），
 # 唯一差异是本机 2.5G 版无 WiFi：
 #   * 不带 kmod-rtl-ax-ap / wpad-* / wifi-scripts / wireless-regdb；
