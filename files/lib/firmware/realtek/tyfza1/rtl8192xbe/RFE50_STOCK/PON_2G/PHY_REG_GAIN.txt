@@ -1,6 +1,0 @@
-//8192XBR RFE50 version = 27
-//PON_2G
-
-
-
-0xffff 0xffff
