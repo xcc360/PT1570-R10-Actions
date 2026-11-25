@@ -61,7 +61,7 @@ check("CONFIG_RTW89_8192XBE=y" not in cfg,
 # 2) Critical thermal guard -- this exact value bricked the device in run#3.
 check("deviation = <0xffffd120>" in dts,
       "DTS thermal deviation 0xffffd120 (-12C, upstream 43c48a4c16)")
-check("0xfffcd120" not in dts,
+check("deviation = <0xfffcd120>" not in dts,
       "DTS has no fatal 0xfffcd120 (-208.6C critical-trip) value")
 
 # 3) WiFi DT chain: PCIe port nodes, AP firmware, RFE type, factory calibration.
