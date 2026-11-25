@@ -8,6 +8,10 @@ CONFIG_TARGET_rtl9617c_generic=y
 CONFIG_TARGET_BOARD="rtl9617c"
 CONFIG_TARGET_SUBTARGET="generic"
 CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a55"
+# ---- CI cache: make ccache actually used by OpenWrt build system ----
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
+CONFIG_CCACHE_DIR="/mnt/build_wrt/.ccache"
 CONFIG_PACKAGE_fitblk=y
 CONFIG_PACKAGE_rtl9617c-pon-control=y
 CONFIG_PACKAGE_luci-app-rtl9617c-pon=y
