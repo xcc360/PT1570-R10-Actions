@@ -1,0 +1,74 @@
+# PT1500-H10 2.5G（youhua,pt1500-h10-2p5g）独立云编译配置基线。
+# 2026-11-17 重大变更：源码基线从 base 20b4cf4 整体切到 upstream refactor 分支
+#   （默认 HEAD b5025a9d1c95，含 RTL8221B HisGMII + 独立 SerDes PHY + 按速切
+#    2500BASEX/SGMII 的完整 2.5G 架构，已被网友 lyq1996 本机编译实机验证 2.5G 可用）。
+#   依据见 PT1500-H10-2.5G两固件二进制比对-根因锁定与方案-20261117.md。
+#
+# 用户要求「软件包沿用 R10 那套」：本文件与 R10 的
+#   Config-PT1570-R10.txt + Config-PT1570-R10-extra.txt 保持同一基线
+#   （国内 apk 源 / 公钥 / argon / 中文 LuCI / tailscale 三件套），
+# 唯一差异是本机 2.5G 版无 WiFi：
+#   * 不带 kmod-rtl-ax-ap / wpad-* / wifi-scripts / wireless-regdb；
+#   * 上游 youhua_pt1500_h10_2p5g 的 DEVICE_PACKAGES 本来也不含这些。
+#
+# 机型符号 CONFIG_TARGET_*_DEVICE_youhua_pt1500_h10_2p5g=y 与
+# CONFIG_TARGET_PROFILE 由 customize-pt1500-h10.sh 写入，不在这里硬编码。
+# .config 会在 Configure 步骤里经历多次 make defconfig，未被 profile 点名的包
+# 会被静默丢弃，workflow 会重新断言关键包。
+
+# ---- target ----
+# refactor 的 CPU_TYPE=cortex-a53，编译架构是 aarch64_cortex-a53
+#（不再是 base 的 a55！a55 会导致 apk 装包架构对不上）。
+CONFIG_TARGET_rtl9617c=y
+CONFIG_TARGET_rtl9617c_generic=y
+CONFIG_TARGET_BOARD="rtl9617c"
+CONFIG_TARGET_SUBTARGET="generic"
+CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a53"
+
+# ---- FIT / UBI 方案必需 ----
+# refactor 的 platform.sh 用标准 fit_do_upgrade（自带 fit.sh，RAMFS_COPY_BIN 含
+# fitblk + fit_check_sign），不再需要 base 的 zz 覆盖脚本 / CI_KERNPART=fit。
+# fitblk 仍须编入（FIT external-static-with-rootfs 挂根 + fit_do_upgrade 用）。
+# uboot-envtools 在此 target 的 host fw_printenv 会挂，由 workflow 强制关闭。
+CONFIG_PACKAGE_fitblk=y
+
+# ---- PON / 平台（refactor 包名：rtl9617c-*，不再是 tyfza1-*）----
+CONFIG_PACKAGE_rtl9617c-pon-control=y
+CONFIG_PACKAGE_luci-app-rtl9617c-pon=y
+CONFIG_PACKAGE_ubi-utils=y
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_block-mount=y
+
+# ---- LuCI / 网络（沿用 R10 基线）----
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_dnsmasq=y
+
+# ---- fullcone NAT（968f03f 新基线功能，开启）----
+# 上游 fullcone NAT 补丁链（firewall4/nftables/libnftnl/kernel 6.18 + hack/952）。
+# firewall4 补丁默认写入 option fullcone 1（IPv4 开、IPv6 关）；需编入内核模块
+# kmod-nft-fullcone（依赖 kmod-nft-nat，KCONFIG 打开 NF_CONNTRACK_/CHAIN_EVENTS）。
+CONFIG_PACKAGE_kmod-nft-fullcone=y
+
+# ---- argon 主题 / 中文 ----
+# refactor 上游 profile 的 DEVICE_PACKAGES 已带 luci-theme-argon、
+# luci-i18n-base-zh-cn、luci-i18n-firewall-zh-cn、luci-mod-system 等。
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_LUCI_LANG_zh_Hans=y
+
+# ---- 时区 UTC+8 ----
+CONFIG_PACKAGE_zoneinfo-core=y
+CONFIG_PACKAGE_zoneinfo-asia=y
+
+# ---- tailscale 三件套（沿用 R10 用户软件包基线）----
+CONFIG_PACKAGE_tailscale=y
+CONFIG_PACKAGE_luci-app-tailscale-community=y
+CONFIG_PACKAGE_luci-i18n-tailscale-community-zh-cn=y
+CONFIG_PACKAGE_kmod-tun=y

@@ -12,6 +12,23 @@ name: PT1570-RTW89-UNIFIED-sysupgrade
 #   dispatch with board=<name>, test_only=false -> sysupgrade.itb artifact
 
 on:
+  workflow_call:
+    inputs:
+      board:
+        required: true
+        type: string
+      source_ref:
+        required: false
+        default: ''
+        type: string
+      test_only:
+        required: false
+        default: true
+        type: boolean
+      create_release:
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       board:

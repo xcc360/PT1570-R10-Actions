@@ -100,6 +100,36 @@
 name: PT1500-H10-2P5G-CT-sysupgrade
 
 on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: false
+        default: '968f03f52dbeb1fceea10979759c739d3532e257'
+        type: string
+      test_only:
+        required: false
+        default: false
+        type: boolean
+      create_release:
+        required: false
+        default: false
+        type: boolean
+      publish_packages:
+        required: false
+        default: false
+        type: boolean
+      packages_repo_url:
+        required: false
+        default: ''
+        type: string
+      apk_mirror_base:
+        required: false
+        default: ''
+        type: string
+      apk_repo_key_url:
+        required: false
+        default: ''
+        type: string
   workflow_dispatch:
     inputs:
       source_ref:
@@ -382,9 +412,9 @@ jobs:
 
       - name: Apply H10 board fixes (PON mode + panel LED GPIO)
         env:
-          ASSETS: ${{ github.workspace }}
+          ASSETS: ${{ github.workspace }}/boards/pt1500-h10
           WRT: ${{ github.workspace }}/wrt
-        run: bash "$GITHUB_WORKSPACE/scripts/apply-board-h10.sh"
+        run: bash "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/apply.sh"
 
       - name: Apply custom rootfs files (files-h10)
         env:
@@ -392,9 +422,9 @@ jobs:
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/wrt/files"
-          cp -a "$GITHUB_WORKSPACE/files-common/." "$GITHUB_WORKSPACE/wrt/files/"
-          if [ -d "$GITHUB_WORKSPACE/files-h10" ]; then
-            cp -a "$GITHUB_WORKSPACE/files-h10/." "$GITHUB_WORKSPACE/wrt/files/"
+          cp -a "$GITHUB_WORKSPACE/boards/pt1500-h10/files/." "$GITHUB_WORKSPACE/wrt/files/"
+          if [ -d "$GITHUB_WORKSPACE/boards/pt1500-h10/files" ]; then
+            cp -a "$GITHUB_WORKSPACE/boards/pt1500-h10/files/." "$GITHUB_WORKSPACE/wrt/files/"
             # refactor 走标准 fit_do_upgrade，base 的 zz 覆盖脚本不再需要，别注入镜像
             rm -f "$GITHUB_WORKSPACE/wrt/files/lib/upgrade/zz-pt1570-sysupgrade.sh"
             rm -f "$GITHUB_WORKSPACE/wrt/files/etc/modules.d/50-rtl-ax-ap"
@@ -402,7 +432,7 @@ jobs:
             # rpcd exec 插件必须可执行，否则 rpcd 不加载，luci.argon* 对象不注册
             chmod +x "$GITHUB_WORKSPACE/wrt/files/usr/libexec/rpcd/"* 2>/dev/null || true
             echo "H10 custom rootfs files injected:"
-            find "$GITHUB_WORKSPACE/files-h10" -type f -printf '  %P\n'
+            find "$GITHUB_WORKSPACE/boards/pt1500-h10/files" -type f -printf '  %P\n'
           fi
           if [ -n "$PACKAGES_REPO_URL" ]; then
             URL="${PACKAGES_REPO_URL%/}"
@@ -417,7 +447,7 @@ jobs:
       - name: Configure
         working-directory: wrt
         env:
-          ASSETS: ${{ github.workspace }}
+          ASSETS: ${{ github.workspace }}/boards/pt1500-h10
           APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
           APK_REPO_KEY_URL: ${{ inputs.apk_repo_key_url }}
         run: |
@@ -430,14 +460,14 @@ jobs:
           #   会与平台自带的 cfg80211.ko 互相覆盖（package/install Error 1）。
           #   正确顺序：先写最小配置（target + 机型 + 包断言），再 defconfig。
           rm -f .config
-          cat "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" >> .config
-          bash "$GITHUB_WORKSPACE/customize-pt1500-h10.sh"
+          cat "$GITHUB_WORKSPACE/boards/pt1500-h10/Config.txt" >> .config
+          bash "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/configure.sh"
 
           # uboot-envtools 的 host fw_printenv 在此 target 会挂，必须保持关闭
           sed -i 's|^CONFIG_PACKAGE_uboot-envtools=y|# CONFIG_PACKAGE_uboot-envtools is not set|' .config
 
           make defconfig
-          cat "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" >> .config
+          cat "$GITHUB_WORKSPACE/boards/pt1500-h10/Config.txt" >> .config
           make defconfig
 
           # defconfig 会静默丢掉未被 profile 点名的包，重新断言后再次 defconfig
@@ -511,7 +541,7 @@ jobs:
             || { echo "ERROR: 上游 90-pon-wan 复活，需复核两套 WAN 逻辑是否冲突" >&2; exit 1; }
           [ ! -f "$UCI_SRC/91-pon-offload" ] \
             || { echo "ERROR: 上游 91-pon-offload 复活，需复核 offload 策略" >&2; exit 1; }
-          H10WAN="$GITHUB_WORKSPACE/files-h10/etc/uci-defaults/95-pt1500-h10-wan-default"
+          H10WAN="$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/uci-defaults/95-pt1500-h10-wan-default"
           test -f "$H10WAN" || { echo "ERROR: 缺 H10 WAN/FE 修复脚本 95-pt1500-h10-wan-default" >&2; exit 1; }
           bash -n "$H10WAN" || { echo "ERROR: 95-pt1500-h10-wan-default 语法错误" >&2; exit 1; }
           for kw in 'wan_vlan=1101' 'mtu=1500' "offload='1'" 'flow_offloading_hw' 'type=8021q'; do
@@ -565,10 +595,10 @@ jobs:
 
           # 三机型统一默认 LAN 192.168.1.1/24
           grep -qF 'WRT_IP="${WRT_IP:-192.168.1.1}"' \
-            "$GITHUB_WORKSPACE/customize-pt1500-h10.sh" \
+            "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/configure.sh" \
             || { echo "ERROR: customize-pt1500-h10.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
           grep -qF "uci -q set network.lan.ipaddr='192.168.1.1/24'" \
-            "$GITHUB_WORKSPACE/files-h10/etc/uci-defaults/95-pt1500-h10-wan-default" \
+            "$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/uci-defaults/95-pt1500-h10-wan-default" \
             || { echo "ERROR: 首启脚本未统一 LAN 到 192.168.1.1/24" >&2; exit 1; }
           echo "  OK   LAN 192.168.1.1/24（三机型统一）"
 
@@ -667,13 +697,13 @@ jobs:
           WF="$GITHUB_WORKSPACE/.github/workflows/build-pt1500-h10.yml"
           echo "=== 1. H10 资产齐全 ==="
           for f in "$WF" \
-                   "$GITHUB_WORKSPACE/Config-PT1500-H10.txt" \
-                   "$GITHUB_WORKSPACE/customize-pt1500-h10.sh" \
-                   "$GITHUB_WORKSPACE/scripts/apply-board-h10.sh" \
-                   "$GITHUB_WORKSPACE/scripts/verify-fit-boot.py" \
-                   "$GITHUB_WORKSPACE/files-common/etc/apk/keys/immortalwrt-25.12.pem" \
-                   "$GITHUB_WORKSPACE/files-common/lib/upgrade/zz-pt1570-sysupgrade.sh" \
-                   "$GITHUB_WORKSPACE/files-h10/etc/uci-defaults/95-pt1500-h10-wan-default"; do
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/Config.txt" \
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/configure.sh" \
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/apply.sh" \
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/verify-fit-boot.py" \
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/apk/keys/immortalwrt-25.12.pem" \
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/files/lib/upgrade/zz-pt1570-sysupgrade.sh" \
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/uci-defaults/95-pt1500-h10-wan-default"; do
             [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
           done
           echo "  OK   H10 资产齐全"
@@ -687,7 +717,7 @@ jobs:
             || { echo "ERROR: H10 workflow 仍引用 R10 专属脚本 / 配置" >&2; exit 1; }
           echo "  OK   无 R10 板级注入 / WiFi 资产引用"
           echo "=== 4. Config 基线关键符号 ==="
-          C="$GITHUB_WORKSPACE/Config-PT1500-H10.txt"
+          C="$GITHUB_WORKSPACE/boards/pt1500-h10/Config.txt"
           for sym in CONFIG_PACKAGE_fitblk CONFIG_PACKAGE_rtl9617c-pon-control \
                      CONFIG_PACKAGE_luci-theme-argon CONFIG_PACKAGE_tailscale \
                      CONFIG_PACKAGE_kmod-nft-fullcone; do
@@ -773,7 +803,7 @@ jobs:
         if: ${{ !inputs.test_only }}
         working-directory: wrt
         env:
-          ASSETS: ${{ github.workspace }}
+          ASSETS: ${{ github.workspace }}/boards/pt1500-h10
           APK_MIRROR_BASE: ${{ inputs.apk_mirror_base }}
         run: |
           set -e
@@ -1023,7 +1053,7 @@ jobs:
           # rootdisk 指向 volname=fit 的卷、分区带 linux,ubi、model 不含 ABI。
           ITB=$(ls bin/targets/rtl9617c/generic/*sysupgrade.itb 2>/dev/null | head -1)
           [ -n "$ITB" ] || { echo "::error::找不到 sysupgrade.itb"; exit 1; }
-          python3 "$ASSETS/scripts/verify-fit-boot.py" "$ITB"
+          python3 "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/verify-fit-boot.py" "$ITB"
 
           echo "IMAGE_PAYLOAD_OK=True"
 

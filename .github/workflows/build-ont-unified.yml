@@ -1,0 +1,90 @@
+name: ONT-UNIFIED-Build
+
+# Single entry point for all three ONT boards.
+# Board-specific work stays in the reusable workflows under .github/workflows/:
+#   pt1500-h10     -> build-pt1500-h10.yml
+#   pt1570-r10     -> build-pt1570-rtw89-unified.yml (board=pt1570-r10)
+#   pt1570-h10-cu  -> build-pt1570-rtw89-unified.yml (board=pt1570-h10-cu)
+# All board assets live in boards/<board>/ with the same layout.
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: 'Target board'
+        required: true
+        default: 'pt1570-r10'
+        type: choice
+        options:
+          - pt1500-h10
+          - pt1570-r10
+          - pt1570-h10-cu
+      source_ref:
+        description: 'Upstream commit override (blank = per-board default)'
+        required: false
+        default: ''
+        type: string
+      test_only:
+        description: 'Validate config/assets only, no compile'
+        required: false
+        default: true
+        type: boolean
+      create_release:
+        description: 'Publish artifact as GitHub Release'
+        required: false
+        default: false
+        type: boolean
+      publish_packages:
+        description: 'PT1500-H10 only: also collect/publish matching packages'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    name: Resolve board defaults
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - id: ref
+        run: |
+          set -e
+          REF="${{ inputs.source_ref }}"
+          if [ -z "$REF" ]; then
+            case "${{ inputs.board }}" in
+              pt1500-h10)    REF='968f03f52dbeb1fceea10979759c739d3532e257' ;;
+              pt1570-r10)    REF='d39cfc6367e3f9226f1e0590aec7f6206f784047' ;;
+              pt1570-h10-cu) REF='2df200550b73316094ff53c02899954beb22efeb' ;;
+              *) echo "::error::unknown board" >&2; exit 1 ;;
+            esac
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "board=${{ inputs.board }} source_ref=$REF"
+
+  pt1500:
+    name: PT1500-H10 / reusable build
+    needs: resolve
+    if: ${{ inputs.board == 'pt1500-h10' }}
+    uses: ./.github/workflows/build-pt1500-h10.yml
+    secrets: inherit
+    with:
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
+      test_only: ${{ inputs.test_only }}
+      create_release: ${{ inputs.create_release }}
+      publish_packages: ${{ inputs.publish_packages }}
+
+  rtw89:
+    name: ${{ inputs.board }} / reusable rtw89 build
+    needs: resolve
+    if: ${{ inputs.board != 'pt1500-h10' }}
+    uses: ./.github/workflows/build-pt1570-rtw89-unified.yml
+    secrets: inherit
+    with:
+      board: ${{ inputs.board }}
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
+      test_only: ${{ inputs.test_only }}
+      create_release: ${{ inputs.create_release }}

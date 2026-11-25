@@ -1,0 +1,38 @@
+#!/bin/sh
+# 2026-11-14 真机实证：LuCI「系统 → 主题设置」报
+#   读取可用空间失败：RPC call to luci.argon/avail failed with error -32000: Object not found
+#
+# 根因：luci-app-argon-config / luci-theme-argon 装进来的
+#   /usr/libexec/rpcd/luci.argon{,_appearance,_branding,_update,_wallpaper}
+# 是 CRLF 文本，首行实际是 "#!/bin/sh\r"，内核找不到名为 /bin/sh\r 的解释器，
+# exec 插件无法运行；同时安装权限是 0644，rpcd 只加载可执行的 exec 插件。
+# 两者叠加导致 5 个 luci.argon* ubus 对象一个都没注册，页面第一发 RPC
+# (luci.argon/avail) 直接返回 "Object not found" (-32000)。
+#
+# 编译期已由 files/usr/libexec/rpcd/ 注入 LF + 0755 版本覆盖包内文件；
+# 这里做运行时兜底：日后 feed 升级若把 CRLF / 0644 带回来，首启自动自愈。
+# 幂等：仅在内容确有 CR 或权限不足时改写，且只在真的改写后重启 rpcd。
+
+changed=0
+
+for f in /usr/libexec/rpcd/*; do
+	[ -f "$f" ] || continue
+
+	# 只处理 shebang 脚本，绝不改二进制插件
+	head -c 2 "$f" 2>/dev/null | grep -q '#!' || continue
+
+	tmp="/tmp/rpcd-eol.$$"
+	tr -d '\r' < "$f" > "$tmp" || { rm -f "$tmp"; continue; }
+	if ! cmp -s "$f" "$tmp"; then
+		cat "$tmp" > "$f" && changed=1
+	fi
+	rm -f "$tmp"
+
+	if [ ! -x "$f" ]; then
+		chmod 755 "$f" && changed=1
+	fi
+done
+
+[ "$changed" = 1 ] && /etc/init.d/rpcd restart
+
+exit 0

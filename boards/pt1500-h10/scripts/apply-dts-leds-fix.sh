@@ -1,0 +1,163 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# PT1500-H10 2.5G：按**原厂 DTB** 校正面板灯的 GPIO 编号。
+#
+# ★ 2026-11-17 实机回归：run#6（refactor 基线）刷入后"指示灯完全不对"。
+#
+# 根因（已用原厂备份逐字节核对）：
+#   原厂 DTB（D:\ONT\PT1500-H10\BackUp-原厂\mtd4-ubi_device.bin @ 266240）
+#   用的是**分 5 个 bank** 的 GPIO 控制器 gpio-controller@f43292c0：
+#     bank0 gpio-ranges 起始 0x00 ngpios 0x10 phandle 0x25
+#     bank1            0x20          0x11
+#     bank2            0x40          0x0c
+#     bank3            0x60          0x19 phandle 0x27
+#     bank4            0x80          0x11 phandle 0x3b
+#   面板灯用的是私有驱动 realtek,g3hgu-gpio-led，led-gpio 形如
+#   <phandle> <pin> <flags>，其中 phandle 可能是 bank0(0x25) 也可能是 bank3(0x27)。
+#
+#   上游 refactor 的 rtl9617c.dtsi 只保留**一个扁平** gpio0 控制器
+#   （gpio-ranges = <&pinctrl 0 0 160>，即 bank0->0-15、bank1->32-48、
+#   bank2->64-75、bank3->96-120、bank4->128-144），
+#   而上游 rtl9617c-pt1500-h10-2p5g.dts 的 leds 直接用了另一套编号
+#   （PPP_G=gpio2、LOS=gpio10、PON=gpio9、PWR_G=gpio11、EPHY1=gpio3…），
+#   **与原厂完全对不上**（8 个灯错 7 个，且 PWR_G 抢占了原厂 LOS 的 gpio11）。
+#   上游没有 PT1500 原厂 DTB 做对照，DTS 灯编号属于未校准值。
+#
+# 本脚本在编译期把上游 DTS 的**顶层 leds 节点**整体替换为按原厂 flat 编号换算后的版本。
+#
+# 原厂 -> flat 换算表（依据原厂 DTB 的 led-gpio 实测值）：
+#   LED_PPP_G  bank3 pin0  -> gpio96    LED_EPHY0  bank3 pin6 -> gpio102
+#   LED_LOS    bank0 pin11 -> gpio11    LED_EPHY1  bank3 pin7 -> gpio103
+#   LED_USB0   bank3 pin3  -> gpio99    LED_EPHY2  bank3 pin1 -> gpio97
+#   LED_PON    bank3 pin12 -> gpio108   LED_EPHY3  bank3 pin4 -> gpio100
+#   LED_PWR_G  bank0 pin6  -> gpio6     LED_USB1   bank3 pin5 -> gpio101
+#   LED_FXS    bank0 pin12 -> gpio12
+#
+# 极性说明（2026-11-18 实机修正）：
+#   原厂 DTB 的 11 盏 led-gpio flags 全为 0x00 = GPIO_ACTIVE_HIGH（高电平点亮）。
+#   第一版（run#11）只改编号、极性沿用上游分组（PPP/LOS/PON/EPHY/USB=ACTIVE_LOW），
+#   实机结果"只有电源灯亮"——电源灯恰是唯一 ACTIVE_HIGH + default-state=on 的灯。
+#   实机 /sys/kernel/debug/gpio 实证：ACTIVE_LOW 灯在 bright=1 时输出低电平，
+#   而硬件是高电平点亮，逻辑完全反了。本版把 11 盏灯统一改为 GPIO_ACTIVE_HIGH，
+#   与原厂 flags=0x00 严格一致。
+#
+# 注意：DTS 里有多个 leds 节点 —— 顶层面板灯节点、以及 mdio 下 phy_2p5g 里的
+# PHY LED 节点（LED_8221B_P6_*，那是 RTL8221B 芯片自己的灯，不是面板灯）。
+# 本脚本只改**顶层**那个（紧跟 "/ {" 之后、缩进一级的 leds）。
+#
+# ★ 2026-11-21 Taurus 基线适配：上游把 gpio0 拆成 gpio_bank0/1/2/...，
+#   bank0 pin n 与旧扁平 gpio0 的 n 一一对应（原厂面板灯全在 bank0），
+#   故目标节点统一改用 &gpio_bank0，pin 与极性表不变。
+# 幂等：已是目标内容则跳过；匹配不到唯一的顶层 leds 节点则 fail（提示上游改版需复核）。
+# ★ 2026-11-19 按 run#17 实机定 pin 灯表覆盖（U-Boot 引脚 + 实测极性）。
+#   依据 run#17 实机对应（面板序->pin）：电源11 光纤9 光信号10 宽带2 电话12 未标记1=7 千兆4=0 千兆3=1 iTV=3 未标记2=6；2.5G 口无 GPIO。
+#   极性：ALL ON 亮电源/电话/未标记1 = ACTIVE_HIGH；ALL OFF 亮其余 7 盏 = ACTIVE_LOW。
+#   同时保留方案 B：删除 /aliases 中 4 行 led-* = &led_power 引用，
+#   避免上游结构变化时 dtc path_references 再报 led_power 未定义。
+#
+# 用法：apply-dts-leds-fix.sh <源码树根目录> <DTS 文件名>
+
+set -eu
+
+WRT="${1:?用法: apply-dts-leds-fix.sh <wrt 根目录> <dts 文件名>}"
+DTS_NAME="${2:?用法: apply-dts-leds-fix.sh <wrt 根目录> <dts 文件名>}"
+DTS_FILE="$WRT/target/linux/rtl9617c/dts/${DTS_NAME}.dts"
+TARGET_FILE="$WRT/target/linux/rtl9617c/dts/.pt1500-leds-target.dtsi"
+
+[ -f "$DTS_FILE" ] || { echo "ERROR: DTS 不存在：$DTS_FILE" >&2; exit 1; }
+
+# 目标 leds 节点（按原厂 flat 编号 + 原厂极性 ACTIVE_HIGH，flags=0x00）
+cat > "$TARGET_FILE" <<'EOF'
+	leds {
+		compatible = "gpio-leds";
+		led_power: power {
+			label = "LED_PWR_G";
+			gpios = <&gpio_bank0 11 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+		};
+		pon {
+			label = "LED_PON";
+			gpios = <&gpio_bank0 9 GPIO_ACTIVE_LOW>;
+		};
+		los {
+			label = "LED_LOS";
+			gpios = <&gpio_bank0 10 GPIO_ACTIVE_LOW>;
+		};
+		internet {
+			label = "LED_PPP_G";
+			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+		};
+		phone {
+			label = "LED_FXS";
+			gpios = <&gpio_bank0 12 GPIO_ACTIVE_HIGH>;
+		};
+		usb0 {
+			label = "LED_USB0";
+			gpios = <&gpio_bank0 7 GPIO_ACTIVE_HIGH>;
+		};
+		lan4 {
+			label = "LED_EPHY3";
+			gpios = <&gpio_bank0 0 GPIO_ACTIVE_LOW>;
+		};
+		lan3 {
+			label = "LED_EPHY2";
+			gpios = <&gpio_bank0 1 GPIO_ACTIVE_LOW>;
+		};
+		lan2 {
+			label = "LED_EPHY1";
+			gpios = <&gpio_bank0 3 GPIO_ACTIVE_LOW>;
+		};
+		usb1 {
+			label = "LED_USB1";
+			gpios = <&gpio_bank0 6 GPIO_ACTIVE_LOW>;
+		};
+	};
+EOF
+
+python3 - "$DTS_FILE" "$TARGET_FILE" <<'PYEOF'
+import re
+import sys
+
+path, target_path = sys.argv[1], sys.argv[2]
+text = open(path, encoding='utf-8').read()
+target = open(target_path, encoding='utf-8').read()
+
+# 方案 B：删掉 /aliases 中 4 行指向 led_power 的别名（保留 serial0）。
+# 目标 leds 节点自身带 led_power label，但上游若改结构仍可能让 dtc 报错；
+# 这里统一去掉引用，编译更稳。
+alias_re = re.compile(
+    r'^[ \t]*led-(?:boot|failsafe|running|upgrade)[ \t]*=[ \t]*&led_power;[ \t]*\n?',
+    re.M)
+text, nalias = alias_re.subn('', text)
+if '&led_power' in text:
+    sys.exit('ERROR: DTS 仍残留 &led_power 引用，需人工复核 aliases 节点')
+
+# 顶层 leds 节点：缩进恰好一个 tab（mdio 下 phy_2p5g 里的 leds 缩进两 tab，不会被匹配）。
+# 用「以 \n\tleds { 开头、以 \n\t}; 结尾」定位，保证只命中顶层那个。
+pattern = re.compile(r'\n\tleds \{\n.*?\n\t\};\n', re.S)
+matches = pattern.findall(text)
+if len(matches) != 1:
+    sys.exit('ERROR: DTS 顶层 leds 节点匹配到 %d 个（期望恰好 1 个），上游结构已变，需人工复核'
+             % len(matches))
+
+old = matches[0]
+lead = '\n' if old.startswith('\n') else ''
+new = lead + target
+changed = False
+if old.strip() != new.strip():
+    text = text.replace(old, new, 1)
+    changed = True
+if changed or nalias:
+    open(path, 'w', encoding='utf-8').write(text)
+if changed:
+    n = target.count('label = "LED_')
+    print('  OK   DTS 面板灯已按 run#17 实机定 pin 覆盖（%d 盏，U-Boot pin + 实测极性）' % n)
+else:
+    print('  OK   DTS 面板灯已是 run#17 实机定 pin 表（幂等跳过）')
+if nalias:
+    print('  OK   已按方案 B 删除 %d 行指向 led_power 的 /aliases 引用' % nalias)
+
+PYEOF
+
+rm -f "$TARGET_FILE"
