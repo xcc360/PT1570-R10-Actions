@@ -3,9 +3,10 @@ name: PT1570-RTW89-UNIFIED-sysupgrade
 # Unified workflow for PT1570-R10 and PT1570-H10-CU rtw89 experimental builds.
 # Everything except board assets is shared: dependency install, source checkout,
 # feeds, cache, defconfig, toolchain build, image build and artifact handling.
-# Board-specific pieces live under:
-#   boards/pt1570-r10/...  (preferred) or repository root (legacy exp branch)
-#   rtw89-h10/...          (H10-CU assets)
+# Board-specific pieces use one identical layout:
+#   boards/pt1570-r10/{Config.txt,scripts/,board/,files/,firmware/,patches/}
+#   boards/pt1570-h10-cu/{Config.txt,scripts/,board/,files/,firmware/,patches/}
+# Shared helpers: scripts/wb-cache.sh, scripts/wb-build-common.sh
 # Usage:
 #   dispatch with board=<name>, test_only=true  -> static checks + .config only
 #   dispatch with board=<name>, test_only=false -> sysupgrade.itb artifact
@@ -71,14 +72,6 @@ jobs:
               PROFILE='youhua_pt1570_r10_rtw89_exp'
               DTS='rtl9617c-pt1570-r10-rtw89'
               COMPAT='youhua,pt1570-r10-rtw89-exp'
-              ASSET_DIR="$GITHUB_WORKSPACE/boards/pt1570-r10"
-              if [ ! -d "$ASSET_DIR" ]; then
-                echo "legacy R10 asset layout detected (repository root)"
-                ASSET_DIR="$GITHUB_WORKSPACE"
-              fi
-              CONFIG_FILE="$ASSET_DIR/Config-PT1570-R10-RTW89.txt"
-              APPLY_SCRIPT="$ASSET_DIR/scripts/apply-r10-rtw89-exp.sh"
-              VERIFY_SCRIPT="$ASSET_DIR/scripts/verify-r10-rtw89-exp.py"
               ;;
             pt1570-h10-cu)
               # Keep the known-good H10 baseline until its extra 8192XB
@@ -87,15 +80,18 @@ jobs:
               PROFILE='youhua_pt1570_h10_cu_rtw89_exp'
               DTS='rtl9617c-pt1570-h10-cu-rtw89'
               COMPAT='youhua,pt1570-h10-cu-rtw89-exp'
-              ASSET_DIR="$GITHUB_WORKSPACE/rtw89-h10"
-              CONFIG_FILE="$ASSET_DIR/Config.txt"
-              APPLY_SCRIPT="$ASSET_DIR/apply.sh"
-              VERIFY_SCRIPT="$ASSET_DIR/verify.py"
               ;;
             *)
               echo "::error::unknown board '$BOARD'" >&2; exit 1
               ;;
           esac
+          # Unified board layout: boards/<board>/ is identical for both boards.
+          ASSET_DIR="$GITHUB_WORKSPACE/boards/$BOARD"
+          [ -d "$ASSET_DIR" ] \
+            || { echo "::error::missing unified board directory boards/$BOARD" >&2; exit 1; }
+          CONFIG_FILE="$ASSET_DIR/Config.txt"
+          APPLY_SCRIPT="$ASSET_DIR/scripts/apply.sh"
+          VERIFY_SCRIPT="$ASSET_DIR/scripts/verify.py"
           REF="${{ inputs.source_ref }}"
           [ -n "$REF" ] || REF="$DEFAULT_REF"
           for f in "$CONFIG_FILE" "$APPLY_SCRIPT"; do
@@ -262,8 +258,8 @@ jobs:
         run: |
           set -e
           if [ -n "$VERIFY_SCRIPT" ] && [ -f "$VERIFY_SCRIPT" ]; then
-            SRC_DIR=/mnt/build_wrt GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
-              python3 "$VERIFY_SCRIPT"
+            SRC_DIR=/mnt/build_wrt ASSET_DIR="$ASSET_DIR" \
+              GITHUB_WORKSPACE="$GITHUB_WORKSPACE" python3 "$VERIFY_SCRIPT"
           else
             echo "::warning::no board verify script; relying on Configure assertions"
           fi

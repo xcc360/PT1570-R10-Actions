@@ -1,0 +1,413 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/dts-v1/;
+
+#include "rtk-taurus.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "Youhua PT1570-H10-CU (rtw89-exp)";
+	compatible = "youhua,pt1570-h10-cu-rtw89-exp", "youhua,pt1570-h10-cu", "realtek,rtl9617c";
+
+	aliases {
+		serial0 = &uart0;
+		i2c0 = &i2c0;
+		led-boot = &led_power;
+		led-failsafe = &led_power;
+		led-running = &led_power;
+		led-upgrade = &led_power;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs = "earlycon console=ttyS0,115200n8 loglevel=7 clk_ignore_unused";
+		rootdisk = <&ubi_rootdisk>;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0 0 0 0x20000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		voip-vector@0 {
+			reg = <0 0 0 0x1000>;
+			no-map;
+		};
+		voip@2000000 {
+			reg = <0 0x02000000 0 0x00300000>;
+			no-map;
+		};
+		voip-ipc@2300000 {
+			reg = <0 0x02300000 0 0x00100000>;
+			no-map;
+		};
+		ddr-noncache@9000000 {
+			reg = <0 0x09000000 0 0x01a50000>;
+		};
+		ddr-cache@bc48000 {
+			reg = <0 0x0bc48000 0 0x10000>;
+		};
+		lan_deepq: lan-deepq@c000000 {
+			reg = <0 0x0c000000 0 0x01500000>;
+		};
+
+		tz-smc@eeff000 {
+			reg = <0 0x0eeff000 0 0x1000>;
+			no-map;
+		};
+		tz@ffc0000 {
+			reg = <0 0x0ffc0000 0 0x40000>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		internet {
+			label = "LED_PPP_G";
+			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+		};
+		los {
+			label = "LED_LOS";
+			gpios = <&gpio_bank0 10 GPIO_ACTIVE_LOW>;
+		};
+		pon {
+			label = "LED_PON";
+			gpios = <&gpio_bank0 9 GPIO_ACTIVE_LOW>;
+		};
+		led_power: power {
+			label = "LED_PWR_G";
+			gpios = <&gpio_bank0 11 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+		};
+		phone {
+			label = "LED_FXS";
+			gpios = <&gpio_bank0 12 GPIO_ACTIVE_HIGH>;
+		};
+		lan0 {
+			label = "LED_EPHY0";
+			gpios = <&gpio_bank0 4 GPIO_ACTIVE_LOW>;   /* 2.5G 口，PHY 硬件驱动可长灭 */
+		};
+		lan1 {
+			label = "LED_EPHY1";
+			gpios = <&gpio_bank0 3 GPIO_ACTIVE_LOW>;   /* 千兆口2 */
+		};
+		lan2 {
+			label = "LED_EPHY2";
+			gpios = <&gpio_bank0 1 GPIO_ACTIVE_LOW>;   /* 千兆口3 */
+		};
+		lan3 {
+			label = "LED_EPHY3";
+			gpios = <&gpio_bank0 0 GPIO_ACTIVE_LOW>;   /* 千兆口4 */
+		};
+		usb0 {
+			label = "LED_USB0";
+			gpios = <&gpio_bank0 7 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "usbport";
+		};
+		usb1 {
+			label = "LED_USB1";
+			gpios = <&gpio_bank0 6 GPIO_ACTIVE_LOW>;
+		};
+		wps {
+			label = "LED_WPS_G";
+			gpios = <&gpio_bank0 5 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&gpio_bank0 8 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&i2c0 {
+	status = "okay";
+	scl-gpios = <&gpio_bank2 4 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpio_bank2 5 GPIO_ACTIVE_HIGH>;
+
+	bosa0: optical-front-end@51 {
+		compatible = "realtek,rtl9617c-bosa";
+		reg = <0x51>;
+		nvmem-cells = <&bosa_calibration>;
+		nvmem-cell-names = "calibration";
+	};
+};
+
+&mdio {
+	status = "okay";
+
+	phy2: ethernet-phy@2 { reg = <2>; };
+	phy3: ethernet-phy@3 { reg = <3>; };
+	phy4: ethernet-phy@4 { reg = <4>; };
+
+	// 外置 RTL8221B 2.5G PHY：MDIO addr6 C22。refactor 用 HisGMII +
+	// serdes-option-mode=1（对齐上游 PT1500 已实机验证的 2.5G 正解架构）。
+	phy_2p5g: ethernet-phy@6 {
+		reg = <6>;
+		realtek,hisgmii;
+		realtek,serdes-option-mode = <1>;
+
+		leds {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led@0 {
+				reg = <0>;
+				label = "LED_8221B_P6_0";
+				default-state = "on";
+			};
+			led@1 {
+				reg = <1>;
+				label = "LED_8221B_P6_1";
+				default-state = "on";
+			};
+			led@2 {
+				reg = <2>;
+				label = "LED_8221B_P6_2";
+				default-state = "on";
+			};
+		};
+	};
+};
+
+&ni {
+	nvmem-cells = <&base_mac 0>;
+	nvmem-cell-names = "mac-address";
+	memory-region = <&lan_deepq>;
+	status = "okay";
+
+	ethernet-ports {
+		port@1 {
+			reg = <1>;
+			label = "lan2";
+			phy-mode = "internal";
+			phy-handle = <&phy2>;
+		};
+		port@2 {
+			reg = <2>;
+			label = "lan3";
+			phy-mode = "internal";
+			phy-handle = <&phy3>;
+		};
+		port@3 {
+			reg = <3>;
+			label = "lan4";
+			phy-mode = "internal";
+			phy-handle = <&phy4>;
+		};
+		// P6 XGE MAC = 2.5G 口（netdev lan1），独立 serdes PHY。
+		port@6 {
+			reg = <6>;
+			label = "lan1";
+			phy-mode = "2500base-x";
+			phy-handle = <&phy_2p5g>;
+			phys = <&serdes>;
+		};
+	};
+};
+
+&pcie0 {
+	reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>;
+	status = "okay";
+};
+
+&pcie0_port {
+	wifi5g: wifi@0,0 {
+		compatible = "pci10ec,c852";
+		reg = <0x0000 0 0 0 0>;
+		nvmem-cells = <&wifi_cal_radio0>;
+		nvmem-cell-names = "wifi-calibration";
+	};
+};
+
+&pcie1 {
+	reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>;
+	status = "okay";
+};
+
+&pcie1_port {
+	wifi2g: wifi@0,0 {
+		compatible = "pci10ec,0192";
+		reg = <0x0000 0 0 0 0>;
+		nvmem-cells = <&wifi_cal_radio1>;
+		nvmem-cell-names = "wifi-calibration";
+	};
+};
+
+&pon {
+	status = "okay";
+	nvmem-cells = <&epon_mac 0>, <&pon_sn>;
+	nvmem-cell-names = "mac-address", "pon-serial";
+	realtek,optical-front-end = <&bosa0>;
+	tx-disable-gpios = <&gpio_bank0 15 GPIO_ACTIVE_HIGH>;
+	realtek,burst-polarity = <0>;
+	realtek,los-invert = <0>;
+	realtek,uni-ports = /bits/ 8 <3 2 1 0>;
+};
+
+&qspi {
+	status = "okay";
+
+	flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+		spi-tx-bus-width = <1>;
+		spi-rx-bus-width = <4>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "boot";
+				reg = <0x0 0x200000>;
+				read-only;
+			};
+			partition@280000 {
+				label = "env";
+				reg = <0x280000 0x40000>;
+			};
+			partition@2c0000 {
+				label = "env2";
+				reg = <0x2c0000 0x40000>;
+			};
+			partition@300000 {
+				label = "static_conf";
+				reg = <0x300000 0x40000>;
+			};
+
+			ubi_partition: partition@340000 {
+				label = "ubi_device";
+				reg = <0x340000 0xf5c0000>;
+				compatible = "linux,ubi";
+				// ⛔ 不可 read-only：否则 UBI 只读 attach、rootfs_data 建不出
+				// overlay，sysupgrade 刷入态黑砖（旧 CU 第二版实测踩过）。
+				// refactor 上游 dtsi 已不给 ubi 分区标 read-only，无需覆盖。
+
+				volumes {
+					ubi_rootdisk: ubi-volume-fit {
+						volname = "fit";
+					};
+
+					ubi_factory: ubi-volume-factory {
+						volname = "factory";
+
+						nvmem-layout {
+							compatible = "fixed-layout";
+							#address-cells = <1>;
+							#size-cells = <1>;
+
+							base_mac: mac-address@1000 {
+								compatible = "mac-base";
+								reg = <0x1000 0x6>;
+								#nvmem-cell-cells = <1>;
+							};
+
+							mac_count: mac-count@1006 {
+								reg = <0x1006 0x4>;
+							};
+
+							epon_mac: mac-address@1010 {
+								compatible = "mac-base";
+								reg = <0x1010 0x6>;
+								#nvmem-cell-cells = <1>;
+							};
+
+							pon_sn: pon-serial@1020 {
+								reg = <0x1020 0x10>;
+							};
+
+							device_sn: device-serial@1030 {
+								reg = <0x1030 0x20>;
+							};
+
+							wifi_cal_radio0: wifi-calibration@2000 {
+								reg = <0x2000 0x1000>;
+							};
+
+							wifi_cal_radio1: wifi-calibration@3000 {
+								reg = <0x3000 0x1000>;
+							};
+
+							bosa_calibration: bosa-calibration@4000 {
+								reg = <0x4000 0x400>;
+							};
+
+							bosa_olt_calibration: olt-calibration@4800 {
+								reg = <0x4800 0x400>;
+							};
+
+							xtemp_calibration: xtemp-calibration@5000 {
+								reg = <0x5000 0x1000>;
+							};
+
+
+							fpga_image: fpga-image@10000 {
+								reg = <0x10000 0x7e0000>;
+							};
+						};
+					};
+				};
+			};
+		};
+	};
+};
+
+/* SoC TMS sensor reads 12C low per factory xtemp calibration; report raw + 12C */
+&cpu_thermal {
+	deviation = <0xffffd120>;
+};
+
+&serdes {
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&watchdog {
+	reset-on-timeout;
+	delay-reset = <134>;
+	status = "okay";
+};
+
+&usb_hsphy {
+	status = "okay";
+};
+
+&usb_ssphy {
+	usb-vbus-gpios = <&gpio_bank3 4 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
+&usb3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	usb_port1: port@1 {
+		reg = <1>;
+		#trigger-source-cells = <0>;
+	};
+};
