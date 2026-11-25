@@ -1,22 +1,20 @@
 # ============================================================================
-# 统一 Youhua U-Boot 编译 workflow（PT1570-H10-CU-2P5G / PT1570-R10）
+# 统一 Youhua U-Boot 编译 workflow（PT1570-H10-CU-2P5G / PT1570-R10-CU-4GE）
 # ============================================================================
-# 设计目标：
-#   两个板级的板级源码（board/ + dts + defconfig + board json）现已全部进入
-#   上游 lyq1996/rtl9617c-uboot@main（PR #10 CU、PR #11 R10 已合并）。本
-#   workflow 只做「clone 上游固定 SHA + 按板级注入设备专用 stock + 通用
-#   pack/verify/artifact/release」，不再覆盖任何上游板级源码。
+# 对齐上游 lyq1996/rtl9617c-uboot@ad056996（2026-11-22 命名对齐）：
+#   * 板级源码（board/ + dts + defconfig + board json）全部来自上游，本地不再
+#     保存任何重复的板级源码；stock 摘要直接读上游 board json 的 stock_sha256。
+#   * 本地 uboot/ 只保留设备专用原厂 stock 与两份灯表静态护栏：
+#       uboot/stocks/<board>/stock-mtd0.bin.b64
+#       uboot/tools/{verify_cu_leds,verify_r10_leds}.py
+#   * board=both 时一次 dispatch 并行构建两块板（二选二），每板独立
+#     artifact / release tag；旧板名 youhua-pt1570-r10 自动映射到新名。
 #
 # 关键不变量：
-#   * 板级源码上游化，stock 本地化。stock-mtd0.bin（2 MiB 原厂备份）含每机
-#     唯一 GPT GUID / BL2 / BL31，不随源码发布，单独放在 uboot-stocks/<board>/。
-#   * uboot_ref 默认锁定含两个板级 PR 的 main（726fedd3），不接受漂移的 main
-#     —— 上游一旦改动板级几何/UUID，固定 SHA 让构建可复现。
-#   * 上游 pack_boot.py 会原样保留 GPT / BL2 / BL31，只替换 BL33 (U-Boot)，
-#     本 workflow 在 pack 后独立复核 payload provenance。
-#
-# 旧 workflow（build-uboot-pt1570-h10-cu.yml / build-uboot-r10.yml）保留但
-# 已标记 DEPRECATED，观察一个发布周期后再删。
+#   * stock 为每机唯一的 2 MiB 原厂 mtd0 备份（GPT/BL2/BL31），不可共享。
+#   * 上游 pack_boot.py 原样保留 GPT/BL2/BL31，只替换 BL33；本 workflow
+#     在 pack 后独立复核 payload provenance。
+#   * factory 分区 64 KiB（上游 defconfig），与当前 OpenWrt 布局一致。
 # ============================================================================
 name: Youhua U-Boot (CU / R10)
 
@@ -24,17 +22,18 @@ on:
   workflow_dispatch:
     inputs:
       board:
-        description: '目标板级（两个板级的源码已在上游 main）'
+        description: '目标板级；both = 两块板同时构建（二选二）'
         required: true
         type: choice
         options:
+          - both
           - youhua-pt1570-h10-cu-2p5g
-          - youhua-pt1570-r10
-        default: youhua-pt1570-h10-cu-2p5g
+          - youhua-pt1570-r10-cu-4ge
+        default: both
       uboot_ref:
-        description: 'lyq1996/rtl9617c-uboot ref（默认锁定含 PR #10/#11 的 main）'
+        description: 'lyq1996/rtl9617c-uboot ref（默认锁定命名对齐后的 HEAD）'
         required: false
-        default: '726fedd398a3a80e6bf3ca21de9bfd5a47326771'
+        default: 'ad056996854cfd7ea009f6a0d05a0f86f045b800'
       test_only:
         description: '只做注入与静态校验，不编译 BL33'
         required: false
@@ -49,52 +48,107 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: youhua-uboot-${{ inputs.board }}-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  BOARD: ${{ inputs.board }}
-
 jobs:
+  select:
+    name: Select boards
+    runs-on: ubuntu-22.04
+    outputs:
+      boards: ${{ steps.pick.outputs.boards }}
+    steps:
+      - name: Resolve board list
+        id: pick
+        shell: bash
+        env:
+          BOARD: ${{ inputs.board }}
+        run: |
+          set -euo pipefail
+          case "$BOARD" in
+            both)
+              BOARDS='["youhua-pt1570-h10-cu-2p5g","youhua-pt1570-r10-cu-4ge"]'
+              ;;
+            youhua-pt1570-r10)
+              BOARDS='["youhua-pt1570-r10-cu-4ge"]'
+              ;;
+            youhua-pt1570-h10-cu-2p5g|youhua-pt1570-r10-cu-4ge)
+              BOARDS=$(printf '["%s"]' "$BOARD")
+              ;;
+            *)
+              echo "::error::未知板级 $BOARD"; exit 1
+              ;;
+          esac
+          echo "boards=$BOARDS" >> "$GITHUB_OUTPUT"
+          echo "  selected: $BOARDS"
+
   build:
-    name: ${{ inputs.board }} / build
+    needs: select
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(needs.select.outputs.boards) }}
+    name: ${{ matrix.board }} / build
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    env:
+      BOARD: ${{ matrix.board }}
+    concurrency:
+      group: youhua-uboot-${{ matrix.board }}-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout assets
         uses: actions/checkout@v4
 
-      # ---- 板级 profile：只映射设备专用差异（stock 摘要 / 灯表护栏 / 展示名）----
+      # ---- 上游源码：只 clone 固定 SHA，不覆盖任何板级文件 ----
+      - name: Clone upstream U-Boot (pinned SHA)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.uboot_ref || 'ad056996854cfd7ea009f6a0d05a0f86f045b800' }}"
+          U="$RUNNER_TEMP/uboot"
+          git init -q "$U"
+          git -C "$U" remote add origin https://github.com/lyq1996/rtl9617c-uboot.git
+          if ! git -C "$U" fetch -q --depth=1 origin "$REF"; then
+            echo "ERROR: 按 uboot_ref 拉取失败（不接受漂移的 main）" >&2
+            exit 1
+          fi
+          git -C "$U" checkout -q FETCH_HEAD
+          echo "UBOOT_DIR=$U" >> "$GITHUB_ENV"
+          echo "  HEAD = $(git -C "$U" rev-parse HEAD)"
+
+      # ---- 板级 profile：stock 摘要来自上游 board json，灯表/标签按板映射 ----
       - name: Resolve board profile
         shell: bash
         run: |
           set -euo pipefail
+          U="$RUNNER_TEMP/uboot"
+          J="$U/tools/release/boards/$BOARD.json"
+          [ -f "$J" ] || { echo "::error::上游缺 $J（ref 不兼容？）"; exit 1; }
+          STOCK_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stock_sha256"])' "$J")
+          STOCK_B64="uboot/stocks/$BOARD/stock-mtd0.bin.b64"
           case "$BOARD" in
             youhua-pt1570-h10-cu-2p5g)
-              STOCK_SHA256=2c07fb9e3271b885eff0c2d9a708cfa321ff8262c8d733ae0636f1346669b42f
-              STOCK_B64=cu-h10/uboot/stocks/youhua-pt1570-h10-cu-2p5g/stock-mtd0.bin.b64
               LAMP_DESC=board/youhua/pt1570-h10-cu/desc-2p5g.c
-              LAMP_GUARD=local
+              LAMP_GUARD=uboot/tools/verify_cu_leds.py
               TAG_BASE=PT1570-H10-2P5G-CU-uboot
               ;;
-            youhua-pt1570-r10)
-              STOCK_SHA256=5ee1e8f8853bd4ba8b06ac6410e421cf3bcaa0b68e994f3de853b7f86d4c01b1
-              STOCK_B64=uboot-stocks/youhua-pt1570-r10/stock-mtd0.bin.b64
-              LAMP_DESC=board/youhua/pt1570-r10/desc.c
-              LAMP_GUARD=upstream
+            youhua-pt1570-r10-cu-4ge)
+              LAMP_DESC=board/youhua/pt1570-r10-cu/desc-4ge.c
+              LAMP_GUARD=uboot/tools/verify_r10_leds.py
               TAG_BASE=PT1570-R10-4GE-CU-uboot
               ;;
             *)
               echo "::error::未知板级 $BOARD"; exit 1
               ;;
           esac
+          [ -f "$GITHUB_WORKSPACE/$STOCK_B64" ] \
+            || { echo "::error::缺 stock 资产 $STOCK_B64"; exit 1; }
+          [ -f "$GITHUB_WORKSPACE/$LAMP_GUARD" ] \
+            || { echo "::error::缺灯表护栏 $LAMP_GUARD"; exit 1; }
           echo "STOCK_SHA256=$STOCK_SHA256" >> "$GITHUB_ENV"
           echo "STOCK_B64=$STOCK_B64" >> "$GITHUB_ENV"
           echo "LAMP_DESC=$LAMP_DESC" >> "$GITHUB_ENV"
           echo "LAMP_GUARD=$LAMP_GUARD" >> "$GITHUB_ENV"
           echo "TAG_BASE=$TAG_BASE" >> "$GITHUB_ENV"
-          echo "  BOARD=$BOARD  STOCK=$STOCK_B64  TAG=$TAG_BASE"
+          echo "  BOARD=$BOARD  STOCK=$STOCK_B64  SHA=$STOCK_SHA256  TAG=$TAG_BASE"
 
       # ---- stock 资产：base64 解码 + 尺寸/摘要/GPT/FIP 结构校验 ----
       - name: Decode and verify device stock
@@ -102,7 +156,6 @@ jobs:
         run: |
           set -euo pipefail
           B64="$GITHUB_WORKSPACE/$STOCK_B64"
-          [ -f "$B64" ] || { echo "::error::缺 stock 资产 $B64"; exit 1; }
           mkdir -p "$RUNNER_TEMP/stock"
           base64 -d "$B64" > "$RUNNER_TEMP/stock/stock-mtd0.bin"
           STK="$RUNNER_TEMP/stock/stock-mtd0.bin"
@@ -119,7 +172,7 @@ jobs:
           assert d[0x100000:0x100008].hex() == '010064aa78563412', '备 FIP ToC magic 不对'
           print('  OK   stock: 2 MiB + GPT + 双 FIP 槽')
           PY
-          echo "  OK   $BOARD stock sha256=$SHA（设备原厂备份）"
+          echo "  OK   $BOARD stock sha256=$SHA（与上游 board json 一致）"
 
       - name: Install build dependencies
         if: ${{ !inputs.test_only }}
@@ -139,23 +192,6 @@ jobs:
           python3 -m pip install --user --upgrade 'cryptography>=42'
           python3 -c 'import cryptography; from cryptography import x509; assert int(cryptography.__version__.split(".")[0])>=42; assert hasattr(x509.Certificate,"signature_algorithm_parameters"); print("  OK   cryptography",cryptography.__version__)'
           echo "  OK   toolchain: $(aarch64-linux-gnu-gcc --version | head -1)"
-
-      # ---- 上游源码：只 clone 固定 SHA，不覆盖任何板级文件 ----
-      - name: Clone upstream U-Boot (pinned SHA)
-        shell: bash
-        run: |
-          set -euo pipefail
-          REF="${{ inputs.uboot_ref || '726fedd398a3a80e6bf3ca21de9bfd5a47326771' }}"
-          U="$RUNNER_TEMP/uboot"
-          git init -q "$U"
-          git -C "$U" remote add origin https://github.com/lyq1996/rtl9617c-uboot.git
-          if ! git -C "$U" fetch -q --depth=1 origin "$REF"; then
-            echo "ERROR: 按 uboot_ref 拉取失败（不接受漂移的 main）" >&2
-            exit 1
-          fi
-          git -C "$U" checkout -q FETCH_HEAD
-          echo "UBOOT_DIR=$U" >> "$GITHUB_ENV"
-          echo "  HEAD = $(git -C "$U" rev-parse HEAD)"
 
       # ---- 上游板级完整性 + 灯表护栏（只读校验，不覆盖）----
       - name: Verify upstream board and lamp guard
@@ -180,12 +216,7 @@ jobs:
             || { echo "::error::$BOARD defconfig 的 factory 卷不是 64 KiB"; exit 1; }
           python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["board"]==sys.argv[2]; assert "nt_fw" in d["fip_uuids"]; print("  OK   board json:",d["board_id"])' \
             "$U/tools/release/boards/$BOARD.json" "$BOARD"
-          # 灯表护栏：CU 用本仓库脚本（未进上游），R10 用上游脚本（PR #11 带入）
-          if [ "$LAMP_GUARD" = local ]; then
-            python3 "$GITHUB_WORKSPACE/cu-h10/uboot/tools/verify_cu_leds.py" "$U/$LAMP_DESC"
-          else
-            python3 "$U/tools/release/verify_r10_leds.py" "$U/$LAMP_DESC"
-          fi
+          python3 "$GITHUB_WORKSPACE/$LAMP_GUARD" "$U/$LAMP_DESC"
           echo "  OK   上游板级齐全 + 灯表护栏通过（$LAMP_GUARD）"
 
       - name: Inject device stock
@@ -206,8 +237,9 @@ jobs:
           U="$RUNNER_TEMP/uboot"
           bash -n "$U/build.sh"
           bash -n "$U/tools/release/build_bl33.sh"
-          python3 -m py_compile "$U/tools/release/pack_boot.py"
-          echo "  TEST_ONLY_OK=True（未编译 BL33）"
+          python3 -m py_compile "$U/tools/release/pack_boot.py" \
+                                "$GITHUB_WORKSPACE/$LAMP_GUARD"
+          echo "  TEST_ONLY_OK=True（未编译 BL33，board=$BOARD）"
 
       # ---- 通用构建：BL33 + pack + 上游 verify ----
       - name: Build BL33 and signed boot image
@@ -284,7 +316,7 @@ jobs:
         if: ${{ !inputs.test_only }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.board }}-uboot-${{ github.run_number }}
+          name: ${{ matrix.board }}-uboot-${{ github.run_number }}
           path: output-youhua-uboot/
           if-no-files-found: error
           retention-days: 90

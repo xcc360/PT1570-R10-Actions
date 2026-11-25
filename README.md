@@ -13,7 +13,7 @@
 | `build-ont-unified.yml` | 唯一 dispatch 入口 | 按 `board` 分发到下方两个可复用 workflow |
 | `build-pt1500-h10.yml` | `workflow_call` | PT1500-H10 固件（upstream refactor 基线，2.5G HisGMII + SerDes + 2500base-x） |
 | `build-pt1570-rtw89-unified.yml` | `workflow_call` | R10 / H10-CU 固件（主线 rtw89 + AP firmware，不再注入私有 rtl_ax_ap） |
-| `build-uboot-youhua.yml` | 独立 | R10 / H10-CU U-Boot，已发布 |
+| `build-uboot-youhua.yml` | 独立 | R10 / H10-CU U-Boot；`board=both` 一次构建两板，已发布 |
 | `dts-syntax-check.yml` | 独立 | DTS 静态语法检查，改动 DTS 时自动触发 |
 
 所有固件 workflow 都支持 `test_only=true`：只跑注入与静态护栏，不编译、不发版。
@@ -29,7 +29,7 @@ boards/pt1570-r10/          R10 的 Config / scripts / board / files
 boards/pt1570-h10-cu/       H10-CU 的 Config / scripts / board / files / firmware / patches
 scripts/wb-cache.sh         共享缓存键与时间戳归一化
 scripts/wb-build-common.sh  共享下载/准备/包闭包检查等
-cu-h10/uboot/               U-Boot 板级描述、defconfig、原厂 stock
+uboot/                      U-Boot 设备专用 stock + 灯表护栏（板级源码全部来自上游）
 refactor/                   历史 refactor 2.5G 实验资产（DTS 静态检查仍引用）
 migration/                  历史迁移检查清单与设备预检脚本
 docs/                       历史记录
@@ -42,6 +42,7 @@ docs/                       历史记录
 3. 机型差异不合并：DTS、LED GPIO、2.5G PHY、校准表、profile 名、SSID 一律按机型独立。
 4. 先护栏后编译：资产改动先跑 `test_only`，`boards/<board>/scripts/verify.py` 与 workflow 内断言全部通过后才允许正式编译。
 5. 发布必须实机验证：rtw89 实验固件刷机前先进 U-Boot Web Failsafe 备份 `factory`，观察温度并抓 `dmesg | grep -i rtw89` 复核。
+6. U-Boot 不保存上游板级副本：只保留每机唯一的 stock 与灯表护栏；stock 摘要直接读上游 board json。
 
 ## 历史
 
