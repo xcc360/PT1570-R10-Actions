@@ -66,6 +66,18 @@ open(p,'w', encoding='utf-8', newline='\n').write(s)
 print("  whitelisted board in platform.sh")
 PY
 
+# --- 4a) inject apk repository signing keys (OpenWrt snapshot + ImmortalWrt) ---
+# Both keyrings are baked so the image trusts either official OpenWrt snapshot
+# feeds or ImmortalWrt 25.12 mirrors; see boards/<board>/files/etc/apk/keys/.
+KEYS_SRC="$ASSETS/files/etc/apk/keys"
+KEYS_DST="$SRC/files/etc/apk/keys"
+mkdir -p "$KEYS_DST"
+cp -f "$KEYS_SRC"/*.pem "$KEYS_DST"/
+for k in openwrt-snapshots.pem immortalwrt-25.12.pem; do
+  [ -s "$KEYS_DST/$k" ] || { echo "ERROR: apk key $k not injected" >&2; exit 1; }
+done
+echo "  injected 2 apk keys (openwrt-snapshots + immortalwrt-25.12)"
+
 # --- 4) inject wireless overlay into rootfs files/ ---
 # OpenWrt copies <source>/files/ into the rootfs; place standard mac80211 config there
 # so both radios come up as AP with mainline rtw89.

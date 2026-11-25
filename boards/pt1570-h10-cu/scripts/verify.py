@@ -95,6 +95,16 @@ check("youhua,pt1570-h10-cu-rtw89-exp" in read(board_d),
 for sym in ["CONFIG_DRIVER_11AC_SUPPORT=y", "CONFIG_DRIVER_11AX_SUPPORT=y"]:
     check(sym in dotconfig, ".config " + sym)
 
+# 9) APK repository signing keys (both OpenWrt snapshot and ImmortalWrt).
+assets_keys = os.path.join(ASSETS, "files/etc/apk/keys")
+for key in ("openwrt-snapshots.pem", "immortalwrt-25.12.pem"):
+    kp = os.path.join(assets_keys, key)
+    check(os.path.isfile(kp) and os.path.getsize(kp) > 100,
+          "apk key asset %s present" % key)
+    ktext = read(kp)
+    check("-----BEGIN PUBLIC KEY-----" in ktext and "-----END PUBLIC KEY-----" in ktext,
+          "apk key asset %s is valid PEM" % key)
+
 if errors:
     print("\n%d assertion(s) FAILED:" % len(errors), file=sys.stderr)
     for e in errors:

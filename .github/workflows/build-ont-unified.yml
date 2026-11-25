@@ -633,6 +633,7 @@ jobs:
                    "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/apply.sh" \
                    "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/verify-fit-boot.py" \
                    "$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/apk/keys/immortalwrt-25.12.pem" \
+                   "$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/apk/keys/openwrt-snapshots.pem" \
                    "$GITHUB_WORKSPACE/boards/pt1500-h10/files/lib/upgrade/zz-pt1570-sysupgrade.sh" \
                    "$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/uci-defaults/95-pt1500-h10-wan-default"; do
             [ -f "$f" ] || { echo "ERROR: 缺资产 $f" >&2; exit 1; }
@@ -748,6 +749,12 @@ jobs:
           [ -f "$KEY_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 immortalwrt-25.12.pem"; exit 1; }
           cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::镜像内 apk 公钥与资产不一致"; exit 1; }
           echo "  OK   apk key: immortalwrt-25.12.pem ($(stat -c %s "$KEY_DST") B)"
+
+          KEY2_SRC="$ASSETS/files/etc/apk/keys/openwrt-snapshots.pem"
+          KEY2_DST="$ROOT/etc/apk/keys/openwrt-snapshots.pem"
+          [ -f "$KEY2_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 openwrt-snapshots.pem"; exit 1; }
+          cmp -s "$KEY2_SRC" "$KEY2_DST" || { echo "::error::镜像内 openwrt-snapshots.pem 与资产不一致"; exit 1; }
+          echo "  OK   apk key: openwrt-snapshots.pem ($(stat -c %s "$KEY2_DST") B)"
 
           DF="$ROOT/etc/apk/repositories.d/distfeeds.list"
           [ -f "$DF" ] || { echo "::error::镜像缺少 distfeeds.list"; exit 1; }
@@ -1450,6 +1457,18 @@ jobs:
           ITB=$(ls bin/targets/rtl9617c/generic/*sysupgrade.itb 2>/dev/null | head -1)
           [ -n "$ITB" ] || { echo "ERROR: sysupgrade.itb not produced" >&2; exit 1; }
           cp "$ITB" "$GITHUB_WORKSPACE/artifact/PT1570-rtw89-${BOARD}-sysupgrade.itb"
+
+          # ---- apk repository keys: both OpenWrt snapshot and ImmortalWrt ----
+          ROOT=$(ls -d build_dir/target-*/root-rtl9617c* 2>/dev/null | head -1)
+          [ -n "$ROOT" ] || { echo "ERROR: rootfs dir not found for apk key check" >&2; exit 1; }
+          for k in openwrt-snapshots.pem immortalwrt-25.12.pem; do
+            [ -s "$ROOT/etc/apk/keys/$k" ] \
+              || { echo "ERROR: image missing apk key $k" >&2; exit 1; }
+            head -1 "$ROOT/etc/apk/keys/$k" | grep -q 'BEGIN PUBLIC KEY' \
+              || { echo "ERROR: apk key $k is not PEM" >&2; exit 1; }
+            echo "  OK   apk key in image: $k ($(stat -c %s "$ROOT/etc/apk/keys/$k") B)"
+          done
+
           strings "$ITB" | grep -qE 'rtw(8192xb|8852c)(_ap)?_fw.bin' \
             || echo "::warning::no rtw89 firmware string found in ITB"
           {

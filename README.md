@@ -55,6 +55,7 @@ docs/                         历史记录
 4. 先护栏后编译：资产改动先跑 `test_only`；`boards/<board>/scripts/verify.py`、workflow 内断言与上游 defconfig 检查全部通过后才允许正式编译。独立的 `dts-syntax-check.yml` 已取消，DTS 静态检查并入各板护栏。
 5. 发布必须实机验证：rtw89 实验固件刷机前先进 U-Boot Web Failsafe 备份 `factory`，观察温度并抓 `dmesg | grep -i rtw89` 复核。
 6. U-Boot 不保存上游板级副本：只保留每机唯一的 stock 与灯表护栏；stock 摘要直接读上游 board json。
+7. 三机型的 `files/etc/apk/keys/` 统一内置两把软件源公钥：`openwrt-snapshots.pem`（OpenWrt 官方 snapshot 源）与 `immortalwrt-25.12.pem`（ImmortalWrt 25.12 源）。这样无论固件默认源指向 OpenWrt snapshot（R10 / H10-CU）还是 ImmortalWrt 25.12 北大镜像（PT1500-H10），apk 安装软件时都不会因缺公钥报 `UNTRUSTED signature`。
 
 ## 历史
 
