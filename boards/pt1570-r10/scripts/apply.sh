@@ -77,8 +77,9 @@ echo "  injected wireless overlay"
 # Current OpenWrt packages feed no longer provides tc, and these three are not
 # auto-selected by defconfig. Upstream Device/... still lists them, so strip
 # them here to keep package closure and image assembly consistent.
-sed -i -E 's/(^|[[:space:]])(tc|mtr|conntrack-tools)([[:space:]]|$)/ /g' "/Makefile"
-! grep -qE '[[:space:]](tc|mtr|conntrack-tools)([[:space:]]|$)' "/Makefile"   || { echo "ERROR: diagnostic packages still in profile" >&2; exit 1; }
+sed -i -E 's/(^|[[:space:]])(tc|mtr|conntrack-tools)([[:space:]]|$)/ /g' "$IMG_DIR/Makefile"
+! grep -qE '[[:space:]](tc|mtr|conntrack-tools)([[:space:]]|$)' "$IMG_DIR/Makefile" \
+  || { echo "ERROR: diagnostic packages still in profile" >&2; exit 1; }
 echo "  dropped stale profile packages: tc mtr conntrack-tools"
 
 # --- 5) verify injection landed ---

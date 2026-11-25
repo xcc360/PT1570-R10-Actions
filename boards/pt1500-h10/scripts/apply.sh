@@ -239,8 +239,9 @@ echo "  OK  面板灯：已按 run#17 实机定 pin 覆盖（10 盏，电源11/�
 # Current OpenWrt packages feed no longer provides tc, and these three are not
 # auto-selected by defconfig. Upstream Device/... still lists them in
 # DEVICE_PACKAGES, so strip them before defconfig builds Target-Profile-Packages.
-sed -i -E 's/(^|[[:space:]])(tc|mtr|conntrack-tools)([[:space:]]|$)/ /g' ""
-! grep -qE '[[:space:]](tc|mtr|conntrack-tools)([[:space:]]|$)' ""   || fail "diagnostic packages still in image/Makefile after strip"
+sed -i -E 's/(^|[[:space:]])(tc|mtr|conntrack-tools)([[:space:]]|$)/ /g' "$IMG_MK"
+! grep -qE '[[:space:]](tc|mtr|conntrack-tools)([[:space:]]|$)' "$IMG_MK" \
+  || fail "diagnostic packages still in image/Makefile after strip"
 echo "  OK  profile diagnostics stripped: tc mtr conntrack-tools"
 
 echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=$BASELINE pon_mode=xgpon wan_default_vlan=1101"
