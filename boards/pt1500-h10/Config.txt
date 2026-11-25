@@ -72,3 +72,10 @@ CONFIG_PACKAGE_tailscale=y
 CONFIG_PACKAGE_luci-app-tailscale-community=y
 CONFIG_PACKAGE_luci-i18n-tailscale-community-zh-cn=y
 CONFIG_PACKAGE_kmod-tun=y
+
+# ---- 上游 profile DEVICE_PACKAGES 中的网络诊断工具 ----
+# 多次 make defconfig 后这些包会被静默丢弃，需显式固定，
+# 否则 Verify device package closure 会提前失败。
+CONFIG_PACKAGE_tc=y
+CONFIG_PACKAGE_mtr=y
+CONFIG_PACKAGE_conntrack-tools=y
