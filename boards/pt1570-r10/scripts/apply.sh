@@ -79,7 +79,7 @@ grep -q 'DEVICE_DTS := rtl9617c-pt1570-r10-rtw89' "$IMG_DIR/Makefile" || { echo 
 [ -f "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" ] || { echo "ERROR: DTS injection failed" >&2; exit 1; }
 grep -q 'deviation = <0xffffd120>' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
   || { echo "ERROR: thermal deviation not fixed (boot-shutdown risk)" >&2; exit 1; }
-! grep -q '0xfffcd120' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
+! grep -q 'deviation = <0xfffcd120>' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
   || { echo "ERROR: fatal thermal value still present" >&2; exit 1; }
 grep -q "path 'soc/f4325000.pcie" "$SRC/files/etc/config/wireless" \
   || { echo "ERROR: wireless overlay injection failed" >&2; exit 1; }
