@@ -28,7 +28,7 @@
 #   同时修掉实机暴露的两个问题：
 #     * 面板灯全错：上游 PT1500 DTS 的 leds GPIO 编号没按原厂 5-bank 换算，
 #       8 个灯错 7 个（PWR_G 还抢占了原厂 LOS 的脚）。-> 新增
-#       scripts/apply-dts-leds-fix.sh，按原厂 DTB flat 编号覆盖。
+#       boards/pt1500-h10/scripts/apply-dts-leds-fix.sh，按原厂 DTB flat 编号覆盖。
 #     * XGPON 认证失败 / LuCI 报"设备初始化失败"：上游 config/pon 硬编码
 #       `option mode 'epon-d10g'`（PT1500 EPON profile），而本机走 XGPON 线路；
 #       驱动按 mode 选 serdes 表并分流 offload 路径，走错分支则 OMCI 通道不建立。
@@ -52,7 +52,7 @@
 #
 # refactor 自带完整 H10 2p5g profile / DTS / 2.5G 驱动 / platform.sh 白名单 /
 #       89+94-97-rtl9617c-* 首启脚本，本 workflow 不注入任何驱动/DTS/patch，
-#       scripts/apply-board-h10.sh 退化为纯断言（防止上游改版把 2.5G 悄悄回退）：
+#       boards/pt1500-h10/scripts/apply.sh 退化为纯断言（防止上游改版把 2.5G 悄悄回退）：
 #         1. 断言机型定义齐全；
 #         2. 断言 2.5G HisGMII/SerDes/2500base-x 驱动与 DTS 特征齐全；
 #         3. 断言 config-6.18 的 2.5G 驱动符号齐全；
@@ -66,7 +66,7 @@
 #   * 不带 R10 的 99-pt1570-fit 与 95-pt1570-wan-default（那是 R10 的 board_name）；
 #     网口、LED、br-lan MAC 由 refactor 的 89-rtl9617c-lan-ports（rename-netdevs.uc）
 #     与 DTS nvmem（base_mac）处理；
-#   * 带 H10 专用 95-pt1500-h10-wan-default（files-h10/etc/uci-defaults/）：
+#   * 带 H10 专用 95-pt1500-h10-wan-default（boards/pt1500-h10/files/etc/uci-defaults/）：
 #     默认 WAN（上游 90-pon-wan 已删除，WAN 全部由本脚本负责）：
 #     VLAN 1101 + 8021q 子设备（mtu 1500）+ PPPoE + PON FE on + LAN 统一 +
 #     PON mode 纠正为 xgpon（首启再纠一次，防 sysupgrade 保留旧配置）；
@@ -483,7 +483,7 @@ jobs:
           done
           make defconfig
 
-          # 用户软件包基线（沿用 R10：tailscale 三件套），由 Config-PT1500-H10.txt
+          # 用户软件包基线（沿用 R10：tailscale 三件套），由 boards/pt1500-h10/Config.txt
           # 直接写入；两次 defconfig 可能降级，这里统一重新断言再检查。
           echo "===== user-requested packages (tailscale baseline) ====="
           USER_PKGS="tailscale luci-app-tailscale-community \
@@ -596,7 +596,7 @@ jobs:
           # 三机型统一默认 LAN 192.168.1.1/24
           grep -qF 'WRT_IP="${WRT_IP:-192.168.1.1}"' \
             "$GITHUB_WORKSPACE/boards/pt1500-h10/scripts/configure.sh" \
-            || { echo "ERROR: customize-pt1500-h10.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
+            || { echo "ERROR: boards/pt1500-h10/scripts/configure.sh 默认 IP 不是 192.168.1.1" >&2; exit 1; }
           grep -qF "uci -q set network.lan.ipaddr='192.168.1.1/24'" \
             "$GITHUB_WORKSPACE/boards/pt1500-h10/files/etc/uci-defaults/95-pt1500-h10-wan-default" \
             || { echo "ERROR: 首启脚本未统一 LAN 到 192.168.1.1/24" >&2; exit 1; }
@@ -812,7 +812,7 @@ jobs:
           echo "rootfs dir: $ROOT"
 
           # ---- apk 源与索引公钥（缺公钥会 UNTRUSTED signature）----
-          KEY_SRC="$ASSETS/files-common/etc/apk/keys/immortalwrt-25.12.pem"
+          KEY_SRC="$ASSETS/files/etc/apk/keys/immortalwrt-25.12.pem"
           KEY_DST="$ROOT/etc/apk/keys/immortalwrt-25.12.pem"
           [ -f "$KEY_DST" ] || { echo "::error::镜像缺少 apk 索引公钥 immortalwrt-25.12.pem"; exit 1; }
           cmp -s "$KEY_SRC" "$KEY_DST" || { echo "::error::镜像内 apk 公钥与资产不一致"; exit 1; }
@@ -867,7 +867,7 @@ jobs:
           RPCD="$ROOT/usr/libexec/rpcd"
           [ -d "$RPCD" ] || { echo "::error::镜像缺少 /usr/libexec/rpcd"; exit 1; }
           n=0
-          for f in "$ASSETS"/files-common/usr/libexec/rpcd/luci.argon*; do
+          for f in "$ASSETS"/files/usr/libexec/rpcd/luci.argon*; do
             base=${f##*/}
             tgt="$RPCD/$base"
             [ -f "$tgt" ] || { echo "::error::镜像缺少 rpcd 插件 $base"; exit 1; }
