@@ -73,6 +73,14 @@ mkdir -p "$SRC/files/etc/config"
 cp -f "$ASSETS/files/etc/config/wireless" "$SRC/files/etc/config/wireless"
 echo "  injected wireless overlay"
 
+# --- 4.5) upstream drift: drop unavailable diagnostic packages from profile ---
+# Current OpenWrt packages feed no longer provides tc, and these three are not
+# auto-selected by defconfig. Upstream Device/... still lists them, so strip
+# them here to keep package closure and image assembly consistent.
+sed -i -E 's/(^|[[:space:]])(tc|mtr|conntrack-tools)([[:space:]]|$)/ /g' "/Makefile"
+! grep -qE '[[:space:]](tc|mtr|conntrack-tools)([[:space:]]|$)' "/Makefile"   || { echo "ERROR: diagnostic packages still in profile" >&2; exit 1; }
+echo "  dropped stale profile packages: tc mtr conntrack-tools"
+
 # --- 5) verify injection landed ---
 grep -q 'youhua,pt1570-r10-rtw89-exp' "$PLAT" || { echo "ERROR: platform.sh whitelist failed" >&2; exit 1; }
 grep -q 'DEVICE_DTS := rtl9617c-pt1570-r10-rtw89' "$IMG_DIR/Makefile" || { echo "ERROR: profile injection failed" >&2; exit 1; }

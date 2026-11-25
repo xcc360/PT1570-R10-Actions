@@ -46,7 +46,4 @@ CONFIG_PACKAGE_luci-i18n-tailscale-community-zh-cn=y
 CONFIG_PACKAGE_kmod-tun=y
 CONFIG_LUCI_LANG_zh_Hans=y
 
-# ---- profile DEVICE_PACKAGES 中的网络诊断工具（显式固定，避免 defconfig 丢弃） ----
-CONFIG_PACKAGE_tc=y
-CONFIG_PACKAGE_mtr=y
-CONFIG_PACKAGE_conntrack-tools=y
+# 注：上游 profile 中的 tc/mtr/conntrack-tools 由 apply.sh 剔除；当前 feeds 已无 tc。

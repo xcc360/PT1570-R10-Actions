@@ -235,4 +235,12 @@ LED_SCRIPT="$ASSETS/scripts/apply-dts-leds-fix.sh"
 bash "$LED_SCRIPT" "$WRT" "$DTS"
 echo "  OK  面板灯：已按 run#17 实机定 pin 覆盖（10 盏，电源11/光纤9/光信号10/宽带2/电话12/未标记1=7/千兆4=0/千兆3=1/iTV=3/未标记2=6；2.5G口无GPIO）"
 
+# ---- upstream drift: drop unavailable diagnostic packages from profile ----
+# Current OpenWrt packages feed no longer provides tc, and these three are not
+# auto-selected by defconfig. Upstream Device/... still lists them in
+# DEVICE_PACKAGES, so strip them before defconfig builds Target-Profile-Packages.
+sed -i -E 's/(^|[[:space:]])(tc|mtr|conntrack-tools)([[:space:]]|$)/ /g' ""
+! grep -qE '[[:space:]](tc|mtr|conntrack-tools)([[:space:]]|$)' ""   || fail "diagnostic packages still in image/Makefile after strip"
+echo "  OK  profile diagnostics stripped: tc mtr conntrack-tools"
+
 echo "H10_BOARD_OK=True profile=$PROFILE board=$BOARD_NAME dts=$DTS baseline=$BASELINE pon_mode=xgpon wan_default_vlan=1101"
