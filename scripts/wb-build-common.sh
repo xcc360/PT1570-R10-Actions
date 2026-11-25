@@ -1,17 +1,16 @@
 #!/bin/bash
-# Shared CI helpers for PT1570 / PT1500 OpenWrt workflows (AN758X-style closure).
+# Shared CI helpers for the PT1570-H10-CU rtw89 experimental workflow.
 # Usage:
-#   bash scripts/wb-build-common.sh key ROOT NS
-#   bash scripts/wb-build-common.sh dlkey ROOT NS
-#   bash scripts/wb-build-common.sh prepare ROOT
-#   bash scripts/wb-build-common.sh jobs ROOT
-#   bash scripts/wb-build-common.sh check-packages ROOT PROFILE
-#   bash scripts/wb-build-common.sh diagnose LOG
+#   bash rtw89-h10/wb-build-common.sh key ROOT
+#   bash rtw89-h10/wb-build-common.sh dlkey ROOT
+#   bash rtw89-h10/wb-build-common.sh prepare ROOT
+#   bash rtw89-h10/wb-build-common.sh jobs ROOT
+#   bash rtw89-h10/wb-build-common.sh check-packages ROOT PROFILE
+#   bash rtw89-h10/wb-build-common.sh diagnose LOG
 set -e
 
 CMD="${1:-}"; shift || true
 ROOT="${1:-.}"; shift || true
-# NS is consumed only by key/dlkey branches; do NOT shift globally here.
 
 emit() {
   printf '%s=%s\n' "$1" "$2"
@@ -22,25 +21,23 @@ emit() {
 
 case "$CMD" in
   key)
-    NS="${1:-wb}"
-    SRC_REF="${SOURCE_REF:-unknown}"
+    SRC_REF="${SOURCE_REF:-2df200550b73}"
     SRC_HASH="${SOURCE_HASH:-unknown}"
     SLUG=$(printf '%s' "$SRC_REF" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-*$//')
     [ -n "$SLUG" ] || SLUG=unknown
-    emit KEY "${NS}-${SLUG}-${SRC_HASH}"
-    emit PREFIX "${NS}-${SLUG}-"
+    emit KEY "rtw89-h10-${SLUG}-${SRC_HASH}"
+    emit PREFIX "rtw89-h10-${SLUG}-"
     ;;
 
   dlkey)
-    NS="${1:-wb}"
     WEEK=$(date -u +%Y%W)
-    emit DL_KEY "${NS}-dl-${WEEK}"
-    emit DL_PREFIX "${NS}-dl-"
+    emit DL_KEY "rtw89-h10-dl-${WEEK}"
+    emit DL_PREFIX "rtw89-h10-dl-"
     ;;
 
   prepare)
     # actions/cache restores files only. Touch stamps and write tmp/.build so
-    # a restored toolchain is not rebuilt from scratch ("fake hit").
+    # the restored toolchain is not rebuilt from scratch ("fake hit").
     mkdir -p "$ROOT/.ccache" \
              "$ROOT/staging_dir/host" \
              "$ROOT/staging_dir/hostpkg" \
@@ -59,11 +56,7 @@ case "$CMD" in
     ;;
 
   check-packages)
-    PROFILE="${1:-}"
-    ALLOW_MISSING="${2:-}"
-    if [ -z "$PROFILE" ]; then
-      echo "::error::check-packages requires PROFILE argument"; exit 1
-    fi
+    PROFILE="${1:-youhua_pt1570_h10_cu_rtw89_exp}"
     TI="$ROOT/tmp/.targetinfo"
     if [ ! -f "$TI" ]; then
       echo "::error::missing $TI -- defconfig did not run successfully"
@@ -98,17 +91,6 @@ case "$CMD" in
 
     if [ -n "$MOD_ONLY" ]; then
       echo "::warning::DEVICE_PACKAGES built as =m (not installed by default):$MOD_ONLY"
-    fi
-    # Some PT15xx workflows install diagnostic tools (tc/mtr/conntrack-tools)
-    # from an external apk feed instead of the local .config. Allow-list them.
-    if [ -n "$MISS_DEV" ] && [ -n "$ALLOW_MISSING" ]; then
-      ALLOWED=""
-      MISS2=""
-      for p in $MISS_DEV; do
-        case " $ALLOW_MISSING " in *" $p "*) ALLOWED="$ALLOWED $p" ;; *) MISS2="$MISS2 $p" ;; esac
-      done
-      [ -n "$ALLOWED" ] && echo "::warning::DEVICE_PACKAGES provided by external apk feed (allow-listed):$ALLOWED"
-      MISS_DEV="$MISS2"
     fi
     if [ -n "$MISS_DEV" ]; then
       echo "::error::DEVICE_PACKAGES of ${PROFILE} were not selected:$MISS_DEV"

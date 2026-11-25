@@ -1,0 +1,54 @@
+# Experimental config for PT1570-H10-CU rtw89 validation (2026-11-22).
+# Based on the validated R10 rtw89 config. Key change: mainline rtw89 (kernel built-in)
+# + user-space wpad-openssl for AP mode; NO private rtl_ax_ap.ko.
+# NOTE: kernel side (CONFIG_RTW89_* / MAC80211 / CFG80211) comes from
+#       target/linux/rtl9617c/config-6.18 at refactor HEAD -- already =y.
+CONFIG_TARGET_rtl9617c=y
+CONFIG_TARGET_rtl9617c_generic=y
+CONFIG_TARGET_BOARD="rtl9617c"
+CONFIG_TARGET_SUBTARGET="generic"
+CONFIG_TARGET_ARCH_PACKAGES="aarch64_cortex-a55"
+# ---- CI cache: make ccache actually used by OpenWrt build system ----
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
+CONFIG_CCACHE_DIR="/mnt/build_wrt/.ccache"
+CONFIG_PACKAGE_fitblk=y
+CONFIG_PACKAGE_rtl9617c-pon-control=y
+CONFIG_PACKAGE_luci-app-rtl9617c-pon=y
+CONFIG_PACKAGE_ubi-utils=y
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_block-mount=y
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_dnsmasq=y
+CONFIG_PACKAGE_zoneinfo-core=y
+CONFIG_PACKAGE_zoneinfo-asia=y
+# ---- rtw89 user-space (AP mode) ----
+# hostapd must be built with 802.11ac/ax support; these global switches are
+# default n in hostapd/Config.in. Without them the ucode-generated hostapd
+# config is rejected with "unknown configuration item 'he_*'/'ieee80211ac'"
+# and no AP ever broadcasts, even though the wiphy registers fine.
+CONFIG_DRIVER_11AC_SUPPORT=y
+CONFIG_DRIVER_11AX_SUPPORT=y
+CONFIG_PACKAGE_wpad-openssl=y
+CONFIG_PACKAGE_hostapd-common=y
+# hostapd.uc imports common.uc from wifi-scripts in this OpenWrt snapshot;
+# without it AP setup fails with "Unable to resolve path for module 'common'".
+CONFIG_PACKAGE_wifi-scripts=y
+CONFIG_WIFI_SCRIPTS_UCODE=y
+CONFIG_PACKAGE_iw=y
+CONFIG_PACKAGE_wireless-tools=y
+# ---- baseline extras (tailscale) ----
+CONFIG_PACKAGE_tailscale=y
+CONFIG_PACKAGE_luci-app-tailscale-community=y
+CONFIG_PACKAGE_luci-i18n-tailscale-community-zh-cn=y
+CONFIG_PACKAGE_kmod-tun=y
+CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y

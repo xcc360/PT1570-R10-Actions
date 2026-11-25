@@ -1,0 +1,20 @@
+--- a/drivers/net/wireless/realtek/rtw89/mac.c
++++ b/drivers/net/wireless/realtek/rtw89/mac.c
+@@ -3955,7 +3955,7 @@
+ 	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
+ 	u32 val;
+ 
+-	if (chip_id == RTL8852C)
++	if (chip_id == RTL8852C || chip_id == RTL8192XB)
+ 		val = B_AX_MAC_FUNC_EN | B_AX_DMAC_FUNC_EN | B_AX_DISPATCHER_EN |
+ 		      B_AX_PKT_BUF_EN | B_AX_H_AXIDMA_EN;
+ 	else
+@@ -3975,7 +3975,7 @@
+ 		val = B_AX_DISPATCHER_CLK_EN;
+ 	rtw89_write32(rtwdev, R_AX_DMAC_CLK_EN, val);
+ 
+-	if (chip_id != RTL8852C)
++	if (chip_id != RTL8852C && chip_id != RTL8192XB)
+ 		return;
+ 
+ 	val = rtw89_read32(rtwdev, R_AX_HAXI_INIT_CFG1);
