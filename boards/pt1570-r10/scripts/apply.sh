@@ -85,6 +85,32 @@ mkdir -p "$SRC/files/etc/config"
 cp -f "$ASSETS/files/etc/config/wireless" "$SRC/files/etc/config/wireless"
 echo "  injected wireless overlay"
 
+# --- 4b) register board in board.d so first boot creates /etc/config/network ---
+# Upstream 02_network only knows pt1500-h10-2p5g and tyfza1-2p5g. The R10
+# experimental DTS uses youhua,pt1570-r10-rtw89-exp, so without this case
+# preinit prints "Unsupported hardware. Network interfaces not initialized"
+# and the device has no LAN/IPv6/SSH after flashing.
+python3 - "$SRC" <<'PY'
+import pathlib
+import sys
+
+src = pathlib.Path(sys.argv[1])
+board = 'youhua,pt1570-r10-rtw89-exp'
+p = src / 'target/linux/rtl9617c/base-files/etc/board.d/02_network'
+s = p.read_text(encoding='utf-8')
+if board not in s:
+    arm = ('\t%s)\n'
+           '\t\tucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "pon0"\n'
+           '\t\t;;\n') % board
+    i = s.find('\t*)\n')
+    if i < 0:
+        raise SystemExit('ERROR: 02_network fallback arm not found')
+    p.write_text(s[:i] + arm + s[i:], encoding='utf-8', newline='\n')
+    print('  registered board in board.d/02_network')
+else:
+    print('  board already registered in board.d/02_network')
+PY
+
 # --- 4.5) upstream drift: drop unavailable diagnostic packages from profile ---
 # Current OpenWrt packages feed no longer provides tc, and these three are not
 # auto-selected by defconfig. Upstream Device/... still lists them, so strip
