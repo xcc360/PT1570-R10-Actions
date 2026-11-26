@@ -54,9 +54,31 @@ case "$CMD" in
                     -o -name '.compiled' -o -name '.installed' \) \
          -exec touch {} + 2>/dev/null || true
 
+    # FIX 2026-11-26: a restored toolchain cache carries the pristine
+    # toolchain/info.mk template with "GCC_VERSION=unknown". Normally
+    # Host/SetToolchainInfo rewrites it during a real toolchain build, but
+    # when the cache hit + stamp refresh makes make skip that build, the
+    # literal "unknown" survives. package/libs/toolchain then emits
+    # libgcc1-unknown-r5.apk and apk mkpkg rejects the invalid version:
+    #   ERROR: info field 'version' has invalid value: package version is invalid
+    # Re-materialize the real version from .config on every build (idempotent).
+    GCCV=""
+    if [ -f "$ROOT/.config" ]; then
+      GCCV=$(sed -n 's/^CONFIG_GCC_VERSION="\([^"]*\)".*/\1/p' "$ROOT/.config" | head -n1)
+    fi
+    if [ -n "$GCCV" ]; then
+      for imk in "$ROOT"/staging_dir/toolchain-*/info.mk; do
+        [ -f "$imk" ] || continue
+        sed -i "s|^GCC_VERSION=.*|GCC_VERSION=$GCCV|" "$imk"
+        echo "  fixed toolchain info.mk GCC_VERSION=$GCCV ($imk)"
+      done
+    else
+      echo "  WARNING: CONFIG_GCC_VERSION not found in .config; info.mk left as-is"
+    fi
+
     mkdir -p "$ROOT/tmp" "$ROOT/.ccache"
     echo 1 > "$ROOT/tmp/.build"
-    echo "cache prepared: source mtimes aged, cached stamps refreshed"
+    echo "cache prepared: source mtimes aged, cached stamps refreshed, toolchain info.mk synced"
     ;;
 
   stats)
