@@ -13,32 +13,20 @@ PLAT="$SRC/target/linux/rtl9617c/base-files/lib/upgrade/platform.sh"
 echo "=== apply-h10-cu-rtw89-exp.sh ==="
 echo "assets=$ASSETS src=$SRC"
 
-# --- sanity: refactor baseline markers ---
-[ -f "$DTS_DIR/rtk-taurus.dtsi" ] || { echo "ERROR: rtk-taurus.dtsi missing (not refactor baseline)" >&2; exit 1; }
-[ -f "$SRC/target/linux/rtl9617c/patches-6.18/740-wifi-rtw89-8192xb.patch" ] \
-  || { echo "ERROR: rtw89 8192xb patch missing (baseline too old)" >&2; exit 1; }
-
-# --- 0c) 8192XB DLFW preconfig ---
-# Upstream 740 only adds RTL8192XB to dmac_func_en_ax(), but mainline still
-# applies the 8852C-only HCI/AXIDMA preconfig in rtw89_mac_hci_func_en_ax()
-# and rtw89_mac_dmac_func_pre_en_ax(). Without it the 8192XB WCPU never
-# asserts B_AX_FWDL_PATH_RDY after the FW header H2C and probe times out with
-# "[ERR]FWDL path ready / 0x1E0=0x23 / fw PC=0x20008594". The vendor
-# rtl_ax_dmac_pre_enable() performs the same AXIDMA/HAXI setup for both chips.
-PATCH_DIR="$SRC/target/linux/rtl9617c/patches-6.18"
-cp -f "$ASSETS/patches/741-8192xb-dlfw-preconfig.patch" \
-  "$PATCH_DIR/741-8192xb-dlfw-preconfig.patch"
-echo "  injected 8192XB DLFW preconfig patch"
-
-# --- 0d) 8192XB thermal RF read via direct window ---
-# The 8192XB thermal callback uses rtw89_read_rf()->rtw89_phy_read_rf_v1()
-# with ADSEL=0, i.e. SWSI. Its RR_TM read never asserts R_DATA_DONE here,
-# so the 2s thermal work logs "read swsi busy" twice per round and returns
-# INV_RF_DATA (0xff), which can be mistaken for overheating. Setting ADSEL
-# routes through rf_base_addr[] direct reads; keep factory thermal fallback.
-cp -f "$ASSETS/patches/742-8192xb-thermal-direct-read.patch" \
-  "$PATCH_DIR/742-8192xb-thermal-direct-read.patch"
-echo "  injected 8192XB thermal direct-read patch"
+# --- sanity: refactor HEAD baseline markers (run28) ---
+# 741/742 kernel patches targeted the old in-tree/740-patched rtw89 driver.
+# On this baseline rtw89 lives in mac80211 backports and the 8192XB chip ops
+# already program AXIDMA in rtw8192xb_pwr_on_func(); legacy patches are NOT
+# injected. The AP firmware closes the old C2H/SWSI gaps.
+[ -f "$DTS_DIR/rtk-taurus.dtsi" ] \
+  || { echo "ERROR: rtk-taurus.dtsi missing (not refactor baseline)" >&2; exit 1; }
+[ -f "$SRC/package/kernel/mac80211/patches/rtl/100-wifi-rtw89-ap-firmware-variant.patch" ] \
+  || { echo "ERROR: rtw89 AP firmware variant patch missing (baseline too old)" >&2; exit 1; }
+[ -f "$SRC/package/kernel/mac80211/patches/rtl/103-wifi-rtw89-add-8192xbe.patch" ] \
+  || { echo "ERROR: rtw89 8192XB backports patch missing (baseline too old)" >&2; exit 1; }
+[ -f "$SRC/package/firmware/rtw89-ap-firmware/Makefile" ] \
+  || { echo "ERROR: rtw89-ap-firmware package missing (baseline too old)" >&2; exit 1; }
+echo "  refactor HEAD rtw89 backports baseline verified"
 
 # --- 0a) force hostapd 802.11ac/ax build switches ---
 # CONFIG_DRIVER_11AC_SUPPORT / 11AX_SUPPORT are invisible bool symbols in
@@ -63,12 +51,12 @@ p.write_text(s, encoding='utf-8', newline='\n')
 print('  forced hostapd CONFIG_DRIVER_11AC_SUPPORT/11AX_SUPPORT defaults to y')
 PY
 
-# --- 0) install board-matched rtw89 firmware ---
-# Both radios use cut-U2 NIC images. The 8192XB AXIDMA preconfig patch fixes
-# FWDL path-ready, but the factory/BPI AP firmware then loads without answering
-# mainline's C2H GET_FEATURE query ("c2h reg timeout / failed to setup chip
-# information"). Use the NIC U2 image, which implements the H2C/C2H protocol
-# expected by mainline rtw89 (the 5G NIC firmware already works this way).
+# --- 0) install fallback rtw89 firmware ---
+# The refactor HEAD driver requests rtw89/rtw8852c_ap_fw.bin and
+# rtw89/rtw8192xb_ap_fw.bin from the rtw89-ap-firmware packages (selected in
+# Config.txt / DEVICE_PACKAGES). The cut-U2 NIC images below are kept only as
+# an early/fallback blob for the non-AP variant; they are baked into the
+# kernel alongside regulatory.db and do not conflict with the AP firmware.
 FW_ASSETS="$ASSETS/firmware"
 FW_RT_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware/rtw89"
 mkdir -p "$FW_RT_DIR"
@@ -251,10 +239,9 @@ grep -q 'CONFIG_EXTRA_FIRMWARE="rtw89/rtw8852c_fw.bin' "$KCFG" \
   || { echo "ERROR: kernel firmware embedding failed" >&2; exit 1; }
 grep -q 'CONFIG_EXTRA_FIRMWARE=.*regulatory.db' "$KCFG" \
   || { echo "ERROR: regulatory.db not baked into kernel" >&2; exit 1; }
-grep -q 'chip_id != RTL8852C && chip_id != RTL8192XB' \
-  "$PATCH_DIR/741-8192xb-dlfw-preconfig.patch" \
-  || { echo "ERROR: 8192XB DLFW preconfig patch missing" >&2; exit 1; }
-grep -q 'RR_TM | RTW89_RF_ADDR_ADSEL_MASK' \
-  "$PATCH_DIR/742-8192xb-thermal-direct-read.patch" \
-  || { echo "ERROR: 8192XB thermal direct-read patch missing" >&2; exit 1; }
+DTS_ASSET="$ASSETS/board/dts/rtl9617c-pt1570-h10-cu-rtw89.dts"
+grep -q 'realtek,ap-firmware' "$DTS_ASSET" \
+  || { echo "ERROR: 8852C AP firmware DT property missing" >&2; exit 1; }
+grep -q 'realtek,rfe-type = <54>' "$DTS_ASSET" \
+  || { echo "ERROR: RFE54 DT property missing" >&2; exit 1; }
 echo "  all injections verified"
