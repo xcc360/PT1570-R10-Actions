@@ -1194,9 +1194,11 @@ jobs:
               COMPAT='youhua,pt1570-r10-rtw89-exp'
               ;;
             pt1570-h10-cu)
-              # Keep the known-good H10 baseline until its extra 8192XB
-              # DLFW/thermal patches are revalidated on d39cfc6367e3.
-              DEFAULT_REF='2df200550b73316094ff53c02899954beb22efeb'
+              # run28: migrated to rtw89 backports AP-firmware baseline.
+              # The old 741 DLFW / 742 thermal kernel patches are obsolete:
+              # 8192XB chip ops now program AXIDMA itself and AP firmware
+              # closes the old C2H/SWSI gaps.
+              DEFAULT_REF='79b6a451b68fa7a1383ce74ddac4dc58a1ec68fb'
               PROFILE='youhua_pt1570_h10_cu_rtw89_exp'
               DTS='rtl9617c-pt1570-h10-cu-rtw89'
               COMPAT='youhua,pt1570-h10-cu-rtw89-exp'
@@ -1350,7 +1352,9 @@ jobs:
           make defconfig
           for sym in wpad-openssl hostapd-common iw wireless-tools \
                      rtl9617c-pon-control luci-app-rtl9617c-pon luci-ssl uhttpd \
-                     fitblk tailscale; do
+                     fitblk tailscale kmod-rtw89-pci kmod-rtw89-8852ce \
+                     kmod-rtw89-8192xbe rtl8852ce-ap-firmware \
+                     rtl8192xbe-ap-firmware; do
             if ! grep -q "^CONFIG_PACKAGE_${sym}=y$" .config; then
               sed -i "/^# CONFIG_PACKAGE_${sym} is not set$/d; /^CONFIG_PACKAGE_${sym}=/d" .config
               echo "CONFIG_PACKAGE_${sym}=y" >> .config
