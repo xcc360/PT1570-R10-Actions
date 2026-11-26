@@ -101,7 +101,7 @@ for key in ("openwrt-snapshots.pem", "immortalwrt-25.12.pem"):
     kp = os.path.join(assets_keys, key)
     check(os.path.isfile(kp) and os.path.getsize(kp) > 100,
           "apk key asset %s present" % key)
-    ktext = read(kp)
+    ktext = read(pathlib.Path(kp))
     check("-----BEGIN PUBLIC KEY-----" in ktext and "-----END PUBLIC KEY-----" in ktext,
           "apk key asset %s is valid PEM" % key)
 
