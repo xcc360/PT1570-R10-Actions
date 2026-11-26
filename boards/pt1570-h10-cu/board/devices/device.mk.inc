@@ -10,6 +10,8 @@ define Device/youhua_pt1570_h10_cu_rtw89_exp
   DEVICE_PACKAGES := fitblk rtl9617c-pon-control luci-app-rtl9617c-pon luci-theme-argon \
 	kmod-gpio-button-hotplug luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-mod-system \
 	uhttpd uhttpd-mod-ubus iperf3 ethtool ip-full curl htop openssl-util socat \
-	wpad-openssl hostapd-common iw wireless-tools
+	wpad-openssl hostapd-common iw wireless-tools \
+	kmod-rtw89-pci kmod-rtw89-8852ce rtl8852ce-firmware rtl8852ce-ap-firmware \
+	kmod-rtw89-8192xbe rtl8192xbe-ap-firmware
 endef
 TARGET_DEVICES += youhua_pt1570_h10_cu_rtw89_exp
