@@ -11,6 +11,10 @@
 //   - wifi nodes moved to &pcie0_port / &pcie1_port (upstream 2df200550b73)
 //   - add realtek,ap-firmware + realtek,rfe-type (upstream 299da19e2ea6)
 //   - ports renumbered 0..3, each LAN port gets a base_mac nvmem binding
+//   - RESTORED 2026-11-26: &pcie0/&pcie1 reset-gpios (bank3 pin5/6) + IRQ affinity.
+//     They were dropped during an earlier rewrite; without PERST# deassert the
+//     cards never leave reset, PCIe stays link-down (POLL_COMPLIANCE), and both
+//     radios are invisible (iw dev empty, no hostapd). Matches upstream tyfza1.
 // NOTE: LAN label/MAC ordering follows the old R10 board labels; verify on device.
 
 /dts-v1/;
@@ -214,6 +218,11 @@
 };
 
 &pcie0 {
+	/* CRITICAL: WiFi 5G card PERST# — without this the card stays in reset,
+	 * PCIe link stays in LTSSM POLL_COMPLIANCE and no [10ec:c852] is enumerated
+	 * (iw dev empty). Upstream tyfza1 DTS + H10-CU both use bank3 pin5/6. */
+	reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>;
+	irq-affinity = <1>;
 	status = "okay";
 };
 
@@ -231,6 +240,9 @@
 };
 
 &pcie1 {
+	/* CRITICAL: WiFi 2.4G card PERST# — see pcie0 comment. bank3 pin6. */
+	reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>;
+	irq-affinity = <2>;
 	status = "okay";
 };
 
