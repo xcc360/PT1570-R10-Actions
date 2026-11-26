@@ -57,8 +57,17 @@ PY
 # Config.txt / DEVICE_PACKAGES). The cut-U2 NIC images below are kept only as
 # an early/fallback blob for the non-AP variant; they are baked into the
 # kernel alongside regulatory.db and do not conflict with the AP firmware.
+#
+# IMPORTANT (run28 baseline): these blobs must NOT live under
+# target/linux/rtl9617c/base-files/lib/firmware -- the refactor HEAD already
+# ships standalone wireless-regdb / rtl8852ce-firmware packages that own
+# lib/firmware/regulatory.db and lib/firmware/rtw89/rtw8852c_fw.bin. Placing
+# the same paths in base-files makes apk abort with "trying to overwrite ...
+# owned by base-files" (seen in H10 run18). Use a non-packaged staging dir
+# that only CONFIG_EXTRA_FIRMWARE reads at kernel-build time.
 FW_ASSETS="$ASSETS/firmware"
-FW_RT_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware/rtw89"
+FW_STAGE="$SRC/target/linux/rtl9617c/embedded-firmware"
+FW_RT_DIR="$FW_STAGE/rtw89"
 mkdir -p "$FW_RT_DIR"
 cp -f "$FW_ASSETS/rtw8852c_fw.bin" "$FW_RT_DIR/rtw8852c_fw.bin"
 cp -f "$FW_ASSETS/rtw8192xb_fw.bin" "$FW_RT_DIR/rtw8192xb_fw.bin"
@@ -70,11 +79,13 @@ cp -f "$FW_ASSETS/rtw8192xb_fw.bin" "$FW_RT_DIR/rtw8192xb_fw.bin"
 # is NO-IR, so hostapd refuses to start AP ("Primary frequency not allowed").
 # Bake both files into the kernel via CONFIG_EXTRA_FIRMWARE (same trick used for
 # the rtw89 firmwares) so request_firmware finds them before rootfs is ready.
-# NOTE: CONFIG_EXTRA_FIRMWARE_DIR is $FWDIR (lib/firmware root), and the
-# embedded name is the bare string in EXTRA_FIRMWARE, so regulatory.db must be
-# placed directly under $FWDIR while rtw89 firmwares stay under $FWDIR/rtw89.
-# request_firmware asks for bare "regulatory.db" / "regulatory.db.p7s".
-FW_REG_DIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware"
+# NOTE: CONFIG_EXTRA_FIRMWARE_DIR is $FW_STAGE (a non-packaged staging dir),
+# and the embedded name is the bare string in EXTRA_FIRMWARE, so regulatory.db
+# must be placed directly under $FW_STAGE while rtw89 firmwares stay under
+# $FW_STAGE/rtw89. request_firmware asks for bare "regulatory.db" /
+# "regulatory.db.p7s". Keeping this out of base-files avoids the apk conflict
+# with the upstream wireless-regdb / rtl8852ce-firmware packages.
+FW_REG_DIR="$FW_STAGE"
 mkdir -p "$FW_REG_DIR"
 cp -f "$FW_ASSETS/regulatory.db" "$FW_REG_DIR/regulatory.db"
 cp -f "$FW_ASSETS/regulatory.db.p7s" "$FW_REG_DIR/regulatory.db.p7s"
@@ -217,7 +228,7 @@ PY
 
 # --- 4c) bake firmware into kernel: built-in rtw89 probes before rootfs mount ---
 KCFG="$SRC/target/linux/rtl9617c/config-6.18"
-FWDIR="$SRC/target/linux/rtl9617c/base-files/lib/firmware"
+FWDIR="$FW_STAGE"
 [ -s "$FWDIR/rtw89/rtw8852c_fw.bin" ] || { echo "ERROR: 8852C firmware missing" >&2; exit 1; }
 [ -s "$FWDIR/rtw89/rtw8192xb_fw.bin" ] || { echo "ERROR: 8192XB firmware missing" >&2; exit 1; }
 sed -i '/^CONFIG_EXTRA_FIRMWARE=/d; /^CONFIG_EXTRA_FIRMWARE_DIR=/d' "$KCFG"
