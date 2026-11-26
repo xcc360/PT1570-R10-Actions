@@ -28,8 +28,16 @@ else
 fi
 
 # --- 1) inject DTS ---
-cp -f "$ASSETS/board/dts/rtl9617c-pt1570-r10-rtw89.dts" "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts"
-echo "  injected DTS"
+# Guard the injected DTS BEFORE copying: PCIe PERST# reset-gpios are mandatory.
+# A 2026-11 build dropped them and both WiFi cards stayed in reset forever
+# (PCIe link-down POLL_COMPLIANCE, iw dev empty, no hostapd = WiFi invisible).
+DTS_ASSET="$ASSETS/board/dts/rtl9617c-pt1570-r10-rtw89.dts"
+grep -q 'reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>' "$DTS_ASSET" \
+  || { echo "ERROR: DTS asset missing &pcie0 reset-gpios (bank3 pin5, 5G PERST#)" >&2; exit 1; }
+grep -q 'reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>' "$DTS_ASSET" \
+  || { echo "ERROR: DTS asset missing &pcie1 reset-gpios (bank3 pin6, 2.4G PERST#)" >&2; exit 1; }
+cp -f "$DTS_ASSET" "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts"
+echo "  injected DTS (PCIe PERST# reset-gpios guarded)"
 
 # --- 2) inject device profile before final BuildImage line ---
 PROFILE_INC="$ASSETS/board/devices/device.mk.inc"
@@ -128,6 +136,10 @@ grep -q 'deviation = <0xffffd120>' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
   || { echo "ERROR: thermal deviation not fixed (boot-shutdown risk)" >&2; exit 1; }
 ! grep -q 'deviation = <0xfffcd120>' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
   || { echo "ERROR: fatal thermal value still present" >&2; exit 1; }
+grep -q 'reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
+  || { echo "ERROR: &pcie0 reset-gpios lost after injection (5G WiFi invisible)" >&2; exit 1; }
+grep -q 'reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>' "$DTS_DIR/rtl9617c-pt1570-r10-rtw89.dts" \
+  || { echo "ERROR: &pcie1 reset-gpios lost after injection (2.4G WiFi invisible)" >&2; exit 1; }
 grep -q "path 'soc/f4325000.pcie" "$SRC/files/etc/config/wireless" \
   || { echo "ERROR: wireless overlay injection failed" >&2; exit 1; }
 echo "  all injections verified"
