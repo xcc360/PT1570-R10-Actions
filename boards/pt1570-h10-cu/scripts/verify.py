@@ -40,7 +40,7 @@ plat = read(SRC / "target/linux/rtl9617c/base-files/lib/upgrade/platform.sh")
 board_d = read(SRC / "target/linux/rtl9617c/base-files/etc/board.d/02_network")
 wireless = read(ASSETS / "files/etc/config/wireless")
 realtek_mk = read(SRC / "package/kernel/mac80211/realtek.mk")
-fw_dir = SRC / "target/linux/rtl9617c/base-files/lib/firmware/rtw89"
+fw_dir = SRC / "target/linux/rtl9617c/embedded-firmware/rtw89"
 
 print("=== verify-h10-cu-rtw89-exp.py (2026-11-26 run28 baseline) ===")
 
@@ -98,6 +98,13 @@ check("CONFIG_EXTRA_FIRMWARE=.*regulatory.db" in cfg
 for name in ("rtw8852c_fw.bin", "rtw8192xb_fw.bin"):
     check((fw_dir / name).is_file() and (fw_dir / name).stat().st_size > 0,
           "fallback firmware blob present: " + name)
+# run28: blobs must NOT be packaged into base-files, else apk aborts with
+# "trying to overwrite ... owned by base-files" vs wireless-regdb /
+# rtl8852ce-firmware (H10 run18 failure).
+bf_fw = SRC / "target/linux/rtl9617c/base-files/lib/firmware"
+for name in ("regulatory.db", "regulatory.db.p7s", "rtw89/rtw8852c_fw.bin"):
+    check(not (bf_fw / name).exists(),
+          "no base-files firmware conflict: " + name)
 
 # 5) Profile, board whitelist and device packages.
 check("youhua_pt1570_h10_cu_rtw89_exp" in mk, "image/Makefile device profile")
