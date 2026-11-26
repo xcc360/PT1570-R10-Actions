@@ -99,6 +99,9 @@ check("kmod-rtw89-8852ce" in mk and "kmod-rtw89-8192xbe" in mk,
       "image/Makefile installs both rtw89 chip packages")
 check("rtl8852ce-ap-firmware" in mk, "image/Makefile installs AP firmware")
 check("youhua,pt1570-r10-rtw89-exp" in plat, "platform.sh board whitelist")
+check("youhua,pt1570-r10-rtw89-exp" in read(
+    os.path.join(SRC, "target/linux/rtl9617c/base-files/etc/board.d/02_network")),
+    "board registered in board.d/02_network (network config generated)")
 
 # 6) External feed URL typo in upstream feeds.conf.default must be corrected.
 check("crysister/rtl9617c-packages.git" in feeds,
