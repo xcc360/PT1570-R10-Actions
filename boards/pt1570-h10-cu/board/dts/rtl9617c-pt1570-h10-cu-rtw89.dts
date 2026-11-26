@@ -227,6 +227,7 @@
 
 &pcie0 {
 	reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>;
+	irq-affinity = <1>;
 	status = "okay";
 };
 
@@ -234,6 +235,9 @@
 	wifi5g: wifi@0,0 {
 		compatible = "pci10ec,c852";
 		reg = <0x0000 0 0 0 0>;
+		realtek,ap-firmware;
+		realtek,rfe-type = <54>;
+		ieee80211-freq-limit = <5150000 5900000>;
 		nvmem-cells = <&wifi_cal_radio0>;
 		nvmem-cell-names = "wifi-calibration";
 	};
@@ -241,6 +245,7 @@
 
 &pcie1 {
 	reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>;
+	irq-affinity = <2>;
 	status = "okay";
 };
 
@@ -248,6 +253,7 @@
 	wifi2g: wifi@0,0 {
 		compatible = "pci10ec,0192";
 		reg = <0x0000 0 0 0 0>;
+		realtek,rfe-type = <54>;
 		nvmem-cells = <&wifi_cal_radio1>;
 		nvmem-cell-names = "wifi-calibration";
 	};
