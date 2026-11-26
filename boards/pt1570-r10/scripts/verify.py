@@ -68,6 +68,15 @@ check("deviation = <0xfffcd120>" not in dts,
 # 3) WiFi DT chain: PCIe port nodes, AP firmware, RFE type, factory calibration.
 check("pcie0_port:" in dtsi and "pcie1_port:" in dtsi,
       "DTSI exposes pcie0_port/pcie1_port (baseline >= 2df200550b73)")
+# CRITICAL (2026-11-26): without PERST# reset-gpios the WiFi cards never leave
+# reset, PCIe link stays in LTSSM POLL_COMPLIANCE and NO card is ever enumerated
+# (iw dev empty, hostapd never starts). This exact omission made WiFi invisible.
+check("reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>" in dts,
+      "DTS &pcie0 has reset-gpios bank3 pin5 (5G PERST# deassert)")
+check("reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>" in dts,
+      "DTS &pcie1 has reset-gpios bank3 pin6 (2.4G PERST# deassert)")
+check("irq-affinity = <1>" in dts and "irq-affinity = <2>" in dts,
+      "DTS PCIe IRQ affinity pinned for both radios")
 check("&pcie0_port" in dts and "wifi5g: wifi@0,0" in dts,
       "5G wifi node attached to &pcie0_port")
 check("&pcie1_port" in dts and "wifi2g: wifi@0,0" in dts,
