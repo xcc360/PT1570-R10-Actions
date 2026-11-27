@@ -194,8 +194,8 @@ jobs:
       - name: Clone rtl9617c-openwrt source
         run: |
           set -e
-          # 2026-11-17 基线切到 refactor（2.5G 正解架构，实机验证可用）
-          REF="${{ inputs.source_ref || '968f03f52dbeb1fceea10979759c739d3532e257' }}"
+          # 2026-11-27 全面转向 refactor HEAD 1e265329e208（三板统一基线，持续跟上游）
+          REF="${{ inputs.source_ref || '1e265329e20873d64ee05d3c95bc59b4b10ce6a4' }}"
           cd /mnt/build_wrt
           git init -q
           git remote add origin https://github.com/lyq1996/rtl9617c-openwrt.git
@@ -1041,12 +1041,12 @@ jobs:
             echo "artifact_type=sysupgrade"
             echo "profile=$PROFILE"
             echo "dts=$DTS (Taurus upstream @ $SOURCE_HASH; 面板灯 GPIO 已按原厂 DTB bank0 覆盖)"
-            echo "source_ref=$SOURCE_REF (baseline=taurus 968f03f52dbe, 平台驱动统一 taurus 命名, 2.5G 架构保留)"
+            echo "source_ref=$SOURCE_REF (baseline=taurus $SOURCE_HASH, 平台驱动统一 taurus 命名, 2.5G 架构保留)"
             echo "source_commit=$SOURCE_HASH"
-            echo "baseline=taurus 968f03f52dbe — 内核 6.18.64 + HisGMII PHY + Taurus SerDes/Lane PHY + RTL8221B netdev 灯 + fullcone NAT(POLICY fullcone,IPv4)（2.5G 架构保留）"
+            echo "baseline=taurus $SOURCE_HASH — 内核 6.18 + HisGMII PHY + Taurus SerDes/Lane PHY + RTL8221B netdev 灯 + fullcone NAT(POLICY fullcone,IPv4)（2.5G 架构保留；PON/LuCI 由 rtl9617c feed 提供）"
             echo "abi=ubi_device / factory(8MiB,static) / fit / rootfs_data"
             echo "firmware=sysupgrade.itb (FIT external-static-with-rootfs, 标准 fit_do_upgrade)"
-            echo "bootloader=lyq1996/rtl9617c-uboot@3a709714e551 (2026-11-10, pt1500-h10-2p5g_defconfig)"
+            echo "bootloader=lyq1996/rtl9617c-uboot@ad056996854c (2026-11-22, pt1500-h10-2p5g_defconfig)"
             echo "bootloader_factory_size=8388608 (8 MiB static, /api/info board_data)"
             echo "factory_image=p1500-h10-factory.bin sha256=08cf837e... (device readback byte-identical)"
             echo "factory_base_mac=fc:34:e2:69:1b:7a"
@@ -1188,7 +1188,7 @@ jobs:
           BOARD="${{ matrix.board }}"
           case "$BOARD" in
             pt1570-r10)
-              DEFAULT_REF='d39cfc6367e3f9226f1e0590aec7f6206f784047'
+              DEFAULT_REF='1e265329e20873d64ee05d3c95bc59b4b10ce6a4'
               PROFILE='youhua_pt1570_r10_rtw89_exp'
               DTS='rtl9617c-pt1570-r10-rtw89'
               COMPAT='youhua,pt1570-r10-rtw89-exp'
@@ -1198,7 +1198,7 @@ jobs:
               # The old 741 DLFW / 742 thermal kernel patches are obsolete:
               # 8192XB chip ops now program AXIDMA itself and AP firmware
               # closes the old C2H/SWSI gaps.
-              DEFAULT_REF='79b6a451b68fa7a1383ce74ddac4dc58a1ec68fb'
+              DEFAULT_REF='1e265329e20873d64ee05d3c95bc59b4b10ce6a4'
               PROFILE='youhua_pt1570_h10_cu_rtw89_exp'
               DTS='rtl9617c-pt1570-h10-cu-rtw89'
               COMPAT='youhua,pt1570-h10-cu-rtw89-exp'

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Static verification for the PT1570-H10-CU rtw89 experimental firmware build.
 
-Updated 2026-11-26 for run28: upstream refactor HEAD 79b6a451b68f, where
-rtw89 moved from kernel built-in symbols to mac80211 backports modules and
-dedicated AP firmware packages. The old 741/742 kernel patches are obsolete.
+Updated 2026-11-27 for upstream refactor HEAD 1e265329e208 (three rtw89
+fixes on top of 79b6a451): rtw89 lives in mac80211 backports modules with
+dedicated AP firmware packages; the old 741/742 kernel patches are obsolete.
 """
 import os
 import pathlib
@@ -42,7 +42,7 @@ wireless = read(ASSETS / "files/etc/config/wireless")
 realtek_mk = read(SRC / "package/kernel/mac80211/realtek.mk")
 fw_dir = SRC / "target/linux/rtl9617c/embedded-firmware/rtw89"
 
-print("=== verify-h10-cu-rtw89-exp.py (2026-11-26 run28 baseline) ===")
+print("=== verify-h10-cu-rtw89-exp.py (2026-11-27 baseline) ===")
 
 # 1) New upstream rtw89 layout: AP firmware package + mac80211 patches.
 check((SRC / "package/firmware/rtw89-ap-firmware/Makefile").is_file(),

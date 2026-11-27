@@ -1,6 +1,13 @@
 #!/bin/bash
 # PT1500-H10 2.5G 板级校验（独立 workflow 专用，幂等，只读断言 + 少量修补）。
 #
+# ★★★ 2026-11-27 第三次基线升级：968f03f52dbe -> 1e265329e208 ★★★
+#   上游把 rtl9617c-pon-control / luci-app-rtl9617c-pon 从源码树移到
+#   crysister/rtl9617c-packages feed（./scripts/feeds update -a 会自动递归
+#   初始化子模块），并删除 ni_p6.c（P6 逻辑并入 ni_te_flow.c）。
+#   本脚本改为在「源码树 + feed」两处定位 PON/LuCI 资产，P6 标记二选一；
+#   PON mode 仍统一纠正为 xgpon，DTS 面板灯校准脚本不变。
+#
 # ★★★ 2026-11-17 第二次基线升级：refactor HEAD b5025a9d1c95 -> 659700cc1bbc ★★★
 #   上游 4 个新提交：659700cc1bbc (harden OMCI handling and PON bring-up)、
 #   f076437fb4d5 (hand flow offload back to firewall)、以及两个 revert。
@@ -88,13 +95,20 @@ echo "  OK  机型定义：profile=$PROFILE board=$BOARD_NAME dts=$DTS"
 
 # ---- 2. 2.5G 驱动与 DTS 特征（核心，防回退到 base 旧架构）----
 # 驱动源码：2026-11-21 上游 Taurus 重构后 serdes/mdio 驱动与补丁改名；
-# 保留旧 refactor 文件名做兼容，便于临时回退 source_ref 时仍能校验。
+# 2026-11-27 上游删除 ni_p6.c，P6 逻辑并入 ni_te_flow.c。
+# 两个标记二选一：新基线认 ni_te_flow.c，旧 refactor 仍接受 ni_p6.c。
 for f in \
   "$DRV/net/phy/realtek/realtek_hisgmii.c" \
-  "$DRV/net/phy/realtek/realtek_hisgmii_patch.h" \
-  "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_p6.c"; do
+  "$DRV/net/phy/realtek/realtek_hisgmii_patch.h"; do
   [ -s "$f" ] || fail "2.5G 驱动文件缺失/为空：$f"
 done
+if [ -s "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_te_flow.c" ]; then
+  NI_BASELINE=ni_te_flow
+elif [ -s "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_p6.c" ]; then
+  NI_BASELINE=ni_p6
+else
+  fail "2.5G P6 驱动缺失：ni_te_flow.c / ni_p6.c 均不存在"
+fi
 TAURUS=0
 if [ -s "$DRV/phy/realtek/phy-taurus-serdes.c" ]; then
   TAURUS=1
@@ -136,7 +150,7 @@ for kw in 'realtek,hsgmii' 'realtek,p6-phy' 'fpga-image@10000' 'p6-serdes'; do
 done
 [ ! -d "$WRT/target/linux/rtl9617c/base-files/etc/serdes" ] \
   || fail "残留 base 的 /etc/serdes/*.txt（refactor 用内建 patch data，不该有此目录）"
-echo "  OK  2.5G 架构：HisGMII + SerDes PHY + 2500base-x + patch 700-730 齐全"
+echo "  OK  2.5G 架构：HisGMII + SerDes PHY + 2500base-x + patch 700-730 齐全（$NI_BASELINE）"
 
 # ---- 3. config-6.18 的 2.5G 驱动符号 ----
 if [ "$TAURUS" = 1 ]; then
@@ -168,48 +182,66 @@ echo "  OK  config-6.18：HisGMII/SerDes/MDIO/UIMAGE_FIT_BLK 符号齐全（$BAS
 #     offload 交回 firewall）—— 见第 5 组，WAN/VLAN 改由我们的 95 脚本负责。
 # 因此这里的断言改为「校验仍然存在的那些 + 校验被删的那些确实不存在」，
 # 防止上游改版时我们基于旧假设写出错误的注入逻辑。
-PKG_UCI="$WRT/package/rtl9617c"
+# 2026-11-27 起上游把 pon-control / luci-app-pon 移到 crysister feed；
+# feeds install 后实际文件在 $WRT/feeds/rtl9617c/<pkg>（同时 package/feeds/rtl9617c
+# 下建软链）。三处都搜，兼容旧基线，便于临时回退 source_ref 时仍能校验。
+FEED_DIR="$WRT/feeds/rtl9617c"
+PKG_DIRS="$WRT/package/rtl9617c $FEED_DIR $WRT/package/feeds/rtl9617c"
+find_pkg_file() {
+  local rel="$1" d f
+  for d in $PKG_DIRS; do
+    f="$d/$rel"
+    if [ -f "$f" ]; then printf '%s' "$f"; return 0; fi
+  done
+  return 1
+}
 for s in 94-rtl9617c-cpu 95-rtl9617c-argon 96-rtl9617c-rpcd-perms; do
   found=0
-  for f in "$PKG_UCI"/*/files/etc/uci-defaults/"$s" \
-           "$PKG_UCI"/*/root/etc/uci-defaults/"$s"; do
-    [ -f "$f" ] && { found=1; break; }
+  for d in $PKG_DIRS; do
+    for f in "$d"/*/files/etc/uci-defaults/"$s" \
+             "$d"/*/root/etc/uci-defaults/"$s"; do
+      [ -f "$f" ] && { found=1; break; }
+    done
+    [ "$found" = 1 ] && break
   done
-  [ "$found" = 1 ] || fail "refactor 首启脚本缺失：$s"
+  [ "$found" = 1 ] || fail "首启脚本缺失（源码树/feed 都找不到）：$s"
 done
 # rename-netdevs.uc 本体必须还在（网卡重命名靠它）
-found=0
-for f in "$PKG_UCI"/*/files/usr/share/rtl9617c/rename-netdevs.uc; do
-  [ -f "$f" ] && { found=1; break; }
-done
-[ "$found" = 1 ] || fail "refactor rename-netdevs.uc 缺失（网卡重命名会失效）"
-# 89-rtl9617c-lan-ports：新 HEAD 里它就是 rename-netdevs.uc 本体，
+find_pkg_file 'rtl9617c-pon-control/files/usr/share/rtl9617c/rename-netdevs.uc' >/dev/null \
+  || fail "rename-netdevs.uc 缺失（网卡重命名会失效）"
+# 89-rtl9617c-lan-ports：它就是 rename-netdevs.uc 本体，
 # 由 Makefile 的 install 段直接装到 $(1)/etc/uci-defaults/89-rtl9617c-lan-ports。
-# 注意：源码树里【没有】这个文件（它不是 files/etc/uci-defaults/ 下的静态文件），
-# 所以只能校验 Makefile 的安装规则 —— RUN #9 实测纠正：误查源码树导致误报缺失。
-MK="$PKG_UCI/rtl9617c-pon-control/Makefile"
-[ -f "$MK" ] || fail "refactor 缺少 rtl9617c-pon-control/Makefile"
+# 源码树里【没有】这个静态文件，只能校验 Makefile 的安装规则。
+MK=$(find_pkg_file 'rtl9617c-pon-control/Makefile') \
+  || fail "缺少 rtl9617c-pon-control/Makefile（源码树/feed 都找不到）"
 grep -q '89-rtl9617c-lan-ports' "$MK" \
-  || fail "refactor 的 pon-control Makefile 不再安装 89-rtl9617c-lan-ports（网卡重命名会失效）"
+  || fail "pon-control Makefile 不再安装 89-rtl9617c-lan-ports（网卡重命名会失效）"
 grep -q 'rename-netdevs.uc' "$MK" \
-  || fail "refactor 的 pon-control Makefile 不再安装 rename-netdevs.uc"
+  || fail "pon-control Makefile 不再安装 rename-netdevs.uc"
 # pon-leds 服务与 ucode 助手必须在（面板 LOS/PON 灯由它按 label 名驱动）
-[ -f "$PKG_UCI/rtl9617c-pon-control/files/etc/init.d/pon-leds" ] \
-  || fail "refactor pon-leds 服务缺失"
-[ -f "$PKG_UCI/rtl9617c-pon-control/files/pon-leds.uc" ] \
-  || fail "refactor pon-leds.uc 缺失（LOS/PON 灯不会被驱动）"
+find_pkg_file 'rtl9617c-pon-control/files/etc/init.d/pon-leds' >/dev/null \
+  || fail "pon-leds 服务缺失"
+find_pkg_file 'rtl9617c-pon-control/files/pon-leds.uc' >/dev/null \
+  || fail "pon-leds.uc 缺失（LOS/PON 灯不会被驱动）"
+# 新基线：feed 包必须已 install，否则 Config.txt 的 CONFIG_PACKAGE_* 会失效
+[ -e "$WRT/package/feeds/rtl9617c/rtl9617c-pon-control" ] \
+  || fail "rtl9617c-pon-control feed 包未 install（检查 ./scripts/feeds install -a）"
+[ -e "$WRT/package/feeds/rtl9617c/luci-app-rtl9617c-pon" ] \
+  || fail "luci-app-rtl9617c-pon feed 包未 install（检查 ./scripts/feeds install -a）"
+echo "  OK  首启脚本/PON 包：源码树或 rtl9617c feed 均可定位"
 
 # ---- 5. PON mode 纠正为 xgpon + WAN VLAN 1101 ----
 # ★ 2026-11-17 实机回归：XGPON 认证失败、LuCI 报"设备初始化失败"。
-#   根因：上游 refactor 的 package/rtl9617c/rtl9617c-pon-control/files/etc/config/pon
-#   硬编码 `option mode 'epon-d10g'`（PT1500 的 EPON profile），
-#   而本机实机走 XGPON 线路（原厂 mtd4 内多处 WanType=XGPON 佐证）。
+#   根因：上游 refactor（2026-11-27 起为 rtl9617c feed）的
+#   rtl9617c-pon-control/files/etc/config/pon 硬编码 `option mode 'epon-d10g'`
+#   （PT1500 的 EPON profile），而本机实机走 XGPON 线路
+#   （原厂 mtd4 内多处 WanType=XGPON 佐证）。
 #   驱动侧后果：pon_serdes.c 按 mode 选 serdes 表（epon_d10g vs xgpon），
 #   init.d/pon 的 offload 分支也按 mode 分流（EPON 写 traffic/mpcp，
 #   XGPON 才写 activation/pon-omci）-> OMCI 通道不建立 -> OLT 等不到注册。
 #   这里在编译期直接纠正上游默认值，使固件第一层默认就是 xgpon。
-PON_CONF="$PKG_UCI/rtl9617c-pon-control/files/etc/config/pon"
-[ -f "$PON_CONF" ] || fail "refactor pon 配置缺失：$PON_CONF"
+PON_CONF=$(find_pkg_file 'rtl9617c-pon-control/files/etc/config/pon') \
+  || fail "pon 配置缺失（源码树/feed 都找不到）"
 if grep -q "^[[:space:]]*option mode 'epon-d10g'$" "$PON_CONF"; then
   sed -i "s/^\([[:space:]]*\)option mode 'epon-d10g'$/\1option mode 'xgpon'/" "$PON_CONF"
 fi

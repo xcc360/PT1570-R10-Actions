@@ -1,4 +1,7 @@
 # PT1500-H10 2.5G（youhua,pt1500-h10-2p5g）独立云编译配置基线。
+# 2026-11-27 三板统一基线：refactor HEAD 1e265329e208。
+#   rtl9617c-pon-control / luci-app-rtl9617c-pon 已移到 crysister feed，
+#   apply.sh 会在源码树与 feeds/rtl9617c/ 中定位，Config 符号保持不变。
 # 2026-11-17 重大变更：源码基线从 base 20b4cf4 整体切到 upstream refactor 分支
 #   （默认 HEAD b5025a9d1c95，含 RTL8221B HisGMII + 独立 SerDes PHY + 按速切
 #    2500BASEX/SGMII 的完整 2.5G 架构，已被网友 lyq1996 本机编译实机验证 2.5G 可用）。

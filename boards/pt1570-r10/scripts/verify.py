@@ -2,8 +2,9 @@
 """Static assertions for the PT1570-R10 rtw89 experimental firmware build.
 
 Run from the workflow after Clone/Apply/Configure. Exits 1 on any failure.
-Updated 2026-11-25 for upstream d39cfc6367e3 (rtw89 AP-firmware split) and
-for the thermal/port/MAC regressions that bricked the 2026-11-22 firmware.
+Updated 2026-11-27 for upstream 1e265329e208 (rtw89 AP-firmware split plus
+multi-BSS/txpower/SER/ACS/MACID-sleep fixes) and for the thermal/port/MAC
+regressions that bricked the 2026-11-22 firmware.
 """
 import os
 import sys
@@ -40,7 +41,7 @@ dotconfig = read(os.path.join(SRC, ".config"))
 feeds = read(os.path.join(SRC, "feeds.conf.default"))
 realtek_mk = read(os.path.join(SRC, "package/kernel/mac80211/realtek.mk"))
 
-print("=== verify-r10-rtw89-exp.py (2026-11-25 baseline) ===")
+print("=== verify-r10-rtw89-exp.py (2026-11-27 baseline) ===")
 
 # 1) New upstream rtw89 layout: AP firmware package + mac80211 patches.
 check(os.path.isfile(os.path.join(SRC, "package/firmware/rtw89-ap-firmware/Makefile")),
