@@ -479,8 +479,15 @@ jobs:
             grep -qF "$kw" "$H10WAN" || { echo "ERROR: H10 WAN 脚本缺关键项 $kw" >&2; exit 1; }
           done
           # PON mode 必须是 xgpon（本机为 XGPON 线路；上游默认 epon-d10g 已被纠正）
-          grep -q "option mode 'xgpon'" \
-            "$GITHUB_WORKSPACE/wrt/package/rtl9617c/rtl9617c-pon-control/files/etc/config/pon" \
+          # 2026-11-27 起 pon-control 移到 rtl9617c feed，源码树/feed 都搜。
+          PON_CFG=""
+          for p in "$GITHUB_WORKSPACE/wrt/feeds/rtl9617c/rtl9617c-pon-control/files/etc/config/pon" \
+                   "$GITHUB_WORKSPACE/wrt/package/rtl9617c/rtl9617c-pon-control/files/etc/config/pon"; do
+            [ -f "$p" ] && { PON_CFG="$p"; break; }
+          done
+          [ -n "$PON_CFG" ] \
+            || { echo "ERROR: 找不到 pon config（源码树/feed 都缺失）" >&2; exit 1; }
+          grep -q "option mode 'xgpon'" "$PON_CFG" \
             || { echo "ERROR: 上游 pon config 的 mode 未纠正为 xgpon" >&2; exit 1; }
           # 95 脚本必须带 mode 纠正逻辑（防 sysupgrade 保留旧配置时 mode 仍是错的）
           grep -qF "pon.pon.mode" "$H10WAN" \
@@ -518,11 +525,18 @@ jobs:
           DRV=target/linux/rtl9617c/files-6.18/drivers
           for f in "$DRV/net/phy/realtek/realtek_hisgmii.c" \
                    "$DRV/phy/realtek/phy-taurus-serdes.c" \
-                   "$DRV/phy/realtek/phy-taurus-lane.c" \
-                   "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_p6.c"; do
+                   "$DRV/phy/realtek/phy-taurus-lane.c"; do
             test -s "$f" || { echo "ERROR: refactor 2.5G 驱动缺失 $f" >&2; exit 1; }
           done
-          echo "  OK   2.5G 架构：HisGMII + SerDes PHY + 2500base-x + ni_p6 齐全"
+          # 2026-11-27 上游删除 ni_p6.c，P6 逻辑并入 ni_te_flow.c
+          if [ -s "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_te_flow.c" ]; then
+            NI_MARK=ni_te_flow.c
+          elif [ -s "$DRV/net/ethernet/realtek/rtl9617c/ni/ni_p6.c" ]; then
+            NI_MARK=ni_p6.c
+          else
+            echo "ERROR: 2.5G P6 驱动缺失（ni_te_flow.c / ni_p6.c 都不存在）" >&2; exit 1
+          fi
+          echo "  OK   2.5G 架构：HisGMII + SerDes PHY + 2500base-x + $NI_MARK 齐全"
 
           # 三机型统一默认 LAN 192.168.1.1/24
           grep -qF 'WRT_IP="${WRT_IP:-192.168.1.1}"' \
@@ -535,44 +549,51 @@ jobs:
 
           # refactor 首启脚本在 package/rtl9617c 下（rtl9617c-* 命名），
           # 且绝不能混入 R10 的 99-pt1570-fit / 95-pt1570-wan-default。
-          # ★ 2026-11-17 基线 659700cc1bbc：上游删除了 89-rtl9617c-lan-ports
-          #   （rename-netdevs.uc 的包装脚本）与 97-rtl9617c-argon-default，
-          #   所以这里只校验仍然存在的三个，并反向确认被删的两个确实已删。
-          PKG_UCI=package/rtl9617c
+          # ★ 2026-11-27：上游把 pon-control / luci-app-pon 移到
+          #   crysister/rtl9617c-packages feed；feeds install 后文件在
+          #   feeds/rtl9617c/ 并软链到 package/feeds/rtl9617c/。三处都搜。
+          PKG_UCIS="feeds/rtl9617c package/rtl9617c package/feeds/rtl9617c"
+          find_pkg_file() {
+            local rel="$1" base f
+            for base in $PKG_UCIS; do
+              f="$base/$rel"
+              [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+            done
+            return 1
+          }
           for s in 94-rtl9617c-cpu 95-rtl9617c-argon 96-rtl9617c-rpcd-perms; do
             found=0
-            for f in "$PKG_UCI"/*/files/etc/uci-defaults/"$s" \
-                     "$PKG_UCI"/*/root/etc/uci-defaults/"$s"; do
-              [ -f "$f" ] && { found=1; break; }
+            for base in $PKG_UCIS; do
+              for f in "$base"/*/files/etc/uci-defaults/"$s" \
+                       "$base"/*/root/etc/uci-defaults/"$s"; do
+                [ -f "$f" ] && { found=1; break; }
+              done
+              [ "$found" = 1 ] && break
             done
-            [ "$found" = 1 ] || { echo "ERROR: refactor 首启脚本缺失：$s" >&2; exit 1; }
+            [ "$found" = 1 ] || { echo "ERROR: 首启脚本缺失（源码树/feed 都找不到）：$s" >&2; exit 1; }
           done
           # rename-netdevs.uc 本体与 pon-leds 必须在（网卡重命名 + LOS/PON 灯驱动）
-          test -f "$PKG_UCI/rtl9617c-pon-control/files/usr/share/rtl9617c/rename-netdevs.uc" \
-            || { echo "ERROR: refactor rename-netdevs.uc 缺失" >&2; exit 1; }
-          test -f "$PKG_UCI/rtl9617c-pon-control/files/etc/init.d/pon-leds" \
-            || { echo "ERROR: refactor pon-leds 服务缺失" >&2; exit 1; }
-          test -f "$PKG_UCI/rtl9617c-pon-control/files/pon-leds.uc" \
-            || { echo "ERROR: refactor pon-leds.uc 缺失" >&2; exit 1; }
-          # ★ 2026-11-17 基线 659700cc1bbc 的真实情况（run#8 实测纠正）：
-          #   上游把 rename-netdevs.uc **直接安装成** 89-rtl9617c-lan-ports
-          #   （Makefile: INSTALL_BIN ./files/usr/share/rtl9617c/rename-netdevs.uc
-          #    -> $(1)/etc/uci-defaults/89-rtl9617c-lan-ports），
-          #   而不是旧 HEAD 那种"包装脚本 + 单独装 uc"的形式。**功能完全等价**，
-          #   所以 89 脚本仍然必须存在，不能断言它不存在。
-          #   97-rtl9617c-argon-default 才是真正被删的。
+          find_pkg_file 'rtl9617c-pon-control/files/usr/share/rtl9617c/rename-netdevs.uc' >/dev/null \
+            || { echo "ERROR: rename-netdevs.uc 缺失" >&2; exit 1; }
+          find_pkg_file 'rtl9617c-pon-control/files/etc/init.d/pon-leds' >/dev/null \
+            || { echo "ERROR: pon-leds 服务缺失" >&2; exit 1; }
+          find_pkg_file 'rtl9617c-pon-control/files/pon-leds.uc' >/dev/null \
+            || { echo "ERROR: pon-leds.uc 缺失" >&2; exit 1; }
           # 89 是 Makefile install 段安装的（源码树里没有这个静态文件），
-          # 所以只能校验 Makefile 的安装规则 —— RUN #9 实测纠正：误查源码树导致误报缺失。
-          PON_MK="$PKG_UCI/rtl9617c-pon-control/Makefile"
-          test -f "$PON_MK" || { echo "ERROR: refactor 缺少 rtl9617c-pon-control/Makefile" >&2; exit 1; }
+          # 所以只能校验 Makefile 的安装规则。
+          PON_MK=$(find_pkg_file 'rtl9617c-pon-control/Makefile') \
+            || { echo "ERROR: 缺少 rtl9617c-pon-control/Makefile（源码树/feed 都找不到）" >&2; exit 1; }
           grep -q '89-rtl9617c-lan-ports' "$PON_MK" \
             || { echo "ERROR: pon-control Makefile 不再安装 89-rtl9617c-lan-ports（网卡重命名会失效）" >&2; exit 1; }
           grep -q 'rename-netdevs.uc' "$PON_MK" \
             || { echo "ERROR: pon-control Makefile 不再安装 rename-netdevs.uc" >&2; exit 1; }
           found=0
-          for f in "$PKG_UCI"/*/files/etc/uci-defaults/97-rtl9617c-argon-default \
-                   "$PKG_UCI"/*/root/etc/uci-defaults/97-rtl9617c-argon-default; do
-            [ -f "$f" ] && { found=1; break; }
+          for base in $PKG_UCIS; do
+            for f in "$base"/*/files/etc/uci-defaults/97-rtl9617c-argon-default \
+                     "$base"/*/root/etc/uci-defaults/97-rtl9617c-argon-default; do
+              [ -f "$f" ] && { found=1; break; }
+            done
+            [ "$found" = 1 ] && break
           done
           [ "$found" = 0 ] || { echo "ERROR: 97-rtl9617c-argon-default 复活了（上游改版？）需复核" >&2; exit 1; }
           [ ! -e "$UCI_SRC/99-pt1570-fit" ] \
