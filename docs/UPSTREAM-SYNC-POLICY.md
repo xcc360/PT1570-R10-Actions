@@ -6,6 +6,8 @@
 
 U-Boot 独立跟踪 `lyq1996/rtl9617c-uboot@main`，仅在真实有新提交且验证通过后更新。
 
+**PON/LuCI feed（`crysister/rtl9617c-packages@main`）不锁 SHA、紧随上游默认分支更新**（2026-11-28 用户决定）：workflow 保持 `feeds update -a` 原样，不固定 commit。feed 变化靠编译后的 `test_only=true` 全板断言与产物校验兜底，而不是靠 SHA 钉死。因此每次正式编译前建议先看上游 feed 是否有新提交（尤其新增包、包名变化、LuCI 资源冲突），有变化就先跑一次 `test_only=true`，通过后再正式编译。
+
 ## 固定点
 
 | 项目 | 位置 | 当前固定 ref |
